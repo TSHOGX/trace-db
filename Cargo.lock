@@ -1037,7 +1037,6 @@ dependencies = [
  "clap",
  "dirs",
  "filetime",
- "fts5-jieba",
  "hex",
  "rusqlite",
  "serde",

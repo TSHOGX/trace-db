@@ -34,10 +34,6 @@ thiserror = "2"
 walkdir = "2.5"
 zstd = "0.13"
 
-[dependencies.fts5-jieba]
-package = "fts5-jieba"
-path = "native/fts5-jieba"
-
 [dev-dependencies]
 tempfile = "3"
 
