@@ -62,9 +62,34 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
     } else {
         "unicode61 remove_diacritics 2"
     };
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    )?;
+    let stored_version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let version = stored_version
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<i64>()
+        .context("invalid TraceDB schema version")?;
+    if version > SCHEMA_VERSION {
+        anyhow::bail!(
+            "TraceDB schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    let previous_tokenizer: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='tokenizer'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
     let schema = r#"
-      CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT OR IGNORE INTO schema_meta(key,value) VALUES ('schema_version','1');
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, started_at_ms INTEGER,
         ended_at_ms INTEGER, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
@@ -102,6 +127,20 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       END;
     "#.replace("TOKENIZER_PLACEHOLDER", tokenizer);
     conn.execute_batch(&schema)?;
+    if previous_tokenizer
+        .as_deref()
+        .is_some_and(|value| value != tokenizer)
+    {
+        conn.execute_batch(&format!(
+            "DROP TABLE IF EXISTS events_fts;
+             CREATE VIRTUAL TABLE events_fts USING fts5(text, content='events', content_rowid='id', tokenize='{tokenizer}');"
+        ))?;
+        conn.execute("INSERT INTO events_fts(rowid,text) SELECT id,text FROM events WHERE kind NOT IN ('tool_result','usage')", [])?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version',?1)",
+        [SCHEMA_VERSION.to_string()],
+    )?;
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('tokenizer',?1)",
         [tokenizer],
@@ -566,6 +605,59 @@ mod tests {
         reconstruct(&conn, "codex:test", &out).unwrap();
         assert_eq!(fs::read(out.join("rollout.jsonl")).unwrap(), b"first\n");
         assert_eq!(fs::read(out.join("second.json")).unwrap(), b"second\n");
+    }
+
+    #[test]
+    fn migration_rejects_an_archive_from_a_newer_schema() {
+        let dir = tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("future.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO schema_meta VALUES ('schema_version','99');",
+        )
+        .unwrap();
+        let error = migrate(&conn).unwrap_err().to_string();
+        assert!(error.contains("newer than supported version"));
+    }
+
+    #[test]
+    fn migration_rebuilds_fts_when_the_tokenizer_contract_changes() {
+        let dir = tempdir().unwrap();
+        let conn = open(dir.path().join("tokenizer.db")).unwrap();
+        conn.execute(
+            "INSERT INTO sessions(id,agent,mode,fingerprint,meta_json,ingested_at_ms) VALUES ('codex:tokenizer','codex','partial','v1','{}',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events(session_id,idx,kind,text) VALUES ('codex:tokenizer',0,'user','café deploy')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key,value) VALUES ('tokenizer','jieba')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM schema_meta WHERE key='tokenizer'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "unicode61 remove_diacritics 2"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM events_fts WHERE events_fts MATCH 'cafe'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]
