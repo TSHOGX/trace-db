@@ -143,7 +143,7 @@ changed sessions are read and replaced transactionally.
 ```bash
 bun run build:native
 bun run typecheck
-bun test
+bun run test
 bun run build
 ```
 

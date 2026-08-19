@@ -37,7 +37,7 @@
     "build:native": "cargo build --release --manifest-path native/fts5-jieba/Cargo.toml",
     "postinstall": "bun run build:native",
     "typecheck": "bun --bun tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test tests"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
