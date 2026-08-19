@@ -12,12 +12,12 @@ mod ffi;
 mod tokenizer;
 pub use ffi::Fts5Api;
 
-use core::ptr::null_mut;
+use core::{ffi::CStr, ptr::null_mut};
 use ffi::*;
 use libc::{c_int, c_uchar, c_void};
 
 /// Tokenizer name used in `CREATE VIRTUAL TABLE ... tokenize='jieba'`.
-const TOKENIZER_NAME: &[u8] = b"jieba\0";
+const TOKENIZER_NAME: &CStr = c"jieba";
 
 /// Destroy callback for the tokenizer module. We register no per-module state,
 /// so this is a no-op.
@@ -36,7 +36,13 @@ fn register(db: *mut Sqlite3, p_api: *const c_void) -> Result<(), c_int> {
     // Fetch the fts5_api pointer: prepare `SELECT fts5(?1)`, bind a pointer
     // parameter tagged "fts5_api_ptr", step once; SQLite writes the pointer.
     let mut stmt = null_mut::<Sqlite3Stmt>();
-    let rc = (api.prepare)(db, b"SELECT fts5(?1)\0".as_ptr(), -1, &mut stmt, null_mut());
+    let rc = (api.prepare)(
+        db,
+        c"SELECT fts5(?1)".as_ptr().cast(),
+        -1,
+        &mut stmt,
+        null_mut(),
+    );
     if rc != SQLITE_OK {
         return Err(rc);
     }
@@ -46,7 +52,7 @@ fn register(db: *mut Sqlite3, p_api: *const c_void) -> Result<(), c_int> {
         stmt,
         1,
         &mut p_fts5_api,
-        b"fts5_api_ptr\0".as_ptr(),
+        c"fts5_api_ptr".as_ptr().cast(),
         null_mut(),
     );
     if rc != SQLITE_OK {
@@ -75,7 +81,7 @@ fn register(db: *mut Sqlite3, p_api: *const c_void) -> Result<(), c_int> {
 
     let rc = (fts5_api.x_create_tokenizer)(
         fts5_api,
-        TOKENIZER_NAME.as_ptr(),
+        TOKENIZER_NAME.as_ptr().cast(),
         null_mut(),
         &mut tokenizer_api,
         x_destroy_module,
@@ -89,12 +95,17 @@ fn register(db: *mut Sqlite3, p_api: *const c_void) -> Result<(), c_int> {
 
 /// Register the tokenizer with an in-process SQLite connection.
 ///
-/// The standalone extension entry point above is still used by Bun/other
+/// The standalone extension entry point above is used by external SQLite
 /// hosts. The Rust TraceDB binary instead links the tokenizer as a normal Rust
 /// library and obtains the FTS5 API pointer itself; this avoids a fragile
 /// runtime search for a platform-specific `.dylib`/`.so` next to the binary.
 /// The caller must pass a pointer obtained from `SELECT fts5(?1)` and keep the
 /// SQLite connection alive for the lifetime of the registration.
+///
+/// # Safety
+///
+/// `fts5_api` must be a valid pointer owned by a live SQLite connection. The
+/// pointed-to API and its callbacks must remain valid for every tokenizer use.
 pub unsafe fn register_with_fts5_api(fts5_api: *mut Fts5Api) -> c_int {
     if fts5_api.is_null() {
         return SQLITE_INTERNAL;
@@ -106,7 +117,7 @@ pub unsafe fn register_with_fts5_api(fts5_api: *mut Fts5Api) -> c_int {
     };
     ((*fts5_api).x_create_tokenizer)(
         fts5_api,
-        TOKENIZER_NAME.as_ptr(),
+        TOKENIZER_NAME.as_ptr().cast(),
         null_mut(),
         &mut tokenizer_api,
         x_destroy_module,

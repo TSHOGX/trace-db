@@ -144,15 +144,16 @@ impl Engine {
             // Only emit when the stem differs, to avoid a redundant duplicate.
             if self.stem_english && is_stemmable(&normalized) {
                 let stem = self.stemmer.stem(&normalized).to_string();
-                if stem != normalized && !stem.is_empty() {
-                    if !push(Emit {
+                if stem != normalized
+                    && !stem.is_empty()
+                    && !push(Emit {
                         text: stem,
                         byte_start: base + start,
                         byte_end: base + end,
                         colocated: true,
-                    }) {
-                        return false;
-                    }
+                    })
+                {
+                    return false;
                 }
             }
         }
