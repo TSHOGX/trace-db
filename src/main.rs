@@ -1,7 +1,12 @@
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead};
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracedb::{default_db_path, Agent, IngestMode, IngestRequest, SearchRequest, TraceDb};
+use tracedb::{
+    default_db_path,
+    service::{serve, ServiceEndpoint},
+    Agent, IngestMode, IngestRequest, SearchRequest, TraceDb,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -67,6 +72,18 @@ enum Command {
     },
     /// Line-oriented JSON API for language-neutral integrations.
     Api,
+    /// Serve the versioned tracedb.v1 gRPC API.
+    Serve {
+        /// Listen on a TCP address. Defaults to loopback port 50051.
+        #[arg(long)]
+        listen: Option<SocketAddr>,
+        /// Listen on a Unix domain socket instead of TCP.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Permit an unauthenticated TCP listener outside loopback.
+        #[arg(long)]
+        allow_remote: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -196,8 +213,38 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Api => run_api(&db)?,
+        Command::Serve {
+            listen,
+            socket,
+            allow_remote,
+        } => {
+            let endpoint = match (listen, socket) {
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("--listen and --socket are mutually exclusive")
+                }
+                (Some(address), None) => ServiceEndpoint::Tcp(address),
+                (None, Some(path)) => ServiceEndpoint::Unix(path),
+                (None, None) => ServiceEndpoint::Tcp("127.0.0.1:50051".parse()?),
+            };
+            if matches!(&endpoint, ServiceEndpoint::Tcp(address) if !address.ip().is_loopback())
+                && !allow_remote
+            {
+                anyhow::bail!(
+                    "refusing a non-loopback listener without --allow-remote; the service has no authentication or TLS"
+                )
+            }
+            eprintln!("serving tracedb.v1 on {}", display_endpoint(&endpoint));
+            serve(db, endpoint)?;
+        }
     }
     Ok(())
+}
+
+fn display_endpoint(endpoint: &ServiceEndpoint) -> String {
+    match endpoint {
+        ServiceEndpoint::Tcp(address) => format!("http://{address}"),
+        ServiceEndpoint::Unix(path) => path.display().to_string(),
+    }
 }
 
 fn parse_since(value: &str) -> Option<i64> {

@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package tracedb.v1;
+
+// Stable, agent-neutral access to one local TraceDB archive.
+service TraceDbService {
+  // Discover native stores and transactionally ingest matching sessions.
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+  // Search normalized events and return lineage-collapsed sessions.
+  rpc Search(SearchRequest) returns (SearchResponse);
+  // Read one session and its complete normalized event stream.
+  rpc Show(ShowRequest) returns (ShowResponse);
+  // Read archive-wide and per-agent counts.
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  // Rebuild the gated full-text index from normalized events.
+  rpc Reindex(ReindexRequest) returns (ReindexResponse);
+  // Restore full-capture sources below a server-local output directory.
+  rpc Reconstruct(ReconstructRequest) returns (ReconstructResponse);
+}
+
+message IngestRequest {
+  repeated string agents = 1;
+  string mode = 2;
+  optional string root = 3;
+  optional int64 since_ms = 4;
+}
+
+message IngestResponse {
+  repeated AgentIngestReport agents = 1;
+  uint64 total_discovered = 2;
+  uint64 total_ingested = 3;
+}
+
+message AgentIngestReport {
+  string agent = 1;
+  string root = 2;
+  uint64 discovered = 3;
+  uint64 ingested = 4;
+  uint64 skipped_by_since = 5;
+}
+
+message SearchRequest {
+  string query = 1;
+  uint32 limit = 2;
+  optional string agent = 3;
+  optional string cwd = 4;
+  optional int64 since_ms = 5;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string id = 1;
+  string agent = 2;
+  optional string cwd = 3;
+  int64 hits = 4;
+}
+
+message ShowRequest {
+  string id = 1;
+}
+
+message ShowResponse {
+  optional Session session = 1;
+  string mode = 2;
+  repeated Event events = 3;
+}
+
+message Session {
+  string id = 1;
+  string agent = 2;
+  optional string cwd = 3;
+  optional int64 started_at_ms = 4;
+  optional int64 ended_at_ms = 5;
+  optional string title = 6;
+  optional string model = 7;
+  optional string provider = 8;
+  optional string git_branch = 9;
+  optional string parent_session_id = 10;
+  optional string forked_from = 11;
+  string meta_json = 12;
+  string fingerprint = 13;
+  repeated NativeSource sources = 14;
+}
+
+message NativeSource {
+  string locator = 1;
+  string kind = 2;
+  string restore_path = 3;
+  optional string role = 4;
+  optional int64 bytes = 5;
+  optional int64 mtime_ns = 6;
+  optional uint32 mode = 7;
+}
+
+message Event {
+  int64 idx = 1;
+  string kind = 2;
+  optional string subtype = 3;
+  optional string role = 4;
+  optional string name = 5;
+  optional string call_id = 6;
+  optional bool is_error = 7;
+  optional string native_id = 8;
+  optional string parent_id = 9;
+  optional string model = 10;
+  optional string provider = 11;
+  optional string usage_json = 12;
+  string text = 13;
+  optional string data_json = 14;
+  optional int64 created_at_ms = 15;
+}
+
+message StatsRequest {}
+
+message StatsResponse {
+  string path = 1;
+  int64 total_sessions = 2;
+  int64 total_events = 3;
+  int64 total_full_sessions = 4;
+  repeated AgentStats agents = 5;
+}
+
+message AgentStats {
+  string agent = 1;
+  int64 sessions = 2;
+  int64 events = 3;
+  int64 full_sessions = 4;
+}
+
+message ReindexRequest {}
+
+message ReindexResponse {}
+
+message ReconstructRequest {
+  string id = 1;
+  string out_dir = 2;
+}
+
+message ReconstructResponse {
+  repeated string paths = 1;
+}

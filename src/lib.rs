@@ -4,10 +4,15 @@
 //! archive statistics, FTS maintenance, and native-source reconstruction.
 
 mod facade;
+pub mod service;
 
 pub mod model;
 pub mod parsers;
 pub mod store;
+
+pub mod proto {
+    tonic::include_proto!("tracedb.v1");
+}
 
 pub use facade::{
     native_root, AgentIngestReport, AgentStats, ArchiveStats, IngestReport, IngestRequest,

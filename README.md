@@ -52,6 +52,7 @@ trace-db reconstruct SESSION_ID --out DIRECTORY
 trace-db reindex
 trace-db stats [--json]
 trace-db api
+trace-db serve [--listen 127.0.0.1:50051 | --socket PATH]
 ```
 
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
@@ -80,6 +81,12 @@ for row in rows {
 `TraceDb` also provides typed `ingest`, `ingest_session`, `show`, `stats`,
 `reindex`, and `reconstruct` methods. Lower-level `model`, `parsers`, and
 `store` modules remain public for custom importers and specialized SQL access.
+
+For a versioned cross-language boundary, `trace-db serve` exposes the
+`tracedb.v1` gRPC service over loopback TCP or a Unix domain socket. The
+checked-in Protobuf contract supports ingest, search, show, stats, reindex, and
+reconstruction; see [`references/protocol.md`](references/protocol.md) for
+compatibility and security details.
 
 ## Native stores and data model
 

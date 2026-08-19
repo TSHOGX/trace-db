@@ -17,6 +17,7 @@ TraceDB has four layers:
 src/
   lib.rs          crate exports and database path resolution
   facade.rs       typed TraceDb lifecycle and request/result API
+  service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance
   store.rs        SQLite schema, upsert, FTS, search, reconstruction
@@ -28,6 +29,7 @@ src/
     gemini.rs
     pi.rs
 native/fts5-jieba/  optional Rust FTS5 tokenizer extension
+proto/tracedb/v1/   stable cross-language Protobuf contract
 ```
 
 ## Rebuildability and full capture
