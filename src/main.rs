@@ -106,7 +106,7 @@ fn main() -> anyhow::Result<()> {
                 agents,
                 mode,
                 root,
-                since_ms: since.as_deref().and_then(parse_since),
+                since_ms: since.as_deref().map(parse_since).transpose()?,
             })?;
             for row in &report.agents {
                 println!(
@@ -134,7 +134,7 @@ fn main() -> anyhow::Result<()> {
                 limit,
                 agent,
                 cwd,
-                since_ms: since.as_deref().and_then(parse_since),
+                since_ms: since.as_deref().map(parse_since).transpose()?,
             })?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -266,13 +266,30 @@ fn display_endpoint(endpoint: &ServiceEndpoint) -> String {
     }
 }
 
-fn parse_since(value: &str) -> Option<i64> {
+fn parse_since(value: &str) -> anyhow::Result<i64> {
+    let value = value.trim();
+    if value.is_empty() {
+        anyhow::bail!("--since must be a non-empty day count or RFC3339 timestamp");
+    }
     if let Ok(days) = value.parse::<i64>() {
-        return Some(chrono::Utc::now().timestamp_millis() - days * 86_400_000);
+        if days < 0 {
+            anyhow::bail!("--since day count must not be negative: {days}");
+        }
+        let offset = days
+            .checked_mul(86_400_000)
+            .ok_or_else(|| anyhow::anyhow!("--since day count is too large: {days}"))?;
+        return chrono::Utc::now()
+            .timestamp_millis()
+            .checked_sub(offset)
+            .ok_or_else(|| anyhow::anyhow!("--since day count is out of range: {days}"));
     }
     chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|x| x.timestamp_millis())
+        .map(|timestamp| timestamp.timestamp_millis())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "invalid --since value {value:?}; expected a non-negative day count or RFC3339 timestamp ({error})"
+            )
+        })
 }
 
 fn run_api(db: &TraceDb) -> anyhow::Result<()> {
@@ -296,7 +313,8 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
                 let since = req
                     .get("since")
                     .and_then(|v| v.as_str())
-                    .and_then(parse_since);
+                    .map(parse_since)
+                    .transpose()?;
                 serde_json::to_value(db.search(SearchRequest {
                     query: q.to_owned(),
                     limit: n,
@@ -348,4 +366,34 @@ fn event_json(event: &tracedb::Event) -> serde_json::Value {
         "text": event.text,
         "createdAtMs": event.created_at_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_since;
+
+    #[test]
+    fn parses_relative_day_counts() {
+        let before = chrono::Utc::now().timestamp_millis();
+        let parsed = parse_since("7").unwrap();
+        let after = chrono::Utc::now().timestamp_millis();
+        let seven_days = 7 * 86_400_000;
+        assert!(parsed >= before - seven_days - 1);
+        assert!(parsed <= after - seven_days + 1);
+    }
+
+    #[test]
+    fn parses_rfc3339_timestamps() {
+        assert_eq!(
+            parse_since("2025-01-02T03:04:05Z").unwrap(),
+            1_735_787_045_000
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_since_values() {
+        assert!(parse_since("-1").is_err());
+        assert!(parse_since("").is_err());
+        assert!(parse_since("yesterday").is_err());
+    }
 }
