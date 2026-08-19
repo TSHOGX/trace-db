@@ -89,7 +89,7 @@ The Rust crate exposes `tracedb::model`, `tracedb::parsers`, and
 `tracedb::store` for embedding. The CLI is JSON-friendly so Python, Go, Node,
 and shell integrations can consume it without SQLite ABI coupling. For a
 long-lived process, `trace-db api` reads one JSON request per line and emits
-one JSON response per line (`stats` and `search` are currently supported). The
+one JSON response per line (`stats`, `search`, `show`, and `reconstruct`). The
 compatibility TypeScript API remains available:
 
 ```ts

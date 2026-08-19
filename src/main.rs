@@ -240,7 +240,25 @@ fn run_api(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                     .and_then(parse_since);
                 serde_json::to_value(store::search_filtered(conn, q, n, a, cwd, since)?)?
             }
-            _ => serde_json::json!({"error":"unknown op","supported":["stats","search"]}),
+            "show" => {
+                let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let mut st=conn.prepare("SELECT idx,kind,subtype,name,call_id,is_error,text,created_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
+                let rows=st.query_map([id],|r|Ok(serde_json::json!({"idx":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"subtype":r.get::<_,Option<String>>(2)?,"name":r.get::<_,Option<String>>(3)?,"callId":r.get::<_,Option<String>>(4)?,"isError":r.get::<_,Option<i64>>(5)?.map(|v|v!=0),"text":r.get::<_,String>(6)?,"createdAtMs":r.get::<_,Option<i64>>(7)?})))?;
+                serde_json::to_value(rows.collect::<rusqlite::Result<Vec<_>>>()?)?
+            }
+            "reconstruct" => {
+                let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let out = req.get("out").and_then(|v| v.as_str()).unwrap_or(".");
+                serde_json::to_value(
+                    store::reconstruct(conn, id, PathBuf::from(out).as_path())?
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>(),
+                )?
+            }
+            _ => {
+                serde_json::json!({"error":"unknown op","supported":["stats","search","show","reconstruct"]})
+            }
         };
         println!(
             "{}",
