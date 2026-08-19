@@ -3,7 +3,7 @@ use std::io::{self, BufRead};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracedb::{
-    default_db_path,
+    default_db_path, doctor_archive,
     service::{serve, ServiceEndpoint},
     verify_archive, Agent, IngestMode, IngestRequest, SearchRequest, TraceDb,
 };
@@ -85,6 +85,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Diagnose database, native stores, tokenizer, and runtime readiness.
+    Doctor {
+        /// Print the complete machine-readable diagnostic report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Line-oriented JSON API for language-neutral integrations.
     Api,
     /// Serve the versioned tracedb.v1 gRPC API.
@@ -131,6 +137,59 @@ fn main() -> anyhow::Result<()> {
                 "archive verification failed: {} failure(s)",
                 report.failure_count()
             );
+        }
+        return Ok(());
+    }
+    if let Command::Doctor { json } = &cli.command {
+        let report = doctor_archive(&db_path);
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("db: {}", report.database.path.display());
+            println!(
+                "database\t{}\t{}",
+                if report.database.error.is_none()
+                    && report
+                        .database
+                        .verification
+                        .as_ref()
+                        .is_none_or(|verification| verification.passed)
+                {
+                    "ok"
+                } else {
+                    "failed"
+                },
+                if report.database.exists {
+                    "existing archive"
+                } else {
+                    "not created"
+                }
+            );
+            for agent in &report.agents {
+                println!(
+                    "{}\t{}\t{} discovered\t{}",
+                    agent.agent,
+                    if agent.failures.is_empty() {
+                        "ok"
+                    } else {
+                        "failed"
+                    },
+                    agent.discovered,
+                    agent.root.display()
+                );
+            }
+            println!(
+                "tokenizer\t{}\t{}",
+                if report.tokenizer.available {
+                    "ok"
+                } else {
+                    "failed"
+                },
+                report.tokenizer.tokenizer
+            );
+        }
+        if !report.healthy {
+            anyhow::bail!("doctor found one or more unhealthy checks");
         }
         return Ok(());
     }
@@ -284,6 +343,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Verify { .. } => unreachable!("verify returns before opening the archive"),
+        Command::Doctor { .. } => unreachable!("doctor returns before opening the archive"),
         Command::Api => run_api(&db)?,
         Command::Serve {
             listen,

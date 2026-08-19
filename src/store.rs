@@ -162,6 +162,21 @@ pub fn open_for_verification(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+pub fn probe_jieba_extension(path: &Path) -> Result<()> {
+    let connection = Connection::open_in_memory()?;
+    unsafe {
+        connection.load_extension_enable()?;
+        let load_result = connection.load_extension(path, Some("sqlite3_fts5jieba_init"));
+        connection.load_extension_disable()?;
+        load_result?;
+    }
+    connection.execute_batch(
+        "CREATE VIRTUAL TABLE tokenizer_probe USING fts5(text, tokenize='jieba');
+         DROP TABLE tokenizer_probe;",
+    )?;
+    Ok(())
+}
+
 pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyReport> {
     use crate::{VerificationFailure, VerifyCheck, VerifyReport};
 

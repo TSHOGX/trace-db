@@ -16,9 +16,10 @@ pub mod proto {
 }
 
 pub use facade::{
-    native_root, verify_archive, AgentIngestReport, AgentStats, ArchiveStats, IngestErrorCategory,
-    IngestIssue, IngestReport, IngestRequest, IngestStage, ReconstructionOptions, SessionTrace,
-    TraceDb, VerificationFailure, VerifyCheck, VerifyReport,
+    doctor_archive, native_root, verify_archive, AgentIngestReport, AgentStats, ArchiveStats,
+    DoctorAgent, DoctorDatabase, DoctorFailure, DoctorReport, DoctorRuntime, DoctorTokenizer,
+    IngestErrorCategory, IngestIssue, IngestReport, IngestRequest, IngestStage,
+    ReconstructionOptions, SessionTrace, TraceDb, VerificationFailure, VerifyCheck, VerifyReport,
 };
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,

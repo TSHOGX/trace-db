@@ -252,6 +252,155 @@ pub fn verify_archive(path: impl AsRef<Path>) -> Result<VerifyReport> {
     store::verify(&connection, path)
 }
 
+/// Inspect runtime readiness, native stores, tokenizer configuration, and archive health.
+pub fn doctor_archive(path: impl AsRef<Path>) -> DoctorReport {
+    let roots = Agent::ALL
+        .into_iter()
+        .map(|agent| (agent, native_root(agent)))
+        .collect();
+    doctor_with_roots(
+        path.as_ref(),
+        roots,
+        std::env::var_os("TRACEDB_JIEBA_EXT").map(PathBuf::from),
+    )
+}
+
+fn doctor_with_roots(
+    path: &Path,
+    roots: Vec<(Agent, PathBuf)>,
+    tokenizer_extension: Option<PathBuf>,
+) -> DoctorReport {
+    let database = doctor_database(path);
+    let mut agents = Vec::with_capacity(roots.len());
+    for (agent, root) in roots {
+        let parser = parser(agent);
+        let (discovered, failures) = if root.exists() {
+            match parser.discover(&root) {
+                Ok(discovery) => (
+                    discovery.candidates.len(),
+                    discovery
+                        .failures
+                        .into_iter()
+                        .map(|failure| DoctorFailure {
+                            locator: failure.locator,
+                            message: format!("{:#}", failure.error),
+                        })
+                        .collect(),
+                ),
+                Err(error) => (
+                    0,
+                    vec![DoctorFailure {
+                        locator: root.display().to_string(),
+                        message: format!("{error:#}"),
+                    }],
+                ),
+            }
+        } else {
+            (0, Vec::new())
+        };
+        agents.push(DoctorAgent {
+            agent,
+            root: root.clone(),
+            exists: root.exists(),
+            readable: if root.is_file() {
+                std::fs::File::open(&root).is_ok()
+            } else {
+                root.read_dir().is_ok()
+            },
+            discovered,
+            failures,
+        });
+    }
+    let tokenizer = match tokenizer_extension {
+        Some(extension) => match store::probe_jieba_extension(&extension) {
+            Ok(()) => DoctorTokenizer {
+                tokenizer: "jieba".into(),
+                extension: Some(extension),
+                available: true,
+                error: None,
+            },
+            Err(error) => DoctorTokenizer {
+                tokenizer: "jieba".into(),
+                extension: Some(extension),
+                available: false,
+                error: Some(format!("{error:#}")),
+            },
+        },
+        None => DoctorTokenizer {
+            tokenizer: store::PORTABLE_TOKENIZER.into(),
+            extension: None,
+            available: true,
+            error: None,
+        },
+    };
+    let healthy = database.error.is_none()
+        && database
+            .verification
+            .as_ref()
+            .is_none_or(|report| report.passed)
+        && database.writable
+        && tokenizer.available
+        && agents.iter().all(|agent| agent.failures.is_empty());
+    DoctorReport {
+        healthy,
+        database,
+        agents,
+        tokenizer,
+        runtime: DoctorRuntime {
+            tracedb_version: env!("CARGO_PKG_VERSION").into(),
+            sqlite_version: rusqlite::version().into(),
+            os: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+        },
+    }
+}
+
+fn doctor_database(path: &Path) -> DoctorDatabase {
+    let exists = path.exists();
+    let ancestor = path
+        .parent()
+        .and_then(|parent| {
+            parent
+                .ancestors()
+                .find(|ancestor| ancestor.exists())
+                .map(Path::to_path_buf)
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    let parent_writable = tempfile::NamedTempFile::new_in(&ancestor).is_ok();
+    let writable = parent_writable
+        && (!exists
+            || std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .is_ok());
+    if !exists {
+        return DoctorDatabase {
+            path: path.to_path_buf(),
+            exists,
+            writable,
+            verification: None,
+            error: None,
+        };
+    }
+    match verify_archive(path) {
+        Ok(verification) => DoctorDatabase {
+            path: path.to_path_buf(),
+            exists,
+            writable,
+            verification: Some(verification),
+            error: None,
+        },
+        Err(error) => DoctorDatabase {
+            path: path.to_path_buf(),
+            exists,
+            writable,
+            verification: None,
+            error: Some(format!("{error:#}")),
+        },
+    }
+}
+
 /// Options for discovering and ingesting native sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -475,6 +624,62 @@ pub struct VerifyReport {
     pub path: PathBuf,
     pub passed: bool,
     pub checks: Vec<VerifyCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorFailure {
+    pub locator: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorDatabase {
+    pub path: PathBuf,
+    pub exists: bool,
+    pub writable: bool,
+    pub verification: Option<VerifyReport>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorAgent {
+    pub agent: Agent,
+    pub root: PathBuf,
+    pub exists: bool,
+    pub readable: bool,
+    pub discovered: usize,
+    pub failures: Vec<DoctorFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorTokenizer {
+    pub tokenizer: String,
+    pub extension: Option<PathBuf>,
+    pub available: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorRuntime {
+    pub tracedb_version: String,
+    pub sqlite_version: String,
+    pub os: String,
+    pub architecture: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorReport {
+    pub healthy: bool,
+    pub database: DoctorDatabase,
+    pub agents: Vec<DoctorAgent>,
+    pub tokenizer: DoctorTokenizer,
+    pub runtime: DoctorRuntime,
 }
 
 impl VerifyReport {
