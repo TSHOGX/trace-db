@@ -41,7 +41,11 @@ trace-db stats --json
 Tagged releases publish archives for x86-64 and ARM64 Linux, x86-64 and ARM64
 macOS, and x86-64 Windows. Each archive contains the CLI, the optional
 `fts5-jieba` extension, the `tracedb.v1` Protobuf contract, README, and license.
-`SHA256SUMS` in the GitHub release covers every archive.
+The same release also attaches ABI3 Python wheels and target-labeled Node.js
+package tarballs for all five targets. These are GitHub release artifacts, not
+automatic PyPI or npm registry publications. `SHA256SUMS` covers every attached
+archive, wheel, and package, and GitHub publishes signed build-provenance
+attestations for the release assets.
 
 The repository wrapper is also available during development:
 
