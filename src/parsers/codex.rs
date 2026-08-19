@@ -29,7 +29,7 @@ fn epoch(v: Option<&Value>) -> Option<i64> {
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.timestamp_millis())
 }
-fn payload<'a>(r: &'a Value) -> &'a Value {
+fn payload(r: &Value) -> &Value {
     r.get("payload").unwrap_or(&Value::Null)
 }
 fn event(kind: EventKind, text: String, native: Option<String>, ts: Option<i64>) -> Event {

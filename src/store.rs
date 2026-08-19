@@ -1,5 +1,8 @@
-use crate::model::{
-    assign_indexes, Agent, Event, IngestMode, NativeSource, ParsedSession, Session,
+use crate::{
+    model::{
+        assign_indexes, Agent, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
+    },
+    SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -15,7 +18,11 @@ use std::{
 pub const SCHEMA_VERSION: i64 = 1;
 
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
-    if let Some(parent) = path.as_ref().parent() {
+    if let Some(parent) = path
+        .as_ref()
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     let conn = Connection::open(path)?;
@@ -147,7 +154,7 @@ fn write_session(
     }
     tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
     for e in events {
-        tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(|v|i64::from(v)),e.native_id,e.parent_id,e.model,e.provider,e.usage.as_ref().map(|v|serde_json::to_string(v).unwrap()),e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
+        tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,e.usage.as_ref().map(|v|serde_json::to_string(v).unwrap()),e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
     }
     Ok(())
 }
@@ -221,11 +228,157 @@ pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64, i64)>> {
     Ok(rows)
 }
 
-pub fn search(
-    conn: &Connection,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<(String, String, Option<String>, i64)>> {
+pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
+    let row = conn
+        .query_row(
+            "SELECT agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json FROM sessions WHERE id=?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        agent,
+        cwd,
+        started_at_ms,
+        ended_at_ms,
+        title,
+        model,
+        provider,
+        git_branch,
+        parent_session_id,
+        forked_from,
+        mode,
+        fingerprint,
+        meta_json,
+    )) = row
+    else {
+        return Ok(None);
+    };
+
+    let mut source_stmt = conn.prepare("SELECT locator,kind,restore_path,role,bytes,mtime_ns,mode FROM raw_sources WHERE session_id=?1 ORDER BY locator")?;
+    let sources = source_stmt
+        .query_map([session_id], |row| {
+            Ok(NativeSource {
+                locator: row.get(0)?,
+                kind: row.get(1)?,
+                restore_path: row.get(2)?,
+                role: row.get(3)?,
+                bytes: row.get(4)?,
+                mtime_ns: row.get(5)?,
+                mode: row.get::<_, Option<i64>>(6)?.map(|value| value as u32),
+                capture: None,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
+    let raw_events = event_stmt
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let events = raw_events
+        .into_iter()
+        .map(
+            |(
+                idx,
+                kind,
+                subtype,
+                role,
+                name,
+                call_id,
+                is_error,
+                native_id,
+                parent_id,
+                model,
+                provider,
+                usage_json,
+                text,
+                data_json,
+                created_at_ms,
+            )| {
+                Ok(Event {
+                    idx,
+                    kind: kind.parse().map_err(anyhow::Error::msg)?,
+                    subtype,
+                    role,
+                    name,
+                    call_id,
+                    is_error: is_error.map(|value| value != 0),
+                    native_id,
+                    parent_id,
+                    model,
+                    provider,
+                    usage: usage_json
+                        .map(|json| serde_json::from_str::<TokenUsage>(&json))
+                        .transpose()?,
+                    text,
+                    data_json: data_json
+                        .map(|json| serde_json::from_str::<Value>(&json))
+                        .transpose()?,
+                    created_at_ms,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(SessionTrace {
+        session: Session {
+            id: session_id.to_owned(),
+            agent: agent.parse().map_err(anyhow::Error::msg)?,
+            cwd,
+            started_at_ms,
+            ended_at_ms,
+            title,
+            model,
+            provider,
+            git_branch,
+            parent_session_id,
+            forked_from,
+            meta: serde_json::from_str(&meta_json)?,
+            fingerprint,
+            sources,
+        },
+        mode: mode.parse().map_err(anyhow::Error::msg)?,
+        events,
+    }))
+}
+
+pub type SearchRow = (String, String, Option<String>, i64);
+
+pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SearchRow>> {
     search_filtered(conn, query, limit, None, None, None)
 }
 
@@ -236,7 +389,7 @@ pub fn search_filtered(
     agent: Option<Agent>,
     cwd: Option<&str>,
     since_ms: Option<i64>,
-) -> Result<Vec<(String, String, Option<String>, i64)>> {
+) -> Result<Vec<SearchRow>> {
     let mut sql=String::from("SELECT e.session_id,s.agent,s.cwd,bm25(events_fts) score FROM events_fts JOIN events e ON e.id=events_fts.rowid JOIN sessions s ON s.id=e.session_id WHERE events_fts MATCH ?1");
     if agent.is_some() {
         sql.push_str(" AND s.agent=?2");

@@ -62,17 +62,24 @@ response per line. Supported operations are `stats`, `search`, `show`, and
 printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api
 ```
 
-This protocol is intentionally simple and stable enough for Python, Node.js,
+This protocol is intentionally simple and language-neutral for Python, Node.js,
 Go, and shell clients without exposing SQLite internals. The Rust crate is the
 preferred high-performance integration surface:
 
 ```rust,no_run
-use tracedb::{default_db_path, open_database};
+use tracedb::{SearchRequest, TraceDb};
 
-let db = open_database(default_db_path())?;
-let rows = tracedb::store::search(&db, "deploy", 20)?;
+let db = TraceDb::open_default()?;
+let rows = db.search(SearchRequest::new("deploy"))?;
+for row in rows {
+    println!("{}: {} hits", row.id, row.hits);
+}
 # Ok::<(), anyhow::Error>(())
 ```
+
+`TraceDb` also provides typed `ingest`, `ingest_session`, `show`, `stats`,
+`reindex`, and `reconstruct` methods. Lower-level `model`, `parsers`, and
+`store` modules remain public for custom importers and specialized SQL access.
 
 ## Native stores and data model
 

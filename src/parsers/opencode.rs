@@ -11,6 +11,18 @@ use std::{
 };
 
 pub struct OpenCodeParser;
+
+type NativeSessionRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
 fn s(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str).map(str::to_owned)
 }
@@ -31,7 +43,23 @@ fn db_path(root: &Path) -> Option<PathBuf> {
 }
 fn parse_session(db: &Path, id: &str, _root: &Path) -> Result<ParsedSession> {
     let c = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let (sid,parent,directory,title,agent,model,created,updated):(String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<i64>,Option<i64>)=c.query_row("SELECT id,parent_id,directory,title,agent,model,time_created,time_updated FROM session WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))?;
+    let (sid, parent, directory, title, agent, model, created, updated): NativeSessionRow = c
+        .query_row(
+            "SELECT id,parent_id,directory,title,agent,model,time_created,time_updated FROM session WHERE id=?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )?;
     let mut evs = Vec::new();
     let mut stmt=c.prepare("SELECT m.id,m.data,m.time_created,p.data,p.time_created FROM message m LEFT JOIN part p ON p.message_id=m.id WHERE m.session_id=?1 ORDER BY m.time_created,m.id,p.time_created,p.id")?;
     let mut rows = stmt.query([id])?;

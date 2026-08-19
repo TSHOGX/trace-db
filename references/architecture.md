@@ -15,7 +15,8 @@ TraceDB has four layers:
 
 ```text
 src/
-  lib.rs          public Rust entry points and database path resolution
+  lib.rs          crate exports and database path resolution
+  facade.rs       typed TraceDb lifecycle and request/result API
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance
   store.rs        SQLite schema, upsert, FTS, search, reconstruction
@@ -55,5 +56,6 @@ OpenCode exposes `parent_id` directly in its SQLite session table.
 
 The repository contains only the Rust implementation. New agent support should
 implement the `Parser` trait and register the parser without changing storage
-or interface contracts. Cross-language clients should prefer the JSON protocol
-for process boundaries and the Rust crate for in-process integrations.
+or interface contracts. The CLI and JSON protocol call the same `TraceDb`
+facade used by in-process Rust integrations. Cross-language clients should use
+the protocol rather than couple themselves to SQLite internals.

@@ -60,17 +60,12 @@ impl FromStr for Agent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IngestMode {
+    #[default]
     Partial,
     Full,
-}
-
-impl Default for IngestMode {
-    fn default() -> Self {
-        Self::Partial
-    }
 }
 
 impl IngestMode {

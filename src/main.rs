@@ -1,13 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead};
 use std::path::PathBuf;
-use tracedb::{
-    default_db_path,
-    model::{Agent, IngestMode},
-    open_database,
-    parsers::parser,
-    store,
-};
+use tracedb::{default_db_path, Agent, IngestMode, IngestRequest, SearchRequest, TraceDb};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -78,7 +72,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let db_path = cli.db.unwrap_or_else(default_db_path);
-    let mut conn = open_database(&db_path)?;
+    let mut db = TraceDb::open(&db_path)?;
     match cli.command {
         Command::Ingest {
             agent,
@@ -91,27 +85,19 @@ fn main() -> anyhow::Result<()> {
             } else {
                 agent
             };
-            let mut total = 0;
-            for a in agents {
-                let root = root.clone().unwrap_or_else(|| native_root(a));
-                let cutoff = since.as_deref().and_then(parse_since);
-                let sessions = parser(a)
-                    .discover(&root)?
-                    .into_iter()
-                    .filter(|s| {
-                        cutoff
-                            .map(|c| s.session.ended_at_ms.unwrap_or_default() >= c)
-                            .unwrap_or(true)
-                    })
-                    .collect::<Vec<_>>();
-                let n = sessions.len();
-                for session in sessions {
-                    store::upsert(&mut conn, session, mode)?;
-                }
-                println!("{a}: ingested {n}");
-                total += n;
+            let report = db.ingest(IngestRequest {
+                agents,
+                mode,
+                root,
+                since_ms: since.as_deref().and_then(parse_since),
+            })?;
+            for row in &report.agents {
+                println!(
+                    "{}: ingested {} of {} discovered",
+                    row.agent, row.ingested, row.discovered
+                );
             }
-            println!("total sessions: {total}");
+            println!("total sessions: {}", report.total_ingested());
         }
         Command::Search {
             query,
@@ -121,21 +107,23 @@ fn main() -> anyhow::Result<()> {
             since,
             json,
         } => {
-            let rows = store::search_filtered(
-                &conn,
-                &query,
+            let rows = db.search(SearchRequest {
+                query,
                 limit,
                 agent,
-                cwd.as_deref(),
-                since.as_deref().and_then(parse_since),
-            )?;
+                cwd,
+                since_ms: since.as_deref().and_then(parse_since),
+            })?;
             if json {
-                println!("{}",serde_json::to_string_pretty(&rows.iter().map(|(id,agent,cwd,hits)|serde_json::json!({"id":id,"agent":agent,"cwd":cwd,"hits":hits})).collect::<Vec<_>>())?);
+                println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {
-                for (id, agent, cwd, hits) in rows {
+                for row in rows {
                     println!(
-                        "{id}\t{agent}\t{hits}\t{}",
-                        cwd.unwrap_or_else(|| "-".into())
+                        "{}\t{}\t{}\t{}",
+                        row.id,
+                        row.agent,
+                        row.hits,
+                        row.cwd.unwrap_or_else(|| "-".into())
                     );
                 }
             }
@@ -145,34 +133,35 @@ fn main() -> anyhow::Result<()> {
             include_tools,
             json,
         } => {
-            let mut stmt=conn.prepare("SELECT idx,kind,subtype,name,call_id,is_error,text,created_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
-            let rows=stmt.query_map([id.clone()],|r|Ok(serde_json::json!({"idx":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"subtype":r.get::<_,Option<String>>(2)?,"name":r.get::<_,Option<String>>(3)?,"callId":r.get::<_,Option<String>>(4)?,"isError":r.get::<_,Option<i64>>(5)?.map(|v|v!=0),"text":r.get::<_,String>(6)?,"createdAtMs":r.get::<_,Option<i64>>(7)?})))?;
-            let mut all = Vec::new();
-            for row in rows {
-                let e = row?;
+            let trace = db
+                .show(&id)?
+                .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
+            let mut events = Vec::new();
+            for event in trace.events {
                 if include_tools
                     || matches!(
-                        e.get("kind").and_then(|v| v.as_str()),
-                        Some("user") | Some("assistant")
+                        event.kind,
+                        tracedb::EventKind::User | tracedb::EventKind::Assistant
                     )
                 {
-                    all.push(e)
+                    events.push(event)
                 }
             }
             if json {
-                println!("{}", serde_json::to_string_pretty(&all)?)
+                let values = events.iter().map(event_json).collect::<Vec<_>>();
+                println!("{}", serde_json::to_string_pretty(&values)?)
             } else {
-                for e in all {
-                    println!("[{}] {}: {}", e["idx"], e["kind"], e["text"]);
+                for event in events {
+                    println!("[{}] {}: {}", event.idx, event.kind, event.text);
                 }
             }
         }
         Command::Reindex => {
-            store::rebuild_fts(&conn)?;
+            db.reindex()?;
             println!("events_fts rebuilt");
         }
         Command::Reconstruct { id, out } => {
-            let paths = store::reconstruct(&conn, &id, &out)?;
+            let paths = db.reconstruct(&id, &out)?;
             for p in &paths {
                 println!("{}", p.display());
             }
@@ -181,30 +170,34 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Stats { json } => {
-            let rows = store::stats(&conn)?;
+            let stats = db.stats()?;
             if json {
-                println!("{}",serde_json::to_string_pretty(&rows.iter().map(|(agent,sessions,events,full)|serde_json::json!({"agent":agent,"sessions":sessions,"events":events,"full":full})).collect::<Vec<_>>())?);
+                let values = stats
+                    .agents
+                    .iter()
+                    .map(|row| {
+                        serde_json::json!({
+                            "agent": row.agent,
+                            "sessions": row.sessions,
+                            "events": row.events,
+                            "full": row.full_sessions,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                println!("{}", serde_json::to_string_pretty(&values)?);
             } else {
-                println!("db: {}", db_path.display());
-                for (agent, sessions, events, full) in rows {
-                    println!("{agent}\t{sessions} sessions\t{events} events\t{full} full");
+                println!("db: {}", stats.path.display());
+                for row in stats.agents {
+                    println!(
+                        "{}\t{} sessions\t{} events\t{} full",
+                        row.agent, row.sessions, row.events, row.full_sessions
+                    );
                 }
             }
         }
-        Command::Api => run_api(&conn)?,
+        Command::Api => run_api(&db)?,
     }
     Ok(())
-}
-
-fn native_root(agent: Agent) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    match agent {
-        Agent::Claude => home.join(".claude/projects"),
-        Agent::Codex => home.join(".codex/sessions"),
-        Agent::OpenCode => home.join(".local/share/opencode"),
-        Agent::Gemini => home.join(".gemini/tmp"),
-        Agent::Pi => home.join(".pi/agent/sessions"),
-    }
 }
 
 fn parse_since(value: &str) -> Option<i64> {
@@ -216,7 +209,7 @@ fn parse_since(value: &str) -> Option<i64> {
         .map(|x| x.timestamp_millis())
 }
 
-fn run_api(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+fn run_api(db: &TraceDb) -> anyhow::Result<()> {
     for line in io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -225,7 +218,7 @@ fn run_api(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         let req: serde_json::Value = serde_json::from_str(&line)?;
         let op = req.get("op").and_then(|v| v.as_str()).unwrap_or("");
         let result = match op {
-            "stats" => serde_json::to_value(store::stats(conn)?)?,
+            "stats" => serde_json::to_value(db.stats()?)?,
             "search" => {
                 let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let n = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
@@ -238,19 +231,27 @@ fn run_api(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                     .get("since")
                     .and_then(|v| v.as_str())
                     .and_then(parse_since);
-                serde_json::to_value(store::search_filtered(conn, q, n, a, cwd, since)?)?
+                serde_json::to_value(db.search(SearchRequest {
+                    query: q.to_owned(),
+                    limit: n,
+                    agent: a,
+                    cwd: cwd.map(str::to_owned),
+                    since_ms: since,
+                })?)?
             }
             "show" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let mut st=conn.prepare("SELECT idx,kind,subtype,name,call_id,is_error,text,created_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
-                let rows=st.query_map([id],|r|Ok(serde_json::json!({"idx":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"subtype":r.get::<_,Option<String>>(2)?,"name":r.get::<_,Option<String>>(3)?,"callId":r.get::<_,Option<String>>(4)?,"isError":r.get::<_,Option<i64>>(5)?.map(|v|v!=0),"text":r.get::<_,String>(6)?,"createdAtMs":r.get::<_,Option<i64>>(7)?})))?;
-                serde_json::to_value(rows.collect::<rusqlite::Result<Vec<_>>>()?)?
+                serde_json::to_value(
+                    db.show(id)?
+                        .map(|trace| trace.events.iter().map(event_json).collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                )?
             }
             "reconstruct" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let out = req.get("out").and_then(|v| v.as_str()).unwrap_or(".");
                 serde_json::to_value(
-                    store::reconstruct(conn, id, PathBuf::from(out).as_path())?
+                    db.reconstruct(id, PathBuf::from(out))?
                         .iter()
                         .map(|p| p.display().to_string())
                         .collect::<Vec<_>>(),
@@ -263,9 +264,22 @@ fn run_api(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::to_string(
-                &serde_json::json!({"ok":!result.get("error").is_some(),"result":result})
+                &serde_json::json!({"ok":result.get("error").is_none(),"result":result})
             )?
         );
     }
     Ok(())
+}
+
+fn event_json(event: &tracedb::Event) -> serde_json::Value {
+    serde_json::json!({
+        "idx": event.idx,
+        "kind": event.kind,
+        "subtype": event.subtype,
+        "name": event.name,
+        "callId": event.call_id,
+        "isError": event.is_error,
+        "text": event.text,
+        "createdAtMs": event.created_at_ms,
+    })
 }
