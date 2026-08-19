@@ -295,16 +295,59 @@ pub fn search_filtered(
             .and_modify(|v| v.2 += 1)
             .or_insert((agent, cwd, 1));
     }
-    let out = order
+    let mut edges: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    let mut edge_stmt = conn.prepare("SELECT id,parent_session_id,forked_from FROM sessions")?;
+    for row in edge_stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })? {
+        let (id, parent, forked) = row?;
+        edges.insert(
+            id,
+            (
+                parent,
+                forked.map(|x| x.split('#').next().unwrap_or(&x).to_owned()),
+            ),
+        );
+    }
+    fn root(id: &str, edges: &HashMap<String, (Option<String>, Option<String>)>) -> String {
+        let mut cur = id.to_owned();
+        let mut seen = std::collections::HashSet::new();
+        while seen.insert(cur.clone()) {
+            let Some((parent, forked)) = edges.get(&cur) else {
+                break;
+            };
+            let next = parent.as_ref().or(forked.as_ref());
+            let Some(next) = next else { break };
+            if !edges.contains_key(next) {
+                break;
+            }
+            cur = next.clone();
+        }
+        cur
+    }
+    let mut collapsed: HashMap<String, (String, String, Option<String>, i64)> = HashMap::new();
+    let mut roots = Vec::new();
+    for sid in order {
+        let Some((agent, cwd, hits)) = grouped.remove(&sid) else {
+            continue;
+        };
+        let r = root(&sid, &edges);
+        if let Some(existing) = collapsed.get_mut(&r) {
+            existing.3 += hits;
+        } else {
+            roots.push(r.clone());
+            collapsed.insert(r, (sid, agent, cwd, hits));
+        }
+    }
+    Ok(roots
         .into_iter()
-        .filter_map(|sid| {
-            grouped
-                .remove(&sid)
-                .map(|(agent, cwd, hits)| (sid, agent, cwd, hits))
-        })
+        .filter_map(|r| collapsed.remove(&r))
         .take(limit)
-        .collect();
-    Ok(out)
+        .collect())
 }
 
 #[cfg(test)]
@@ -415,5 +458,23 @@ mod tests {
         .unwrap();
         let rows = search(&conn, "deploy netlify", 10).unwrap();
         assert_eq!(rows.first().map(|r| r.0.as_str()), Some("codex:strong"));
+    }
+
+    #[test]
+    fn search_collapses_parent_and_child_lineage() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+        upsert(
+            &mut conn,
+            named_session("codex:parent", "deploy netlify"),
+            IngestMode::Partial,
+        )
+        .unwrap();
+        let mut child = named_session("codex:child", "deploy netlify deploy");
+        child.session.parent_session_id = Some("codex:parent".into());
+        upsert(&mut conn, child, IngestMode::Partial).unwrap();
+        let rows = search(&conn, "deploy netlify", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, 2);
     }
 }
