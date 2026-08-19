@@ -489,14 +489,99 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
         })
 }
 
-fn optional_json_i64(request: &serde_json::Value, field: &str) -> anyhow::Result<Option<i64>> {
+const API_OPERATIONS: [&str; 5] = ["stats", "search", "list", "show", "reconstruct"];
+
+struct ApiFailure {
+    code: &'static str,
+    message: String,
+    details: Option<serde_json::Value>,
+}
+
+impl ApiFailure {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_argument",
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn operation(operation: &str, error: impl std::fmt::Display) -> Self {
+        Self {
+            code: "operation_failed",
+            message: error.to_string(),
+            details: Some(serde_json::json!({"operation": operation})),
+        }
+    }
+
+    fn response(self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "details": self.details,
+            }
+        })
+    }
+}
+
+fn optional_json_i64(request: &serde_json::Value, field: &str) -> Result<Option<i64>, ApiFailure> {
     match request.get(field) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(value) => value
             .as_i64()
             .map(Some)
-            .ok_or_else(|| anyhow::anyhow!("{field} must be an integer")),
+            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be an integer"))),
     }
+}
+
+fn optional_json_u64(request: &serde_json::Value, field: &str) -> Result<Option<u64>, ApiFailure> {
+    match request.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a non-negative integer"))),
+    }
+}
+
+fn optional_json_bool(
+    request: &serde_json::Value,
+    field: &str,
+) -> Result<Option<bool>, ApiFailure> {
+    match request.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a boolean"))),
+    }
+}
+
+fn optional_json_string<'a>(
+    request: &'a serde_json::Value,
+    field: &str,
+) -> Result<Option<&'a str>, ApiFailure> {
+    match request.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(Some)
+            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a string"))),
+    }
+}
+
+fn required_json_string<'a>(
+    request: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, ApiFailure> {
+    let value = optional_json_string(request, field)?
+        .ok_or_else(|| ApiFailure::invalid(format!("{field} is required")))?;
+    if value.is_empty() {
+        return Err(ApiFailure::invalid(format!("{field} must not be empty")));
+    }
+    Ok(value)
 }
 
 fn run_api(db: &TraceDb) -> anyhow::Result<()> {
@@ -505,139 +590,161 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let req: serde_json::Value = serde_json::from_str(&line)?;
-        let op = req.get("op").and_then(|v| v.as_str()).unwrap_or("");
-        let result = match op {
-            "stats" => serde_json::to_value(db.stats()?)?,
-            "search" => {
-                let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let n = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-                let a = req
-                    .get("agent")
-                    .and_then(|v| v.as_str())
-                    .and_then(|x| x.parse().ok());
-                let cwd = req.get("cwd").and_then(|v| v.as_str());
-                let since = req
-                    .get("since")
-                    .and_then(|v| v.as_str())
-                    .map(parse_since)
-                    .transpose()?;
-                serde_json::to_value(db.search(SearchRequest {
-                    query: q.to_owned(),
-                    limit: n,
-                    agent: a,
-                    cwd: cwd.map(str::to_owned),
-                    since_ms: since,
-                })?)?
+        let response = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(request) => match execute_api_request(db, &request) {
+                Ok(result) => serde_json::json!({"ok": true, "result": result}),
+                Err(error) => error.response(),
+            },
+            Err(error) => ApiFailure {
+                code: "invalid_json",
+                message: error.to_string(),
+                details: None,
             }
-            "list" => {
-                let agent = req
-                    .get("agent")
-                    .and_then(|value| value.as_str())
-                    .map(str::parse::<Agent>)
-                    .transpose()
-                    .map_err(anyhow::Error::msg)?;
-                let mode = req
-                    .get("mode")
-                    .and_then(|value| value.as_str())
-                    .map(str::parse::<IngestMode>)
-                    .transpose()
-                    .map_err(anyhow::Error::msg)?;
-                let since_ms = req
-                    .get("since")
-                    .and_then(|value| value.as_str())
-                    .map(parse_since)
-                    .transpose()?;
-                serde_json::to_value(
-                    db.list(ListRequest {
-                        limit: req
-                            .get("limit")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(50) as usize,
-                        cursor: req
-                            .get("cursor")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
-                        agent,
-                        cwd: req
-                            .get("cwd")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
-                        since_ms,
-                        mode,
-                        model: req
-                            .get("model")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
-                        provider: req
-                            .get("provider")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
-                    })?,
-                )?
-            }
-            "show" => {
-                let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let kinds = match req.get("kind") {
-                    Some(value) if value.is_array() => value
-                        .as_array()
-                        .expect("checked array")
-                        .iter()
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .ok_or_else(|| anyhow::anyhow!("show kind must be a string"))?
-                                .parse::<EventKind>()
-                                .map_err(anyhow::Error::msg)
-                        })
-                        .collect::<anyhow::Result<Vec<_>>>()?,
-                    Some(value) if value.is_string() => value
-                        .as_str()
-                        .expect("checked string")
-                        .split(',')
-                        .filter(|kind| !kind.trim().is_empty())
-                        .map(|kind| kind.trim().parse::<EventKind>().map_err(anyhow::Error::msg))
-                        .collect::<anyhow::Result<Vec<_>>>()?,
-                    Some(_) => anyhow::bail!("show kind must be a string or array"),
-                    None => Vec::new(),
-                };
-                serde_json::to_value(db.show_with_options(ShowRequest {
-                    session_id: id.to_owned(),
-                    from_idx: optional_json_i64(&req, "from")?,
-                    to_idx: optional_json_i64(&req, "to")?,
-                    kinds,
-                })?)?
-            }
-            "reconstruct" => {
-                let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let out = req.get("out").and_then(|v| v.as_str()).unwrap_or(".");
-                let overwrite = req
-                    .get("overwrite")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                serde_json::to_value(
-                    db.reconstruct_with_options(
-                        id,
-                        PathBuf::from(out),
-                        tracedb::ReconstructionOptions { overwrite },
-                    )?
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>(),
-                )?
-            }
-            _ => {
-                serde_json::json!({"error":"unknown op","supported":["stats","search","list","show","reconstruct"]})
-            }
+            .response(),
         };
-        println!(
-            "{}",
-            serde_json::to_string(
-                &serde_json::json!({"ok":result.get("error").is_none(),"result":result})
-            )?
-        );
+        println!("{}", serde_json::to_string(&response)?);
     }
     Ok(())
+}
+
+fn execute_api_request(
+    db: &TraceDb,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, ApiFailure> {
+    if !request.is_object() {
+        return Err(ApiFailure::invalid("request must be a JSON object"));
+    }
+    let op = required_json_string(request, "op")?;
+    match op {
+        "stats" => serde_json::to_value(
+            db.stats()
+                .map_err(|error| ApiFailure::operation(op, error))?,
+        )
+        .map_err(|error| ApiFailure::operation(op, error)),
+        "search" => {
+            let query = required_json_string(request, "query")?;
+            let agent = optional_json_string(request, "agent")?
+                .map(str::parse::<Agent>)
+                .transpose()
+                .map_err(ApiFailure::invalid)?;
+            let since_ms = optional_json_string(request, "since")?
+                .map(parse_since)
+                .transpose()
+                .map_err(|error| ApiFailure::invalid(error.to_string()))?;
+            serde_json::to_value(
+                db.search(SearchRequest {
+                    query: query.to_owned(),
+                    limit: optional_json_u64(request, "limit")?.unwrap_or(20) as usize,
+                    agent,
+                    cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
+                    since_ms,
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+            .map_err(|error| ApiFailure::operation(op, error))
+        }
+        "list" => {
+            let agent = optional_json_string(request, "agent")?
+                .map(str::parse::<Agent>)
+                .transpose()
+                .map_err(ApiFailure::invalid)?;
+            let mode = optional_json_string(request, "mode")?
+                .map(str::parse::<IngestMode>)
+                .transpose()
+                .map_err(ApiFailure::invalid)?;
+            let since_ms = optional_json_string(request, "since")?
+                .map(parse_since)
+                .transpose()
+                .map_err(|error| ApiFailure::invalid(error.to_string()))?;
+            serde_json::to_value(
+                db.list(ListRequest {
+                    limit: optional_json_u64(request, "limit")?.unwrap_or(50) as usize,
+                    cursor: optional_json_string(request, "cursor")?.map(str::to_owned),
+                    agent,
+                    cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
+                    since_ms,
+                    mode,
+                    model: optional_json_string(request, "model")?.map(str::to_owned),
+                    provider: optional_json_string(request, "provider")?.map(str::to_owned),
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+            .map_err(|error| ApiFailure::operation(op, error))
+        }
+        "show" => {
+            let id = required_json_string(request, "id")?;
+            let from_idx = optional_json_i64(request, "from")?;
+            let to_idx = optional_json_i64(request, "to")?;
+            if from_idx.is_some_and(|value| value < 0) || to_idx.is_some_and(|value| value < 0) {
+                return Err(ApiFailure::invalid(
+                    "show event indexes must not be negative",
+                ));
+            }
+            if from_idx.zip(to_idx).is_some_and(|(from, to)| from > to) {
+                return Err(ApiFailure::invalid("show from must not be greater than to"));
+            }
+            let kinds = match request.get("kind") {
+                Some(value) if value.is_array() => value
+                    .as_array()
+                    .expect("checked array")
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .ok_or_else(|| ApiFailure::invalid("show kind must be a string"))?
+                            .parse::<EventKind>()
+                            .map_err(ApiFailure::invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(value) if value.is_string() => value
+                    .as_str()
+                    .expect("checked string")
+                    .split(',')
+                    .filter(|kind| !kind.trim().is_empty())
+                    .map(|kind| {
+                        kind.trim()
+                            .parse::<EventKind>()
+                            .map_err(ApiFailure::invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(_) => return Err(ApiFailure::invalid("show kind must be a string or array")),
+                None => Vec::new(),
+            };
+            serde_json::to_value(
+                db.show_with_options(ShowRequest {
+                    session_id: id.to_owned(),
+                    from_idx,
+                    to_idx,
+                    kinds,
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+            .map_err(|error| ApiFailure::operation(op, error))
+        }
+        "reconstruct" => {
+            let id = required_json_string(request, "id")?;
+            let out = required_json_string(request, "out")?;
+            serde_json::to_value(
+                db.reconstruct_with_options(
+                    id,
+                    PathBuf::from(out),
+                    tracedb::ReconstructionOptions {
+                        overwrite: optional_json_bool(request, "overwrite")?.unwrap_or(false),
+                    },
+                )
+                .map_err(|error| ApiFailure::operation(op, error))?
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+            )
+            .map_err(|error| ApiFailure::operation(op, error))
+        }
+        _ => Err(ApiFailure {
+            code: "unsupported_operation",
+            message: format!("unsupported operation: {op}"),
+            details: Some(serde_json::json!({"supported": API_OPERATIONS})),
+        }),
+    }
 }
 
 #[cfg(test)]

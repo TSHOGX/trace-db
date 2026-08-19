@@ -89,8 +89,11 @@ printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api
 ```
 
 This protocol is intentionally simple and language-neutral for Python, Node.js,
-Go, and shell clients without exposing SQLite internals. The Rust crate is the
-preferred high-performance integration surface:
+Go, and shell clients without exposing SQLite internals. Every non-empty input
+line produces either `{"ok":true,"result":...}` or a stable
+`{"ok":false,"error":{"code":...,"message":...,"details":...}}` envelope;
+malformed or invalid requests do not terminate the stream. The Rust crate is
+the preferred high-performance integration surface:
 
 ```rust,no_run
 use tracedb::{SearchRequest, TraceDb};
