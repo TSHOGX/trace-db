@@ -47,25 +47,45 @@ impl TraceDb {
         let mut reports = Vec::with_capacity(agents.len());
         for agent in agents {
             let root = request.root.clone().unwrap_or_else(|| native_root(agent));
-            let sessions = parser(agent).discover(&root)?;
-            let discovered = sessions.len();
+            let parser = parser(agent);
+            let candidates = parser.discover(&root)?;
+            let states = store::candidate_states(&self.connection, agent)?;
+            let discovered = candidates.len();
+            let mut parsed = 0;
             let mut ingested = 0;
-            for session in sessions {
+            let mut unchanged = 0;
+            let mut skipped_by_since = 0;
+            for candidate in candidates {
                 if request
                     .since_ms
-                    .is_some_and(|cutoff| session.session.ended_at_ms.unwrap_or_default() < cutoff)
+                    .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
                 {
+                    skipped_by_since += 1;
                     continue;
                 }
-                store::upsert(&mut self.connection, session, request.mode)?;
-                ingested += 1;
+                if states.get(&candidate.locator).is_some_and(|state| {
+                    state.fingerprint == candidate.fingerprint
+                        && (matches!(request.mode, IngestMode::Partial)
+                            || matches!(state.mode, IngestMode::Full))
+                }) {
+                    unchanged += 1;
+                    continue;
+                }
+                parsed += 1;
+                if let Ok(Some(mut session)) = parser.parse(&candidate, &root) {
+                    session.session.fingerprint = candidate.fingerprint;
+                    store::upsert(&mut self.connection, session, request.mode)?;
+                    ingested += 1;
+                }
             }
             reports.push(AgentIngestReport {
                 agent,
                 root,
                 discovered,
+                parsed,
                 ingested,
-                skipped_by_since: discovered - ingested,
+                unchanged,
+                skipped_by_since,
             });
         }
         Ok(IngestReport { agents: reports })
@@ -148,7 +168,9 @@ pub struct AgentIngestReport {
     pub agent: Agent,
     pub root: PathBuf,
     pub discovered: usize,
+    pub parsed: usize,
     pub ingested: usize,
+    pub unchanged: usize,
     pub skipped_by_since: usize,
 }
 
@@ -164,6 +186,18 @@ impl IngestReport {
 
     pub fn total_ingested(&self) -> usize {
         self.agents.iter().map(|row| row.ingested).sum()
+    }
+
+    pub fn total_parsed(&self) -> usize {
+        self.agents.iter().map(|row| row.parsed).sum()
+    }
+
+    pub fn total_unchanged(&self) -> usize {
+        self.agents.iter().map(|row| row.unchanged).sum()
+    }
+
+    pub fn total_skipped_by_since(&self) -> usize {
+        self.agents.iter().map(|row| row.skipped_by_since).sum()
     }
 }
 

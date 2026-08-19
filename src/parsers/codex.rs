@@ -3,7 +3,7 @@
 //! `response_item/message`). Native records are retained in full mode; this
 //! parser only emits the cross-agent projection used by search/show.
 
-use super::Parser;
+use super::{Parser, SessionCandidate};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
     TokenUsage,
@@ -15,11 +15,15 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 
 pub struct CodexParser;
+
+type Lineage = HashMap<String, (String, Option<String>)>;
+type RolloutSessionIds = HashMap<PathBuf, String>;
 
 fn strv(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str).map(str::to_owned)
@@ -39,7 +43,7 @@ fn event(kind: EventKind, text: String, native: Option<String>, ts: Option<i64>)
     e
 }
 
-fn parse_file(path: &Path) -> Result<ParsedSession> {
+fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
     let data = fs::read_to_string(path)?;
     let records: Vec<Value> = data
         .lines()
@@ -180,19 +184,14 @@ fn parse_file(path: &Path) -> Result<ParsedSession> {
         }
     }
     let id = id.ok_or_else(|| anyhow::anyhow!("rollout missing session id: {}", path.display()))?;
-    let bytes = fs::metadata(path)?;
     let fingerprint = format!("{}:{}", records.len(), ended.unwrap_or_default());
     let source = NativeSource {
         locator: path.display().to_string(),
         kind: "jsonl".into(),
         restore_path: restore_path(path),
         role: None,
-        bytes: Some(bytes.len() as i64),
-        mtime_ns: bytes
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as i64),
+        bytes: candidate.bytes,
+        mtime_ns: candidate.mtime_ns,
         mode: None,
         capture: Some(Capture::File {
             path: path.display().to_string(),
@@ -248,22 +247,26 @@ fn rollout_paths(root: &Path) -> Vec<PathBuf> {
 /// Codex records the parent edge only in the parent's spawn_agent output. A
 /// full pre-pass is therefore required even when the caller later filters by
 /// date or project.
-fn build_lineage(paths: &[PathBuf]) -> HashMap<String, (String, Option<String>)> {
+fn build_lineage(paths: &[PathBuf]) -> (Lineage, RolloutSessionIds) {
     let mut edges = HashMap::new();
+    let mut session_ids = HashMap::new();
     for path in paths {
-        let records: Vec<Value> = fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
-        let parent = records.iter().find_map(|r| {
-            (r.get("type").and_then(Value::as_str) == Some("session_meta"))
-                .then(|| strv(payload(r).get("id")).or_else(|| strv(payload(r).get("session_id"))))
-                .flatten()
-        });
-        let Some(parent) = parent else { continue };
+        let Ok(file) = fs::File::open(path) else {
+            continue;
+        };
+        let mut parent = None;
         let mut pending: HashMap<String, Option<String>> = HashMap::new();
-        for r in records {
+        let mut children = Vec::new();
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(r) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if r.get("type").and_then(Value::as_str) == Some("session_meta") {
+                parent = parent.or_else(|| {
+                    strv(payload(&r).get("id")).or_else(|| strv(payload(&r).get("session_id")))
+                });
+                continue;
+            }
             if r.get("type").and_then(Value::as_str) != Some("response_item") {
                 continue;
             }
@@ -284,41 +287,62 @@ fn build_lineage(paths: &[PathBuf]) -> HashMap<String, (String, Option<String>)>
                             .and_then(|out| serde_json::from_str::<Value>(&out).ok())
                             .and_then(|v| strv(v.get("agent_id")))
                         {
-                            edges.insert(
-                                format!("codex:{child}"),
-                                (format!("codex:{parent}"), role),
-                            );
+                            children.push((child, role));
                         }
                     }
                 }
             }
         }
+        let Some(parent) = parent else { continue };
+        session_ids.insert(path.clone(), parent.clone());
+        for (child, role) in children {
+            edges.insert(format!("codex:{child}"), (format!("codex:{parent}"), role));
+        }
     }
-    edges
+    (edges, session_ids)
 }
 
 impl Parser for CodexParser {
     fn agent(&self) -> Agent {
         Agent::Codex
     }
-    fn discover(&self, root: &Path) -> Result<Vec<ParsedSession>> {
-        let mut out = Vec::new();
+    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
         if !root.exists() {
-            return Ok(out);
+            return Ok(Vec::new());
         };
         let paths = rollout_paths(root);
-        let lineage = build_lineage(&paths);
+        let (lineage, session_ids) = build_lineage(&paths);
+        let mut out = Vec::new();
         for path in paths {
-            if let Ok(mut parsed) = parse_file(&path) {
-                if let Some((parent, role)) = lineage.get(&parsed.session.id) {
-                    parsed.session.parent_session_id = Some(parent.clone());
-                    parsed.session.meta["agentType"] =
-                        role.clone().map(Value::String).unwrap_or(Value::Null);
+            if let Ok(mut candidate) = SessionCandidate::file(path.clone()) {
+                if let Some(native_id) = session_ids.get(&path) {
+                    candidate.native_id = Some(native_id.clone());
+                    if let Some((parent, role)) = lineage.get(&format!("codex:{native_id}")) {
+                        candidate.parent_session_id = Some(parent.clone());
+                        candidate.agent_type = role.clone();
+                        candidate.fingerprint.push_str(&format!(
+                            ":lineage:{parent}:{}",
+                            role.as_deref().unwrap_or_default()
+                        ));
+                    }
                 }
-                out.push(parsed)
+                out.push(candidate);
             }
         }
         Ok(out)
+    }
+
+    fn parse(&self, candidate: &SessionCandidate, _root: &Path) -> Result<Option<ParsedSession>> {
+        let mut parsed = parse_file(&candidate.path, candidate)?;
+        parsed.session.parent_session_id = candidate.parent_session_id.clone();
+        if candidate.parent_session_id.is_some() {
+            parsed.session.meta["agentType"] = candidate
+                .agent_type
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+        }
+        Ok(Some(parsed))
     }
 }
 
@@ -346,7 +370,7 @@ mod tests {
                 .join("\n"),
         )
         .unwrap();
-        let sessions = CodexParser.discover(dir.path()).unwrap();
+        let sessions = CodexParser.parse_all(dir.path()).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0]
@@ -395,7 +419,7 @@ mod tests {
                 .join("\n"),
         )
         .unwrap();
-        let sessions = CodexParser.discover(dir.path()).unwrap();
+        let sessions = CodexParser.parse_all(dir.path()).unwrap();
         let child = sessions
             .iter()
             .find(|s| s.session.id == "codex:child")

@@ -1,4 +1,4 @@
-use super::Parser;
+use super::{Parser, SessionCandidate};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -36,7 +36,7 @@ fn rel(root: &Path, p: &Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
-fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
+fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
     let text = fs::read_to_string(path)?;
     let records: Vec<Value> = text
         .lines()
@@ -154,14 +154,13 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
             .unwrap_or("unknown")
             .into()
     });
-    let md = fs::metadata(path)?;
     let mut sources = vec![NativeSource {
         locator: path.display().to_string(),
         kind: "jsonl".into(),
         restore_path: rel(root, path),
         role: None,
-        bytes: Some(md.len() as i64),
-        mtime_ns: None,
+        bytes: candidate.bytes,
+        mtime_ns: candidate.mtime_ns,
         mode: None,
         capture: Some(Capture::File {
             path: path.display().to_string(),
@@ -208,7 +207,7 @@ impl Parser for ClaudeParser {
     fn agent(&self) -> Agent {
         Agent::Claude
     }
-    fn discover(&self, root: &Path) -> Result<Vec<ParsedSession>> {
+    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
         let mut out = Vec::new();
         if !root.exists() {
             return Ok(out);
@@ -219,33 +218,42 @@ impl Parser for ClaudeParser {
             .filter_map(Result::ok)
         {
             if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(mut parsed) = parse(e.path(), root) {
-                    let rel_path = e.path().strip_prefix(root).unwrap_or(e.path());
-                    let parts: Vec<_> = rel_path.components().collect();
-                    if let Some(i) = parts.iter().position(|p| p.as_os_str() == "subagents") {
-                        if i > 0 {
-                            let parent = parts[i - 1].as_os_str().to_string_lossy();
-                            let child = e
-                                .path()
-                                .file_stem()
-                                .and_then(|x| x.to_str())
-                                .unwrap_or("agent");
-                            parsed.session.id = format!("claude:{parent}/{child}");
-                            parsed.session.parent_session_id = Some(format!("claude:{parent}"));
-                            let meta_path = e.path().with_extension("meta.json");
-                            if let Ok(meta_text) = fs::read_to_string(meta_path) {
-                                if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
-                                    parsed.session.meta["agentType"] =
-                                        meta.get("agentType").cloned().unwrap_or(Value::Null);
-                                    parsed.session.meta["isSubagent"] = Value::Bool(true);
-                                }
-                            }
-                        }
-                    }
-                    out.push(parsed)
+                if let Ok(mut candidate) = SessionCandidate::file(e.path().to_path_buf()) {
+                    candidate.include_file(&e.path().with_extension("meta.json"));
+                    out.push(candidate);
                 }
             }
         }
         Ok(out)
+    }
+
+    fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
+        let mut parsed = parse(&candidate.path, root, candidate)?;
+        let rel_path = candidate.path.strip_prefix(root).unwrap_or(&candidate.path);
+        let parts: Vec<_> = rel_path.components().collect();
+        if let Some(index) = parts
+            .iter()
+            .position(|part| part.as_os_str() == "subagents")
+        {
+            if index > 0 {
+                let parent = parts[index - 1].as_os_str().to_string_lossy();
+                let child = candidate
+                    .path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("agent");
+                parsed.session.id = format!("claude:{parent}/{child}");
+                parsed.session.parent_session_id = Some(format!("claude:{parent}"));
+                let meta_path = candidate.path.with_extension("meta.json");
+                if let Ok(meta_text) = fs::read_to_string(meta_path) {
+                    if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
+                        parsed.session.meta["agentType"] =
+                            meta.get("agentType").cloned().unwrap_or(Value::Null);
+                        parsed.session.meta["isSubagent"] = Value::Bool(true);
+                    }
+                }
+            }
+        }
+        Ok(Some(parsed))
     }
 }

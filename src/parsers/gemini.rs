@@ -1,4 +1,4 @@
-use super::Parser;
+use super::{Parser, SessionCandidate};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -17,7 +17,7 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .and_then(|x| DateTime::parse_from_rfc3339(x).ok())
         .map(|x| x.timestamp_millis())
 }
-fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
+fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
     let text = fs::read_to_string(path)?;
     let mut rows = Vec::new();
     let mut sid = None;
@@ -151,7 +151,6 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
             _ => {}
         }
     }
-    let md = fs::metadata(path)?;
     let restore = path
         .strip_prefix(root)
         .ok()
@@ -167,8 +166,8 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
         kind: "jsonl".into(),
         restore_path: restore,
         role: None,
-        bytes: Some(md.len() as i64),
-        mtime_ns: None,
+        bytes: candidate.bytes,
+        mtime_ns: candidate.mtime_ns,
         mode: None,
         capture: Some(Capture::File {
             path: path.display().to_string(),
@@ -198,7 +197,7 @@ impl Parser for GeminiParser {
     fn agent(&self) -> Agent {
         Agent::Gemini
     }
-    fn discover(&self, root: &Path) -> Result<Vec<ParsedSession>> {
+    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
         let mut out = Vec::new();
         if !root.exists() {
             return Ok(out);
@@ -209,12 +208,16 @@ impl Parser for GeminiParser {
             .filter_map(Result::ok)
         {
             if e.file_type().is_file() && e.file_name().to_string_lossy().starts_with("session-") {
-                if let Ok(s) = parse(e.path(), root) {
-                    out.push(s)
+                if let Ok(candidate) = SessionCandidate::file(e.path().to_path_buf()) {
+                    out.push(candidate);
                 }
             }
         }
         Ok(out)
+    }
+
+    fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
+        Ok(Some(parse(&candidate.path, root, candidate)?))
     }
 }
 
@@ -241,7 +244,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let parsed = GeminiParser.discover(dir.path()).unwrap();
+        let parsed = GeminiParser.parse_all(dir.path()).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(
             parsed[0]

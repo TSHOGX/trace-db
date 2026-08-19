@@ -1,4 +1,4 @@
-use super::Parser;
+use super::{Parser, SessionCandidate};
 use crate::model::{
     compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -41,7 +41,12 @@ fn db_path(root: &Path) -> Option<PathBuf> {
             .find(|p| p.exists())
     }
 }
-fn parse_session(db: &Path, id: &str, _root: &Path) -> Result<ParsedSession> {
+fn parse_session(
+    db: &Path,
+    id: &str,
+    _root: &Path,
+    candidate: &SessionCandidate,
+) -> Result<ParsedSession> {
     let c = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (sid, parent, directory, title, agent, model, created, updated): NativeSessionRow = c
         .query_row(
@@ -124,8 +129,8 @@ fn parse_session(db: &Path, id: &str, _root: &Path) -> Result<ParsedSession> {
         kind: "sqlite-session".into(),
         restore_path: format!("{sid}.json"),
         role: None,
-        bytes: Some(fs::metadata(db)?.len() as i64),
-        mtime_ns: None,
+        bytes: candidate.bytes,
+        mtime_ns: candidate.mtime_ns,
         mode: None,
         capture: Some(Capture::Bytes {
             label: sid.clone(),
@@ -156,21 +161,46 @@ impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
     }
-    fn discover(&self, root: &Path) -> Result<Vec<ParsedSession>> {
+    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
         let Some(db) = db_path(root) else {
             return Ok(vec![]);
         };
+        let metadata = fs::metadata(&db)?;
+        let file_candidate = SessionCandidate::file(db.clone())?;
         let c = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut st = c.prepare("SELECT id FROM session ORDER BY time_updated")?;
-        let ids = st
-            .query_map([], |r| r.get::<_, String>(0))?
+        let mut st =
+            c.prepare("SELECT id,time_updated,time_created FROM session ORDER BY time_updated")?;
+        let rows = st
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
-        for id in ids {
-            if let Ok(s) = parse_session(&db, &id, root) {
-                out.push(s)
-            }
+        for (id, updated, created) in rows {
+            out.push(SessionCandidate {
+                path: db.clone(),
+                locator: format!("{}#{id}", db.display()),
+                native_id: Some(id),
+                fingerprint: format!("opencode-v1:{}", updated.or(created).unwrap_or_default()),
+                updated_at_ms: updated.or(created),
+                bytes: Some(metadata.len() as i64),
+                mtime_ns: file_candidate.mtime_ns,
+                parent_session_id: None,
+                agent_type: None,
+            });
         }
         Ok(out)
+    }
+
+    fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
+        let id = candidate
+            .native_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("OpenCode candidate missing session id"))?;
+        Ok(Some(parse_session(&candidate.path, id, root, candidate)?))
     }
 }

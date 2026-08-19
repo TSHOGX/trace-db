@@ -110,8 +110,13 @@ fn main() -> anyhow::Result<()> {
             })?;
             for row in &report.agents {
                 println!(
-                    "{}: ingested {} of {} discovered",
-                    row.agent, row.ingested, row.discovered
+                    "{}: discovered {}, parsed {}, ingested {}, unchanged {}, skipped by since {}",
+                    row.agent,
+                    row.discovered,
+                    row.parsed,
+                    row.ingested,
+                    row.unchanged,
+                    row.skipped_by_since
                 );
             }
             println!("total sessions: {}", report.total_ingested());

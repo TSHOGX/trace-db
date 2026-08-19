@@ -29,6 +29,9 @@ message IngestResponse {
   repeated AgentIngestReport agents = 1;
   uint64 total_discovered = 2;
   uint64 total_ingested = 3;
+  uint64 total_parsed = 4;
+  uint64 total_unchanged = 5;
+  uint64 total_skipped_by_since = 6;
 }
 
 message AgentIngestReport {
@@ -37,6 +40,8 @@ message AgentIngestReport {
   uint64 discovered = 3;
   uint64 ingested = 4;
   uint64 skipped_by_since = 5;
+  uint64 parsed = 6;
+  uint64 unchanged = 7;
 }
 
 message SearchRequest {

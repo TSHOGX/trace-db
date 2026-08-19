@@ -1,7 +1,8 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Event, EventKind, IngestMode, ParsedSession, SearchRequest, Session, TraceDb,
+    Agent, Event, EventKind, IngestMode, IngestRequest, ParsedSession, SearchRequest, Session,
+    TraceDb,
 };
 
 #[test]
@@ -53,4 +54,77 @@ fn trace_db_facade_covers_archive_lifecycle() {
     assert_eq!(stats.total_sessions, 1);
     assert_eq!(stats.total_events, 2);
     db.reindex().unwrap();
+}
+
+#[test]
+fn native_ingest_skips_unchanged_sessions_before_parsing() {
+    let dir = tempdir().unwrap();
+    let native = dir.path().join("native");
+    std::fs::create_dir(&native).unwrap();
+    let source = native.join("session-incremental.json");
+    std::fs::write(
+        &source,
+        json!({
+            "sessionId": "incremental",
+            "startTime": "2026-08-19T00:00:00Z",
+            "lastUpdated": "2026-08-19T00:00:01Z",
+            "messages": [{"id":"u","type":"user","content":"hello"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
+    let request = |mode, since_ms| IngestRequest {
+        agents: vec![Agent::Gemini],
+        mode,
+        root: Some(native.clone()),
+        since_ms,
+    };
+
+    let first = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    assert_eq!(first.total_discovered(), 1);
+    assert_eq!(first.total_parsed(), 1);
+    assert_eq!(first.total_ingested(), 1);
+    assert_eq!(first.total_unchanged(), 0);
+
+    let unchanged = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    assert_eq!(unchanged.total_parsed(), 0);
+    assert_eq!(unchanged.total_ingested(), 0);
+    assert_eq!(unchanged.total_unchanged(), 1);
+
+    let upgraded = db.ingest(request(IngestMode::Full, None)).unwrap();
+    assert_eq!(upgraded.total_parsed(), 1);
+    assert_eq!(upgraded.total_ingested(), 1);
+    assert_eq!(
+        db.show("gemini:incremental").unwrap().unwrap().mode,
+        IngestMode::Full
+    );
+
+    std::fs::write(
+        &source,
+        json!({
+            "sessionId": "incremental",
+            "startTime": "2026-08-19T00:00:00Z",
+            "lastUpdated": "2026-08-19T00:00:02Z",
+            "messages": [
+                {"id":"u","type":"user","content":"hello"},
+                {"id":"a","type":"gemini","content":"world"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let changed = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    assert_eq!(changed.total_parsed(), 1);
+    assert_eq!(changed.total_ingested(), 1);
+    let trace = db.show("gemini:incremental").unwrap().unwrap();
+    assert_eq!(trace.mode, IngestMode::Full);
+    assert_eq!(trace.events.len(), 2);
+
+    let skipped = db
+        .ingest(request(IngestMode::Partial, Some(i64::MAX)))
+        .unwrap();
+    assert_eq!(skipped.total_parsed(), 0);
+    assert_eq!(skipped.total_unchanged(), 0);
+    assert_eq!(skipped.total_skipped_by_since(), 1);
 }

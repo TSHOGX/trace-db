@@ -22,6 +22,7 @@ pub use facade::{
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
 };
+pub use parsers::SessionCandidate;
 pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};
 
 use anyhow::Result;

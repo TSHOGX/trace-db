@@ -7,12 +7,19 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const SCHEMA_VERSION: i64 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateState {
+    pub fingerprint: String,
+    pub mode: IngestMode,
+}
 
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     if let Some(parent) = path
@@ -128,6 +135,37 @@ pub fn upsert(
     write_session(&tx, &parsed.session, &parsed.events, mode)?;
     tx.commit()?;
     Ok(())
+}
+
+pub fn candidate_states(
+    conn: &Connection,
+    agent: crate::model::Agent,
+) -> Result<HashMap<String, CandidateState>> {
+    let mut statement = conn.prepare(
+        "SELECT r.locator,s.fingerprint,s.mode
+         FROM raw_sources r
+         JOIN sessions s ON s.id=r.session_id
+         WHERE s.agent=?1",
+    )?;
+    let rows = statement.query_map([agent.as_str()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut states = HashMap::new();
+    for row in rows {
+        let (locator, fingerprint, mode) = row?;
+        states.insert(
+            locator,
+            CandidateState {
+                fingerprint,
+                mode: mode.parse().map_err(anyhow::Error::msg)?,
+            },
+        );
+    }
+    Ok(states)
 }
 
 fn write_session(

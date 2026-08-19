@@ -79,6 +79,9 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         Ok(Response::new(pb::IngestResponse {
             total_discovered: report.total_discovered() as u64,
             total_ingested: report.total_ingested() as u64,
+            total_parsed: report.total_parsed() as u64,
+            total_unchanged: report.total_unchanged() as u64,
+            total_skipped_by_since: report.total_skipped_by_since() as u64,
             agents: report
                 .agents
                 .into_iter()
@@ -86,7 +89,9 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     agent: row.agent.to_string(),
                     root: row.root.display().to_string(),
                     discovered: row.discovered as u64,
+                    parsed: row.parsed as u64,
                     ingested: row.ingested as u64,
+                    unchanged: row.unchanged as u64,
                     skipped_by_since: row.skipped_by_since as u64,
                 })
                 .collect(),

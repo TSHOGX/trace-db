@@ -20,6 +20,12 @@ existing snapshot. `trace-db reconstruct` restores those snapshots into a safe
 output directory. Partial databases can be rebuilt from native stores; full
 databases are archives and should be backed up.
 
+Ingestion first discovers lightweight candidates from file metadata or native
+session rows. It compares their fingerprints with archived source locators and
+only parses changed sessions or sessions that need a partial-to-full upgrade.
+The CLI and APIs report discovered, parsed, ingested, unchanged, and
+time-filtered counts separately.
+
 ## Install and run
 
 Requirements: Rust 1.82+ and Cargo.

@@ -1,4 +1,4 @@
-use super::Parser;
+use super::{Parser, SessionCandidate};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -18,7 +18,7 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .map(|x| x.timestamp_millis())
         .or_else(|| v.and_then(Value::as_i64).map(|x| x / 1_000))
 }
-fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
+fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
     let text = fs::read_to_string(path)?;
     let rows: Vec<Value> = text
         .lines()
@@ -129,7 +129,6 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
             _ => {}
         }
     }
-    let md = fs::metadata(path)?;
     let restore = path
         .strip_prefix(root)
         .ok()
@@ -145,8 +144,8 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
         kind: "jsonl".into(),
         restore_path: restore,
         role: None,
-        bytes: Some(md.len() as i64),
-        mtime_ns: None,
+        bytes: candidate.bytes,
+        mtime_ns: candidate.mtime_ns,
         mode: None,
         capture: Some(Capture::File {
             path: path.display().to_string(),
@@ -176,7 +175,7 @@ impl Parser for PiParser {
     fn agent(&self) -> Agent {
         Agent::Pi
     }
-    fn discover(&self, root: &Path) -> Result<Vec<ParsedSession>> {
+    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
         let mut out = Vec::new();
         if !root.exists() {
             return Ok(out);
@@ -187,15 +186,22 @@ impl Parser for PiParser {
             .filter_map(Result::ok)
         {
             if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(s) = parse(e.path(), root) {
-                    if s.session.cwd.as_deref() != Some("/tmp")
-                        && s.session.provider.as_deref() != Some("faux")
-                    {
-                        out.push(s)
-                    }
+                if let Ok(candidate) = SessionCandidate::file(e.path().to_path_buf()) {
+                    out.push(candidate);
                 }
             }
         }
         Ok(out)
+    }
+
+    fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
+        let parsed = parse(&candidate.path, root, candidate)?;
+        if parsed.session.cwd.as_deref() == Some("/tmp")
+            || parsed.session.provider.as_deref() == Some("faux")
+        {
+            Ok(None)
+        } else {
+            Ok(Some(parsed))
+        }
     }
 }
