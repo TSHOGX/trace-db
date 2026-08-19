@@ -117,6 +117,22 @@ db = TraceDb.open()
 rows = json.loads(db.search_json("deploy", limit=10))
 ```
 
+The optional Node.js package in `bindings/node` provides the equivalent thin
+napi-rs wrapper. It targets N-API 6 and builds without a JavaScript dependency
+install:
+
+```bash
+cd bindings/node
+npm run build
+npm test
+```
+
+```javascript
+const { TraceDb } = require("@tracedb/core");
+const db = TraceDb.open();
+const rows = JSON.parse(db.searchJson("deploy", 10));
+```
+
 ## Native stores and data model
 
 | Agent | Native store |

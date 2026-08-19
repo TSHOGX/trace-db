@@ -55,6 +55,21 @@ jobs:
       - run: python -m pip install target/wheels/tracedb-*.whl
       - run: python -c "import json, tempfile; from tracedb import TraceDb; db = TraceDb.open(tempfile.mktemp(suffix='.db')); assert json.loads(db.stats_json())['totalSessions'] == 0"
 
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: node
+      - run: cargo clippy --locked -p tracedb-node --all-targets -- -D warnings
+      - run: npm --prefix bindings/node run build
+      - run: npm --prefix bindings/node test
+
   platforms:
     strategy:
       fail-fast: false

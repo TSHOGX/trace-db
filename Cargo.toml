@@ -16,7 +16,7 @@ name = "trace-db"
 path = "src/main.rs"
 
 [workspace]
-members = ["native/fts5-jieba", "bindings/python"]
+members = ["native/fts5-jieba", "bindings/python", "bindings/node"]
 default-members = [".", "native/fts5-jieba"]
 resolver = "2"
 

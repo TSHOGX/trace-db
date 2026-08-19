@@ -1,0 +1,18 @@
+{
+  "name": "@tracedb/core",
+  "version": "0.1.0",
+  "description": "Thin Node.js binding for the TraceDB local archive",
+  "license": "MIT",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "tracedb_node.node"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "test": "node smoke.js"
+  }
+}
