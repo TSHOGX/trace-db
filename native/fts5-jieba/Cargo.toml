@@ -2,6 +2,7 @@
 name = "fts5-jieba"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.82"
 description = "SQLite FTS5 tokenizer: jieba for Chinese + folding/stemming for English"
 license = "MIT OR Apache-2.0"
 

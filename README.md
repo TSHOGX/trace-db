@@ -32,6 +32,11 @@ trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 ```
 
+Tagged releases publish archives for x86-64 and ARM64 Linux, x86-64 and ARM64
+macOS, and x86-64 Windows. Each archive contains the CLI, the optional
+`fts5-jieba` extension, the `tracedb.v1` Protobuf contract, README, and license.
+`SHA256SUMS` in the GitHub release covers every archive.
+
 The repository wrapper is also available during development:
 
 ```bash
@@ -135,7 +140,13 @@ cargo test
 cargo build --release
 cargo package --allow-dirty
 cargo test -p fts5-jieba
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 ```
 
 The `native/fts5-jieba` crate is an optional loadable SQLite extension and is
 licensed under MIT OR Apache-2.0. The TraceDB core is MIT licensed.
+
+CI enforces Rust 1.82 compatibility and runs the core and tokenizer tests on
+Linux, macOS, and Windows. A semantic version tag such as `v0.1.0` must match
+`Cargo.toml`; matching tags build and publish the platform archives.

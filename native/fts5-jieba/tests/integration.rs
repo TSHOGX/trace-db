@@ -13,14 +13,25 @@ fn extension_path() -> String {
     } else {
         "so"
     };
-    let base = env!("CARGO_MANIFEST_DIR");
+    let prefix = if cfg!(target_os = "windows") {
+        ""
+    } else {
+        "lib"
+    };
+    let executable = std::env::current_exe().expect("resolve integration test executable");
+    let profile_dir = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("resolve Cargo profile directory");
     let candidates = [
-        format!("{base}/target/debug/libfts5jieba.{ext}"),
-        format!("{base}/target/debug/deps/libfts5jieba.{ext}"),
+        profile_dir.join(format!("{prefix}fts5jieba.{ext}")),
+        profile_dir
+            .join("deps")
+            .join(format!("{prefix}fts5jieba.{ext}")),
     ];
-    for c in candidates.iter() {
-        if std::path::Path::new(c).exists() {
-            return c.clone();
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.display().to_string();
         }
     }
     panic!("built extension not found; run `cargo build` first. tried: {candidates:?}");
