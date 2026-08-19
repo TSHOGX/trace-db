@@ -75,7 +75,7 @@ fn parse_file(path: &Path) -> Result<ParsedSession> {
                     let text = strv(p.get("message"))
                         .or_else(|| p.get("text_elements").map(flatten))
                         .unwrap_or_default();
-                    let key = sha(text.as_bytes());
+                    let key = format!("{}:{}", sha(text.as_bytes()), ts.unwrap_or_default());
                     if seen_user.insert(key) {
                         events.push(event(EventKind::User, text, None, ts));
                     }
@@ -120,7 +120,7 @@ fn parse_file(path: &Path) -> Result<ParsedSession> {
                         events.push(e);
                     } else if role == "user" || role == "developer" {
                         let text = flatten(p.get("content").unwrap_or(&Value::Null));
-                        let key = sha(text.as_bytes());
+                        let key = format!("{}:{}", sha(text.as_bytes()), ts.unwrap_or_default());
                         if seen_user.insert(key) {
                             events.push(event(EventKind::User, text, strv(p.get("id")), ts));
                         }
@@ -267,6 +267,7 @@ mod tests {
             json!({"type":"session_meta","timestamp":"2026-08-19T00:00:00Z","payload":{"id":"sess-1","cwd":"/tmp/x"}}),
             json!({"type":"response_item","timestamp":"2026-08-19T00:00:01Z","payload":{"type":"message","id":"u-1","role":"user","content":"deploy it"}}),
             json!({"type":"event_msg","timestamp":"2026-08-19T00:00:01Z","payload":{"type":"user_message","message":"deploy it"}}),
+            json!({"type":"event_msg","timestamp":"2026-08-19T00:00:03Z","payload":{"type":"user_message","message":"deploy it"}}),
             json!({"type":"response_item","timestamp":"2026-08-19T00:00:02Z","payload":{"type":"message","id":"a-1","role":"assistant","content":[{"type":"output_text","text":"done"}]}}),
         ];
         fs::write(
@@ -285,7 +286,7 @@ mod tests {
                 .iter()
                 .filter(|e| e.kind == EventKind::User)
                 .count(),
-            1
+            2
         );
         assert_eq!(
             sessions[0]

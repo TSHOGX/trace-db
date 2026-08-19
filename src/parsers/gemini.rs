@@ -32,6 +32,11 @@ fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
             sid = Some(x);
             start = start.or(ts(v.get("startTime")));
             end = ts(v.get("lastUpdated")).or(end);
+            // Gemini's older store is one JSON object with an embedded
+            // `messages` array rather than a change log.
+            if let Some(messages) = v.get("messages").and_then(Value::as_array) {
+                rows.extend(messages.iter().cloned());
+            }
             continue;
         }
         if let Some(set) = v.get("$set") {
@@ -210,5 +215,49 @@ impl Parser for GeminiParser {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn reads_legacy_json_message_array() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session-legacy.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "sessionId": "g-1",
+                "startTime": "2026-08-19T00:00:00Z",
+                "lastUpdated": "2026-08-19T00:00:02Z",
+                "messages": [
+                    {"id":"u","type":"user","content":"hello"},
+                    {"id":"a","type":"gemini","content":"world"}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let parsed = GeminiParser.discover(dir.path()).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0]
+                .events
+                .iter()
+                .filter(|e| e.kind == EventKind::User)
+                .count(),
+            1
+        );
+        assert_eq!(
+            parsed[0]
+                .events
+                .iter()
+                .filter(|e| e.kind == EventKind::Assistant)
+                .count(),
+            1
+        );
     }
 }

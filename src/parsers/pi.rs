@@ -16,7 +16,7 @@ fn ts(v: Option<&Value>) -> Option<i64> {
     v.and_then(Value::as_str)
         .and_then(|x| DateTime::parse_from_rfc3339(x).ok())
         .map(|x| x.timestamp_millis())
-        .or_else(|| v.and_then(Value::as_i64).map(|x| x / 1_000_000))
+        .or_else(|| v.and_then(Value::as_i64).map(|x| x / 1_000))
 }
 fn parse(path: &Path, root: &Path) -> Result<ParsedSession> {
     let text = fs::read_to_string(path)?;
