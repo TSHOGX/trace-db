@@ -29,6 +29,13 @@ continues past malformed or unreadable candidates and reports structured
 per-locator failures. `--strict` prints the same complete report, then exits
 nonzero when any candidate failed.
 
+`trace-db ingest --dry-run` performs the same discovery, fingerprint comparison,
+and parsing without creating, migrating, or changing archive records. Its
+JSON report has stable `dryRun`, `mode`, and `agents` fields. Each agent reports
+`discovered`, `changed`, `unchanged`, `skipped`, `skippedBySince`, `failed`, and
+`estimatedFullCaptureBytes`; the last value is the uncompressed native-source
+size for successfully parsed sessions that a full ingest would capture.
+
 ## Install and run
 
 Requirements: Rust 1.82+ and Cargo.
@@ -36,6 +43,7 @@ Requirements: Rust 1.82+ and Cargo.
 ```bash
 cargo install --path .
 trace-db ingest
+trace-db ingest --dry-run --json
 trace-db ingest --mode full --agent codex
 trace-db ingest --strict --json
 trace-db search "deploy netlify" --limit 20 --json
@@ -66,7 +74,7 @@ The database path is `$TRACEDB_PATH` when set, otherwise
 ## CLI
 
 ```text
-trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH] [--strict] [--json]
+trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]

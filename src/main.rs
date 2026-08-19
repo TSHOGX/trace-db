@@ -38,6 +38,9 @@ enum Command {
         /// Return a nonzero exit status when any candidate fails.
         #[arg(long)]
         strict: bool,
+        /// Discover and parse changes without creating or modifying the archive.
+        #[arg(long)]
+        dry_run: bool,
         /// Print the complete machine-readable ingest report.
         #[arg(long)]
         json: bool,
@@ -224,6 +227,65 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Command::Ingest {
+        agent,
+        mode,
+        root,
+        since,
+        strict,
+        dry_run: true,
+        json,
+    } = &cli.command
+    {
+        let agents = if agent.is_empty() {
+            Agent::ALL.to_vec()
+        } else {
+            agent.clone()
+        };
+        let report = TraceDb::ingest_dry_run_at(
+            &db_path,
+            IngestRequest {
+                agents,
+                mode: *mode,
+                root: root.clone(),
+                since_ms: since.as_deref().map(parse_since).transpose()?,
+            },
+        )?;
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for row in &report.agents {
+                println!(
+                    "{}: discovered {}, changed {}, unchanged {}, skipped {}, failed {}, estimated full capture {} bytes",
+                    row.agent,
+                    row.discovered,
+                    row.changed,
+                    row.unchanged,
+                    row.skipped,
+                    row.failed,
+                    row.estimated_full_capture_bytes
+                );
+                for issue in row.warnings.iter().chain(&row.failures) {
+                    eprintln!(
+                        "{} {} [{}]: {}",
+                        issue.stage, issue.locator, issue.category, issue.message
+                    );
+                }
+            }
+            println!("total changed sessions: {}", report.total_changed());
+            println!(
+                "estimated full capture: {} bytes",
+                report.total_estimated_full_capture_bytes()
+            );
+        }
+        if *strict && report.total_failed() > 0 {
+            anyhow::bail!(
+                "strict ingest dry run failed: {} candidate(s) failed",
+                report.total_failed()
+            );
+        }
+        return Ok(());
+    }
     let mut db = TraceDb::open(&db_path)?;
     match cli.command {
         Command::Ingest {
@@ -232,6 +294,7 @@ fn main() -> anyhow::Result<()> {
             root,
             since,
             strict,
+            dry_run: _,
             json,
         } => {
             let agents = if agent.is_empty() {

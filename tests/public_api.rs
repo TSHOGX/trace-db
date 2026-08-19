@@ -232,6 +232,16 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     assert_eq!(unchanged.total_ingested(), 0);
     assert_eq!(unchanged.total_unchanged(), 1);
 
+    let full_plan = db.ingest_dry_run(request(IngestMode::Full, None));
+    assert_eq!(full_plan.total_discovered(), 1);
+    assert_eq!(full_plan.total_changed(), 1);
+    assert_eq!(full_plan.total_unchanged(), 0);
+    assert!(full_plan.total_estimated_full_capture_bytes() > 0);
+    assert_eq!(
+        db.show("gemini:incremental").unwrap().unwrap().mode,
+        IngestMode::Partial
+    );
+
     let upgraded = db.ingest(request(IngestMode::Full, None)).unwrap();
     assert_eq!(upgraded.total_parsed(), 1);
     assert_eq!(upgraded.total_ingested(), 1);

@@ -1,7 +1,7 @@
 use crate::{
     default_db_path,
-    model::{Agent, EventKind, IngestMode, ParsedSession, Session},
-    parsers::parser,
+    model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
+    parsers::{parser, SessionCandidate},
     search, store, SearchRequest, SearchResult,
 };
 use anyhow::{anyhow, Result};
@@ -35,6 +35,27 @@ impl TraceDb {
         Self::open(default_db_path())
     }
 
+    /// Open an existing archive without migrations or archive-record writes.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = store::open_read_only(&path)?;
+        Ok(Self { path, connection })
+    }
+
+    /// Plan an ingest against an existing or not-yet-created archive without writing it.
+    pub fn ingest_dry_run_at(
+        path: impl AsRef<Path>,
+        request: IngestRequest,
+    ) -> Result<IngestDryRunReport> {
+        let path = path.as_ref();
+        let db = if path.exists() {
+            Self::open_read_only(path)?
+        } else {
+            Self::open(":memory:")?
+        };
+        Ok(db.ingest_dry_run(request))
+    }
+
     /// Return the path used to open this archive.
     pub fn path(&self) -> &Path {
         &self.path
@@ -50,90 +71,17 @@ impl TraceDb {
         let mut reports = Vec::with_capacity(agents.len());
         for agent in agents {
             let root = request.root.clone().unwrap_or_else(|| native_root(agent));
-            let parser = parser(agent);
-            let mut failures = Vec::new();
-            let discovery = match parser.discover(&root) {
-                Ok(discovery) => discovery,
-                Err(error) => {
-                    failures.push(IngestIssue::from_error(
-                        IngestStage::Discovery,
-                        root.display().to_string(),
-                        &error,
-                    ));
-                    reports.push(AgentIngestReport {
-                        agent,
-                        root,
-                        discovered: 0,
-                        parsed: 0,
-                        ingested: 0,
-                        unchanged: 0,
-                        skipped: 0,
-                        skipped_by_since: 0,
-                        failed: failures.len(),
-                        warnings: Vec::new(),
-                        failures,
-                    });
-                    continue;
-                }
-            };
-            for failure in discovery.failures {
-                failures.push(IngestIssue::from_error(
-                    IngestStage::Discovery,
-                    failure.locator,
-                    &failure.error,
-                ));
-            }
-            let discovered = discovery.candidates.len() + failures.len();
-            let states = match store::candidate_states(&self.connection, agent) {
-                Ok(states) => states,
-                Err(error) => {
-                    failures.push(IngestIssue::from_error(
-                        IngestStage::Database,
-                        self.path.display().to_string(),
-                        &error,
-                    ));
-                    reports.push(AgentIngestReport {
-                        agent,
-                        root,
-                        discovered,
-                        parsed: 0,
-                        ingested: 0,
-                        unchanged: 0,
-                        skipped: 0,
-                        skipped_by_since: 0,
-                        failed: failures.len(),
-                        warnings: Vec::new(),
-                        failures,
-                    });
-                    continue;
-                }
-            };
+            let AgentScan {
+                discovered,
+                unchanged,
+                mut skipped,
+                skipped_by_since,
+                mut failures,
+                parsed_candidates,
+            } = self.scan_agent(agent, &root, request.mode, request.since_ms);
             let mut parsed = 0;
             let mut ingested = 0;
-            let mut unchanged = 0;
-            let mut skipped = 0;
-            let mut skipped_by_since = 0;
-            let mut pending = Vec::new();
-            for candidate in discovery.candidates {
-                if request
-                    .since_ms
-                    .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
-                {
-                    skipped_by_since += 1;
-                    skipped += 1;
-                    continue;
-                }
-                if states.get(&candidate.locator).is_some_and(|state| {
-                    state.fingerprint == candidate.fingerprint
-                        && (matches!(request.mode, IngestMode::Partial)
-                            || matches!(state.mode, IngestMode::Full))
-                }) {
-                    unchanged += 1;
-                    continue;
-                }
-                pending.push(candidate);
-            }
-            for (candidate, parsed_session) in parser.parse_many(&pending, &root) {
+            for (candidate, parsed_session) in parsed_candidates {
                 match parsed_session {
                     Ok(Some(mut session)) => {
                         parsed += 1;
@@ -173,6 +121,134 @@ impl TraceDb {
             });
         }
         Ok(IngestReport { agents: reports })
+    }
+
+    /// Discover and parse sessions without mutating the selected archive.
+    pub fn ingest_dry_run(&self, request: IngestRequest) -> IngestDryRunReport {
+        let agents = if request.agents.is_empty() {
+            Agent::ALL.to_vec()
+        } else {
+            request.agents
+        };
+        let mut reports = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let root = request.root.clone().unwrap_or_else(|| native_root(agent));
+            let AgentScan {
+                discovered,
+                unchanged,
+                mut skipped,
+                skipped_by_since,
+                mut failures,
+                parsed_candidates,
+            } = self.scan_agent(agent, &root, request.mode, request.since_ms);
+            let mut changed = 0;
+            let mut estimated_full_capture_bytes = 0;
+            for (candidate, parsed_session) in parsed_candidates {
+                match parsed_session {
+                    Ok(Some(session)) => {
+                        changed += 1;
+                        estimated_full_capture_bytes += estimated_capture_bytes(&session);
+                    }
+                    Ok(None) => skipped += 1,
+                    Err(error) => failures.push(IngestIssue::from_error(
+                        IngestStage::Parsing,
+                        candidate.locator,
+                        &error,
+                    )),
+                }
+            }
+            reports.push(AgentIngestDryRunReport {
+                agent,
+                root,
+                discovered,
+                changed,
+                unchanged,
+                skipped,
+                skipped_by_since,
+                failed: failures.len(),
+                estimated_full_capture_bytes,
+                warnings: Vec::new(),
+                failures,
+            });
+        }
+        IngestDryRunReport {
+            dry_run: true,
+            mode: request.mode,
+            agents: reports,
+        }
+    }
+
+    fn scan_agent(
+        &self,
+        agent: Agent,
+        root: &Path,
+        mode: IngestMode,
+        since_ms: Option<i64>,
+    ) -> AgentScan {
+        let parser = parser(agent);
+        let mut failures = Vec::new();
+        let discovery = match parser.discover(root) {
+            Ok(discovery) => discovery,
+            Err(error) => {
+                failures.push(IngestIssue::from_error(
+                    IngestStage::Discovery,
+                    root.display().to_string(),
+                    &error,
+                ));
+                return AgentScan::failed(failures);
+            }
+        };
+        for failure in discovery.failures {
+            failures.push(IngestIssue::from_error(
+                IngestStage::Discovery,
+                failure.locator,
+                &failure.error,
+            ));
+        }
+        let discovered = discovery.candidates.len() + failures.len();
+        let states = match store::candidate_states(&self.connection, agent) {
+            Ok(states) => states,
+            Err(error) => {
+                failures.push(IngestIssue::from_error(
+                    IngestStage::Database,
+                    self.path.display().to_string(),
+                    &error,
+                ));
+                return AgentScan {
+                    discovered,
+                    failures,
+                    ..AgentScan::default()
+                };
+            }
+        };
+        let mut unchanged = 0;
+        let mut skipped_by_since = 0;
+        let mut pending = Vec::new();
+        for candidate in discovery.candidates {
+            if since_ms
+                .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
+            {
+                skipped_by_since += 1;
+                continue;
+            }
+            if states.get(&candidate.locator).is_some_and(|state| {
+                state.fingerprint == candidate.fingerprint
+                    && (matches!(mode, IngestMode::Partial)
+                        || matches!(state.mode, IngestMode::Full))
+            }) {
+                unchanged += 1;
+                continue;
+            }
+            pending.push(candidate);
+        }
+        AgentScan {
+            discovered,
+            unchanged,
+            skipped: skipped_by_since,
+            skipped_by_since,
+            failures,
+            parsed_candidates: parser.parse_many(&pending, root),
+        }
     }
 
     /// Insert one already-parsed session through the same transactional path.
@@ -268,6 +344,41 @@ impl TraceDb {
     ) -> Result<Vec<PathBuf>> {
         store::reconstruct(&self.connection, session_id, out_dir.as_ref(), options)
     }
+}
+
+#[derive(Default)]
+struct AgentScan {
+    discovered: usize,
+    unchanged: usize,
+    skipped: usize,
+    skipped_by_since: usize,
+    failures: Vec<IngestIssue>,
+    parsed_candidates: Vec<(SessionCandidate, Result<Option<ParsedSession>>)>,
+}
+
+impl AgentScan {
+    fn failed(failures: Vec<IngestIssue>) -> Self {
+        Self {
+            failures,
+            ..Self::default()
+        }
+    }
+}
+
+fn estimated_capture_bytes(session: &ParsedSession) -> u64 {
+    session
+        .session
+        .sources
+        .iter()
+        .filter_map(|source| match source.capture.as_ref() {
+            Some(Capture::Bytes { bytes, .. }) => u64::try_from(bytes.len()).ok(),
+            Some(Capture::File { path }) => source
+                .bytes
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .or_else(|| std::fs::metadata(path).ok().map(|metadata| metadata.len())),
+            None => source.bytes.and_then(|bytes| u64::try_from(bytes).ok()),
+        })
+        .sum()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -620,6 +731,60 @@ impl IngestReport {
 
     pub fn total_warnings(&self) -> usize {
         self.agents.iter().map(|row| row.warnings.len()).sum()
+    }
+}
+
+/// Machine-readable result of an ingest plan that performs no archive writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestDryRunReport {
+    pub dry_run: bool,
+    pub mode: IngestMode,
+    pub agents: Vec<AgentIngestDryRunReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIngestDryRunReport {
+    pub agent: Agent,
+    pub root: PathBuf,
+    pub discovered: usize,
+    pub changed: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+    pub skipped_by_since: usize,
+    pub failed: usize,
+    pub estimated_full_capture_bytes: u64,
+    pub warnings: Vec<IngestIssue>,
+    pub failures: Vec<IngestIssue>,
+}
+
+impl IngestDryRunReport {
+    pub fn total_discovered(&self) -> usize {
+        self.agents.iter().map(|row| row.discovered).sum()
+    }
+
+    pub fn total_changed(&self) -> usize {
+        self.agents.iter().map(|row| row.changed).sum()
+    }
+
+    pub fn total_unchanged(&self) -> usize {
+        self.agents.iter().map(|row| row.unchanged).sum()
+    }
+
+    pub fn total_skipped(&self) -> usize {
+        self.agents.iter().map(|row| row.skipped).sum()
+    }
+
+    pub fn total_failed(&self) -> usize {
+        self.agents.iter().map(|row| row.failed).sum()
+    }
+
+    pub fn total_estimated_full_capture_bytes(&self) -> u64 {
+        self.agents
+            .iter()
+            .map(|row| row.estimated_full_capture_bytes)
+            .sum()
     }
 }
 

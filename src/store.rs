@@ -56,6 +56,16 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     Ok(conn)
 }
 
+pub fn open_read_only(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        anyhow::bail!("TraceDB archive does not exist: {}", path.display());
+    }
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "busy_timeout", 5000i64)?;
+    Ok(connection)
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
 }
