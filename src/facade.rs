@@ -190,6 +190,11 @@ impl TraceDb {
         store::show(&self.connection, session_id)
     }
 
+    /// List archived sessions with stable keyset pagination and metadata filters.
+    pub fn list(&self, request: ListRequest) -> Result<ListPage> {
+        store::list(&self.connection, &request)
+    }
+
     /// Return per-agent and archive-wide counts.
     pub fn stats(&self) -> Result<ArchiveStats> {
         let agents = store::stats(&self.connection)?
@@ -585,6 +590,62 @@ pub struct ArchiveStats {
     pub total_events: i64,
     pub total_full_sessions: i64,
     pub agents: Vec<AgentStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRequest {
+    #[serde(default = "default_list_limit")]
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub agent: Option<Agent>,
+    pub cwd: Option<String>,
+    pub since_ms: Option<i64>,
+    pub mode: Option<IngestMode>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+fn default_list_limit() -> usize {
+    50
+}
+
+impl Default for ListRequest {
+    fn default() -> Self {
+        Self {
+            limit: default_list_limit(),
+            cursor: None,
+            agent: None,
+            cwd: None,
+            since_ms: None,
+            mode: None,
+            model: None,
+            provider: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub id: String,
+    pub agent: Agent,
+    pub cwd: Option<String>,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub mode: IngestMode,
+    pub events: i64,
+    pub ingested_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPage {
+    pub sessions: Vec<SessionSummary>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

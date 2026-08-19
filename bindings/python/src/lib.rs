@@ -1,7 +1,9 @@
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, SearchRequest, TraceDb};
+use tracedb::{
+    Agent, IngestMode, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb,
+};
 
 fn runtime_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
@@ -57,6 +59,42 @@ impl PyTraceDb {
                     agent,
                     cwd,
                     since_ms,
+                })
+                .map_err(runtime_error)?,
+        )
+    }
+
+    /// List archived sessions with cursor pagination and metadata filters.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (limit=50, cursor=None, agent=None, cwd=None, since_ms=None, mode=None, model=None, provider=None))]
+    fn list_json(
+        &self,
+        limit: usize,
+        cursor: Option<String>,
+        agent: Option<String>,
+        cwd: Option<String>,
+        since_ms: Option<i64>,
+        mode: Option<String>,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> PyResult<String> {
+        let agent = agent
+            .map(|value| value.parse::<Agent>().map_err(runtime_error))
+            .transpose()?;
+        let mode = mode
+            .map(|value| value.parse::<IngestMode>().map_err(runtime_error))
+            .transpose()?;
+        json(
+            self.db
+                .list(ListRequest {
+                    limit,
+                    cursor,
+                    agent,
+                    cwd,
+                    since_ms,
+                    mode,
+                    model,
+                    provider,
                 })
                 .map_err(runtime_error)?,
         )

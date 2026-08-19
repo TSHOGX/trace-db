@@ -53,6 +53,26 @@ class TraceDb:
         """Search normalized events and return Python dictionaries."""
         return json.loads(self.search_json(query, limit, agent, cwd, since_ms))
 
+    def list_json(
+        self,
+        limit: int = 50,
+        cursor: str | None = None,
+        agent: str | None = None,
+        cwd: str | None = None,
+        since_ms: int | None = None,
+        mode: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> str:
+        """List archived sessions and return the cursor page as raw JSON."""
+        return self._native.list_json(
+            limit, cursor, agent, cwd, since_ms, mode, model, provider
+        )
+
+    def list(self, **kwargs: Any) -> dict[str, Any]:
+        """List archived sessions and return the cursor page as a dictionary."""
+        return json.loads(self.list_json(**kwargs))
+
     def ingest_json(
         self,
         agents: Iterable[str] | None = None,

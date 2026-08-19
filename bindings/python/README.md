@@ -23,7 +23,7 @@ rows = db.search("deploy", limit=10)
 print(rows)
 ```
 
-Available operations are `ingest`, `search`, `show`, `stats`, `reindex`, and
-`reconstruct`. Paths accept strings and `os.PathLike` objects.
+Available operations are `ingest`, `list`, `search`, `show`, `stats`, `reindex`,
+and `reconstruct`. Paths accept strings and `os.PathLike` objects.
 
 The extension uses the stable Python 3.10 ABI and requires Rust 1.82 or newer.

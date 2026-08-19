@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tracedb::{
     default_db_path, doctor_archive,
     service::{serve, ServiceEndpoint},
-    verify_archive, Agent, IngestMode, IngestRequest, SearchRequest, TraceDb,
+    verify_archive, Agent, IngestMode, IngestRequest, ListRequest, SearchRequest, TraceDb,
 };
 
 #[derive(Parser, Debug)]
@@ -52,6 +52,27 @@ enum Command {
         cwd: Option<String>,
         #[arg(long)]
         since: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List archived sessions with stable cursor pagination.
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long)]
+        agent: Option<Agent>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        mode: Option<IngestMode>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -288,6 +309,48 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::List {
+            limit,
+            cursor,
+            agent,
+            cwd,
+            since,
+            mode,
+            model,
+            provider,
+            json,
+        } => {
+            let page = db.list(ListRequest {
+                limit,
+                cursor,
+                agent,
+                cwd,
+                since_ms: since.as_deref().map(parse_since).transpose()?,
+                mode,
+                model,
+                provider,
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&page)?);
+            } else {
+                for session in &page.sessions {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        session.id,
+                        session.agent,
+                        session.mode,
+                        session.events,
+                        session.cwd.as_deref().unwrap_or("-")
+                    );
+                    if let Some(title) = &session.title {
+                        println!("  title: {title}");
+                    }
+                }
+                if let Some(cursor) = page.next_cursor {
+                    println!("next cursor: {cursor}");
+                }
+            }
+        }
         Command::Show {
             id,
             include_tools,
@@ -437,6 +500,52 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
                     since_ms: since,
                 })?)?
             }
+            "list" => {
+                let agent = req
+                    .get("agent")
+                    .and_then(|value| value.as_str())
+                    .map(str::parse::<Agent>)
+                    .transpose()
+                    .map_err(anyhow::Error::msg)?;
+                let mode = req
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .map(str::parse::<IngestMode>)
+                    .transpose()
+                    .map_err(anyhow::Error::msg)?;
+                let since_ms = req
+                    .get("since")
+                    .and_then(|value| value.as_str())
+                    .map(parse_since)
+                    .transpose()?;
+                serde_json::to_value(
+                    db.list(ListRequest {
+                        limit: req
+                            .get("limit")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(50) as usize,
+                        cursor: req
+                            .get("cursor")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                        agent,
+                        cwd: req
+                            .get("cwd")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                        since_ms,
+                        mode,
+                        model: req
+                            .get("model")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                        provider: req
+                            .get("provider")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                    })?,
+                )?
+            }
             "show" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 serde_json::to_value(db.show(id)?)?
@@ -460,7 +569,7 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
                 )?
             }
             _ => {
-                serde_json::json!({"error":"unknown op","supported":["stats","search","show","reconstruct"]})
+                serde_json::json!({"error":"unknown op","supported":["stats","search","list","show","reconstruct"]})
             }
         };
         println!(

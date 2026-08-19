@@ -28,6 +28,27 @@ class TraceDb {
     return JSON.parse(this.searchJson(query, limit, agent, cwd, sinceMs));
   }
 
+  listJson(limit = 50, cursor, agent, cwd, sinceMs, mode, model, provider) {
+    return this._native.listJson(
+      limit,
+      cursor,
+      agent,
+      cwd,
+      sinceMs,
+      mode,
+      model,
+      provider,
+    );
+  }
+
+  list(options = {}) {
+    const { limit = 50, cursor, agent, cwd, sinceMs, mode, model, provider } =
+      options;
+    return JSON.parse(
+      this.listJson(limit, cursor, agent, cwd, sinceMs, mode, model, provider),
+    );
+  }
+
   ingestJson(agents, mode = "partial", root, sinceMs) {
     return this._native.ingestJson(agents, mode, root, sinceMs);
   }

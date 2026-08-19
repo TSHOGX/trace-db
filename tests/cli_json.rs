@@ -56,6 +56,28 @@ fn stats_json_serializes_the_complete_archive_stats() {
 }
 
 #[test]
+fn list_json_returns_the_canonical_cursor_page() {
+    let (_dir, path) = archive();
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "list",
+            "--limit",
+            "1",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let page: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(page["sessions"][0]["id"], "codex:json-contract");
+    assert_eq!(page["sessions"][0]["events"], 2);
+    assert!(page["nextCursor"].is_null());
+}
+
+#[test]
 fn show_json_serializes_the_complete_session_trace() {
     let (_dir, path) = archive();
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
@@ -89,6 +111,7 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
         .spawn()
         .unwrap();
     let stdin = child.stdin.as_mut().unwrap();
+    writeln!(stdin, "{}", json!({"op":"list","limit":1,"agent":"codex"})).unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"codex:json-contract"})).unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"missing"})).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -99,7 +122,12 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(rows[0]["result"]["session"]["id"], "codex:json-contract");
-    assert_eq!(rows[0]["result"]["events"].as_array().unwrap().len(), 2);
-    assert!(rows[1]["result"].is_null());
+    assert_eq!(
+        rows[0]["result"]["sessions"][0]["id"],
+        "codex:json-contract"
+    );
+    assert_eq!(rows[0]["result"]["sessions"][0]["events"], 2);
+    assert_eq!(rows[1]["result"]["session"]["id"], "codex:json-contract");
+    assert_eq!(rows[1]["result"]["events"].as_array().unwrap().len(), 2);
+    assert!(rows[2]["result"].is_null());
 }

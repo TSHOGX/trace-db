@@ -2,7 +2,9 @@ use napi::{Error, Result, Status};
 use napi_derive::napi;
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, SearchRequest, TraceDb};
+use tracedb::{
+    Agent, IngestMode, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb,
+};
 
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
@@ -58,6 +60,42 @@ impl NodeTraceDb {
                     agent,
                     cwd,
                     since_ms,
+                })
+                .map_err(native_error)?,
+        )
+    }
+
+    /// List archived sessions with cursor pagination and metadata filters.
+    #[allow(clippy::too_many_arguments)]
+    #[napi]
+    pub fn list_json(
+        &self,
+        limit: Option<u32>,
+        cursor: Option<String>,
+        agent: Option<String>,
+        cwd: Option<String>,
+        since_ms: Option<i64>,
+        mode: Option<String>,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> Result<String> {
+        let agent = agent
+            .map(|value| value.parse::<Agent>().map_err(native_error))
+            .transpose()?;
+        let mode = mode
+            .map(|value| value.parse::<IngestMode>().map_err(native_error))
+            .transpose()?;
+        json(
+            self.db
+                .list(ListRequest {
+                    limit: limit.unwrap_or(50) as usize,
+                    cursor,
+                    agent,
+                    cwd,
+                    since_ms,
+                    mode,
+                    model,
+                    provider,
                 })
                 .map_err(native_error)?,
         )

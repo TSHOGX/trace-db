@@ -23,8 +23,8 @@ const rows = db.search("deploy", { limit: 10 });
 console.log(rows);
 ```
 
-Available operations are `ingest`, `search`, `show`, `stats`, `reindex`, and
-`reconstruct`.
+Available operations are `ingest`, `list`, `search`, `show`, `stats`, `reindex`,
+and `reconstruct`.
 
 The addon uses N-API 6 and supports Node.js 18 or newer. Rust 1.82 or newer is
 required to build from source.

@@ -8,6 +8,17 @@ export interface SearchOptions {
   sinceMs?: number;
 }
 
+export interface ListOptions {
+  limit?: number;
+  cursor?: string;
+  agent?: Agent;
+  cwd?: string;
+  sinceMs?: number;
+  mode?: IngestMode;
+  model?: string;
+  provider?: string;
+}
+
 export interface IngestOptions {
   agents?: Agent[];
   mode?: IngestMode;
@@ -95,6 +106,21 @@ export class TraceDb {
     sinceMs?: number,
   ): string;
   search(query: string, options?: SearchOptions): SearchResult[];
+
+  listJson(
+    limit?: number,
+    cursor?: string,
+    agent?: Agent,
+    cwd?: string,
+    sinceMs?: number,
+    mode?: IngestMode,
+    model?: string,
+    provider?: string,
+  ): string;
+  list(options?: ListOptions): {
+    sessions: Array<Record<string, unknown>>;
+    nextCursor: string | null;
+  };
 
   ingestJson(
     agents?: Agent[],

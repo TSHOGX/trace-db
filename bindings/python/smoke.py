@@ -28,6 +28,7 @@ def main() -> None:
         database = TraceDb.open(root / "trace.db")
         report = database.ingest(["gemini"], root=root)
         assert report["agents"][0]["ingested"] == 1
+        assert database.list(agent="gemini")["sessions"][0]["id"] == "gemini:python"
         assert database.search("deploy")[0]["id"] == "gemini:python"
         assert database.show("gemini:python")["events"][0]["text"] == "deploy python"
         assert database.reconstruct("gemini:python", root / "restored") == []

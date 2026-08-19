@@ -68,6 +68,7 @@ The database path is `$TRACEDB_PATH` when set, otherwise
 ```text
 trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH] [--strict] [--json]
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
+trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--include-tools] [--json]
 trace-db reconstruct SESSION_ID --out DIRECTORY [--overwrite]
 trace-db reindex
@@ -79,8 +80,8 @@ trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PA
 ```
 
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
-response per line. Supported operations are `stats`, `search`, `show`, and
-`reconstruct`:
+response per line. Supported operations are `stats`, `search`, `list`, `show`,
+and `reconstruct`:
 
 ```bash
 printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api
@@ -101,8 +102,8 @@ for row in rows {
 # Ok::<(), anyhow::Error>(())
 ```
 
-`TraceDb` also provides typed `ingest`, `ingest_session`, `show`, `stats`,
-`reindex`, and `reconstruct` methods. Lower-level `model`, `parsers`, and
+`TraceDb` also provides typed `ingest`, `ingest_session`, `list`, `show`,
+`stats`, `reindex`, and `reconstruct` methods. Lower-level `model`, `parsers`, and
 `store` modules remain public for custom importers and specialized SQL access.
 
 For a versioned cross-language boundary, `trace-db serve` exposes the

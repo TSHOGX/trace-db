@@ -1,6 +1,6 @@
 use crate::{
     model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
-    ReconstructionOptions, SessionTrace,
+    ListPage, ListRequest, ReconstructionOptions, SessionSummary, SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -621,6 +621,125 @@ pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64, i64)>> {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
+    let limit = request.limit.clamp(1, 500);
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(decode_list_cursor)
+        .transpose()?;
+    let mut sql = String::from(
+        "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.title,s.model,s.provider,s.mode,
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,
+                coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms) AS sort_time
+         FROM sessions s WHERE 1=1",
+    );
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    let mut bind = |fragment: &str, value: rusqlite::types::Value| {
+        sql.push_str(fragment);
+        values.push(value);
+    };
+    if let Some(agent) = request.agent {
+        bind(" AND s.agent=?", agent.as_str().to_owned().into());
+    }
+    if let Some(cwd) = &request.cwd {
+        bind(" AND s.cwd LIKE '%' || ? || '%'", cwd.clone().into());
+    }
+    if let Some(since_ms) = request.since_ms {
+        bind(
+            " AND coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)>=?",
+            since_ms.into(),
+        );
+    }
+    if let Some(mode) = request.mode {
+        bind(" AND s.mode=?", mode.to_string().into());
+    }
+    if let Some(model) = &request.model {
+        bind(" AND s.model=?", model.clone().into());
+    }
+    if let Some(provider) = &request.provider {
+        bind(" AND s.provider=?", provider.clone().into());
+    }
+    if let Some((sort_time, id)) = cursor {
+        sql.push_str(
+            " AND (coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)<?
+                    OR (coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)=? AND s.id>?))",
+        );
+        values.push(sort_time.into());
+        values.push(sort_time.into());
+        values.push(id.into());
+    }
+    sql.push_str(" ORDER BY sort_time DESC,s.id ASC LIMIT ?");
+    values.push(((limit + 1) as i64).into());
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(values), |row| {
+            Ok((
+                SessionSummary {
+                    id: row.get(0)?,
+                    agent: row
+                        .get::<_, String>(1)?
+                        .parse()
+                        .map_err(|message: String| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Text,
+                                message.into(),
+                            )
+                        })?,
+                    cwd: row.get(2)?,
+                    started_at_ms: row.get(3)?,
+                    ended_at_ms: row.get(4)?,
+                    title: row.get(5)?,
+                    model: row.get(6)?,
+                    provider: row.get(7)?,
+                    mode: row
+                        .get::<_, String>(8)?
+                        .parse()
+                        .map_err(|message: String| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                8,
+                                rusqlite::types::Type::Text,
+                                message.into(),
+                            )
+                        })?,
+                    events: row.get(9)?,
+                    ingested_at_ms: row.get(10)?,
+                },
+                row.get::<_, i64>(11)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let has_more = rows.len() > limit;
+    let mut rows = rows.into_iter().take(limit).collect::<Vec<_>>();
+    let next_cursor = if has_more {
+        rows.last()
+            .map(|(session, sort_time)| encode_list_cursor(*sort_time, &session.id))
+    } else {
+        None
+    };
+    Ok(ListPage {
+        sessions: rows.drain(..).map(|(session, _)| session).collect(),
+        next_cursor,
+    })
+}
+
+fn encode_list_cursor(sort_time: i64, id: &str) -> String {
+    format!("{sort_time}:{}", hex::encode(id.as_bytes()))
+}
+
+fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
+    let (sort_time, id) = cursor
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid list cursor"))?;
+    let sort_time = sort_time
+        .parse::<i64>()
+        .context("invalid list cursor time")?;
+    let id = String::from_utf8(hex::decode(id).context("invalid list cursor id")?)
+        .context("list cursor id is not UTF-8")?;
+    Ok((sort_time, id))
 }
 
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
