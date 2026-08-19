@@ -102,6 +102,55 @@ fn show_json_serializes_the_complete_session_trace() {
 }
 
 #[test]
+fn show_json_filters_by_inclusive_index_and_kind() {
+    let (_dir, path) = archive();
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "show",
+            "codex:json-contract",
+            "--from",
+            "1",
+            "--to",
+            "1",
+            "--kind",
+            "tool_call",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let trace: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(trace["session"]["id"], "codex:json-contract");
+    assert_eq!(trace["events"].as_array().unwrap().len(), 1);
+    assert_eq!(trace["events"][0]["idx"], 1);
+    assert_eq!(trace["events"][0]["kind"], "tool_call");
+}
+
+#[test]
+fn show_text_honors_explicit_tool_kind_without_include_tools() {
+    let (_dir, path) = archive();
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "show",
+            "codex:json-contract",
+            "--kind",
+            "tool_call",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("[1] tool_call"));
+    assert!(!stdout.contains("[0] user"));
+}
+
+#[test]
 fn json_lines_show_uses_the_same_nullable_session_trace() {
     let (_dir, path) = archive();
     let mut child = Command::new(env!("CARGO_BIN_EXE_trace-db"))
@@ -112,6 +161,12 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
         .unwrap();
     let stdin = child.stdin.as_mut().unwrap();
     writeln!(stdin, "{}", json!({"op":"list","limit":1,"agent":"codex"})).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"op":"show","id":"codex:json-contract","from":1,"kind":["tool_call"]})
+    )
+    .unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"codex:json-contract"})).unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"missing"})).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -127,7 +182,9 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
         "codex:json-contract"
     );
     assert_eq!(rows[0]["result"]["sessions"][0]["events"], 2);
-    assert_eq!(rows[1]["result"]["session"]["id"], "codex:json-contract");
-    assert_eq!(rows[1]["result"]["events"].as_array().unwrap().len(), 2);
-    assert!(rows[2]["result"].is_null());
+    assert_eq!(rows[1]["result"]["events"].as_array().unwrap().len(), 1);
+    assert_eq!(rows[1]["result"]["events"][0]["kind"], "tool_call");
+    assert_eq!(rows[2]["result"]["session"]["id"], "codex:json-contract");
+    assert_eq!(rows[2]["result"]["events"].as_array().unwrap().len(), 2);
+    assert!(rows[3]["result"].is_null());
 }

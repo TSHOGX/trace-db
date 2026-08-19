@@ -1,6 +1,6 @@
 use crate::{
     default_db_path,
-    model::{Agent, IngestMode, ParsedSession, Session},
+    model::{Agent, EventKind, IngestMode, ParsedSession, Session},
     parsers::parser,
     search, store, SearchRequest, SearchResult,
 };
@@ -187,7 +187,34 @@ impl TraceDb {
 
     /// Load a stored session and its complete normalized event stream.
     pub fn show(&self, session_id: &str) -> Result<Option<SessionTrace>> {
-        store::show(&self.connection, session_id)
+        self.show_with_options(ShowRequest::new(session_id))
+    }
+
+    /// Load one session and optionally filter its event stream by index and kind.
+    pub fn show_with_options(&self, request: ShowRequest) -> Result<Option<SessionTrace>> {
+        if request.from_idx.is_some_and(|value| value < 0)
+            || request.to_idx.is_some_and(|value| value < 0)
+        {
+            anyhow::bail!("show event indexes must not be negative");
+        }
+        if request
+            .from_idx
+            .zip(request.to_idx)
+            .is_some_and(|(from, to)| from > to)
+        {
+            anyhow::bail!("show --from must not be greater than --to");
+        }
+        let Some(mut trace) = store::show(&self.connection, &request.session_id)? else {
+            return Ok(None);
+        };
+        if request.from_idx.is_some() || request.to_idx.is_some() || !request.kinds.is_empty() {
+            trace.events.retain(|event| {
+                request.from_idx.is_none_or(|from| event.idx >= from)
+                    && request.to_idx.is_none_or(|to| event.idx <= to)
+                    && (request.kinds.is_empty() || request.kinds.contains(&event.kind))
+            });
+        }
+        Ok(Some(trace))
     }
 
     /// List archived sessions with stable keyset pagination and metadata filters.
@@ -248,6 +275,29 @@ impl TraceDb {
 pub struct ReconstructionOptions {
     #[serde(default)]
     pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowRequest {
+    pub session_id: String,
+    #[serde(rename = "from")]
+    pub from_idx: Option<i64>,
+    #[serde(rename = "to")]
+    pub to_idx: Option<i64>,
+    #[serde(default, rename = "kind")]
+    pub kinds: Vec<EventKind>,
+}
+
+impl ShowRequest {
+    pub fn new(session_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            from_idx: None,
+            to_idx: None,
+            kinds: Vec::new(),
+        }
+    }
 }
 
 /// Open an existing archive without migration and verify its stored contract.

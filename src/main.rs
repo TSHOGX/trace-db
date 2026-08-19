@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use tracedb::{
     default_db_path, doctor_archive,
     service::{serve, ServiceEndpoint},
-    verify_archive, Agent, IngestMode, IngestRequest, ListRequest, SearchRequest, TraceDb,
+    verify_archive, Agent, EventKind, IngestMode, IngestRequest, ListRequest, SearchRequest,
+    ShowRequest, TraceDb,
 };
 
 #[derive(Parser, Debug)]
@@ -79,6 +80,15 @@ enum Command {
     /// List the normalized event stream and metadata for one session.
     Show {
         id: String,
+        /// Include events at or after this normalized event index.
+        #[arg(long)]
+        from: Option<i64>,
+        /// Include events at or before this normalized event index.
+        #[arg(long)]
+        to: Option<i64>,
+        /// Restrict output to one or more event kinds.
+        #[arg(long, value_delimiter = ',')]
+        kind: Vec<EventKind>,
         #[arg(long)]
         include_tools: bool,
         #[arg(long)]
@@ -353,17 +363,27 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Show {
             id,
+            from,
+            to,
+            kind,
             include_tools,
             json,
         } => {
+            let has_kind_filter = !kind.is_empty();
             let trace = db
-                .show(&id)?
+                .show_with_options(ShowRequest {
+                    session_id: id.clone(),
+                    from_idx: from,
+                    to_idx: to,
+                    kinds: kind,
+                })?
                 .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&trace)?)
             } else {
                 for event in trace.events {
                     if include_tools
+                        || has_kind_filter
                         || matches!(
                             event.kind,
                             tracedb::EventKind::User | tracedb::EventKind::Assistant
@@ -469,6 +489,16 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
         })
 }
 
+fn optional_json_i64(request: &serde_json::Value, field: &str) -> anyhow::Result<Option<i64>> {
+    match request.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("{field} must be an integer")),
+    }
+}
+
 fn run_api(db: &TraceDb) -> anyhow::Result<()> {
     for line in io::stdin().lock().lines() {
         let line = line?;
@@ -548,7 +578,35 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
             }
             "show" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                serde_json::to_value(db.show(id)?)?
+                let kinds = match req.get("kind") {
+                    Some(value) if value.is_array() => value
+                        .as_array()
+                        .expect("checked array")
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .ok_or_else(|| anyhow::anyhow!("show kind must be a string"))?
+                                .parse::<EventKind>()
+                                .map_err(anyhow::Error::msg)
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    Some(value) if value.is_string() => value
+                        .as_str()
+                        .expect("checked string")
+                        .split(',')
+                        .filter(|kind| !kind.trim().is_empty())
+                        .map(|kind| kind.trim().parse::<EventKind>().map_err(anyhow::Error::msg))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    Some(_) => anyhow::bail!("show kind must be a string or array"),
+                    None => Vec::new(),
+                };
+                serde_json::to_value(db.show_with_options(ShowRequest {
+                    session_id: id.to_owned(),
+                    from_idx: optional_json_i64(&req, "from")?,
+                    to_idx: optional_json_i64(&req, "to")?,
+                    kinds,
+                })?)?
             }
             "reconstruct" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");

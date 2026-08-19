@@ -2,7 +2,7 @@ use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
     Agent, Event, EventKind, IngestErrorCategory, IngestMode, IngestRequest, IngestStage,
-    ParsedSession, SearchRequest, Session, TraceDb,
+    ParsedSession, SearchRequest, Session, ShowRequest, TraceDb,
 };
 
 #[test]
@@ -170,6 +170,26 @@ fn trace_db_facade_covers_archive_lifecycle() {
     assert!(hits[0].score > 0.0);
     let trace = db.show("codex:facade").unwrap().unwrap();
     assert_eq!(trace.events[0].text, "deploy the demo");
+    let filtered = db
+        .show_with_options(ShowRequest {
+            session_id: "codex:facade".into(),
+            from_idx: Some(1),
+            to_idx: Some(1),
+            kinds: vec![EventKind::Assistant],
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(filtered.events.len(), 1);
+    assert_eq!(filtered.events[0].text, "the demo is deployed");
+    let error = db
+        .show_with_options(ShowRequest {
+            session_id: "codex:facade".into(),
+            from_idx: Some(2),
+            to_idx: Some(1),
+            kinds: Vec::new(),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("--from"));
     let stats = db.stats().unwrap();
     assert_eq!(stats.total_sessions, 1);
     assert_eq!(stats.total_events, 2);
