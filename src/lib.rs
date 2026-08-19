@@ -6,8 +6,8 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
-/// Resolve the database path using the same deployable contract as the old
-/// Bun package. `TRACEDB_PATH` always wins, including in tests and containers.
+/// Resolve the database path using the public deployment contract.
+/// `TRACEDB_PATH` always wins, including in tests and containers.
 pub fn default_db_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TRACEDB_PATH") {
         return PathBuf::from(path);

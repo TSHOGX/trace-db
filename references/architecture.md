@@ -1,36 +1,59 @@
-# Architecture
+# TraceDB architecture
 
-TraceDB has four boundaries:
+TraceDB has four layers:
 
-1. Parsers discover native sessions and map agent-specific records to the
-   unified session/event types.
-2. Ingest compares fingerprints and transactionally replaces changed sessions.
-3. SQLite owns the normalized store and external-content FTS index.
-4. The CLI and TypeScript exports provide retrieval and operational access.
+1. **Discovery and parsers** enumerate native stores and emit a
+   `ParsedSession` containing a cross-agent session plus ordered events.
+2. **The archive store** transactionally upserts sessions, events, provenance,
+   and optional full native objects into SQLite.
+3. **Retrieval** uses SQLite FTS5 for bounded event candidates, aggregates them
+   at session level, and collapses parent/fork/subagent lineage.
+4. **Interfaces** expose the Rust crate, the CLI, and the line-oriented JSON
+   protocol.
 
-Native traces remain authoritative. `raw_sources` records where they are and
-enough size/mtime metadata to detect drift. TraceDB does not duplicate native
-bytes, except for normalized event content required for retrieval.
-
-## Module Map
+## Rust module map
 
 ```text
 src/
-  parsers/       one adapter per coding agent
-  types.ts       unified session, source, event, and parser contracts
-  ingest.ts      incremental discovery and upsert loop
-  db.ts          trace.db schema, transactions, and FTS rebuild
-  tokenizer.ts   bundled fts5-jieba loading and runtime resolution
-  cli.ts         CLI commands and presentation
-  index.ts       public TypeScript API
-native/
-  fts5-jieba/    Rust FTS5 tokenizer source
-references/
-  search-algorithm.md
+  lib.rs          public Rust entry points and database path resolution
+  main.rs         clap CLI and JSON protocol server
+  model.rs        agents, capture modes, events, sessions, provenance
+  store.rs        SQLite schema, upsert, FTS, search, reconstruction
+  parsers/
+    mod.rs        parser trait and registry
+    claude.rs
+    codex.rs
+    opencode.rs
+    gemini.rs
+    pi.rs
+native/fts5-jieba/  optional Rust FTS5 tokenizer extension
 ```
 
-## Deliberate Exclusions
+## Rebuildability and full capture
 
-No table stores generated summaries, embeddings, labels, memory candidates, or
-workflow state. No code invokes a model. This keeps `trace.db` mechanically
-rebuildable and makes downstream semantic processing an independent concern.
+Normalized tables are deterministic and can be rebuilt from native stores.
+Partial mode stores source pointers only. Full mode stores a compressed object
+for each source, addressed by SHA-256. Objects are deduplicated across sessions
+and are restored only through validated relative paths.
+
+The `mode` column is monotonic: once a session has been captured in full mode,
+subsequent partial ingests retain full mode and recapture the source object.
+
+## Lineage
+
+There are two independent trees:
+
+- Event lineage links native event IDs within a session.
+- Session lineage links forks and subagents across sessions.
+
+Claude subagents prove their parent through the nested path
+`<parent>/subagents/agent-*.jsonl`. Codex stores the edge only in the parent's
+`spawn_agent` call/output pair, so the parser performs a cross-rollout pre-pass.
+OpenCode exposes `parent_id` directly in its SQLite session table.
+
+## Compatibility and extension policy
+
+The repository contains only the Rust implementation. New agent support should
+implement the `Parser` trait and register the parser without changing storage
+or interface contracts. Cross-language clients should prefer the JSON protocol
+for process boundaries and the Rust crate for in-process integrations.

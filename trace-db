@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for candidate in "$ROOT/target/release/trace-db" "$ROOT/target/debug/trace-db" "$ROOT/trace-db-bin"; do
+for candidate in "$ROOT/target/release/trace-db" "$ROOT/target/debug/trace-db"; do
   if [[ -x "$candidate" ]]; then exec "$candidate" "$@"; fi
 done
-exec bun run "$ROOT/src/cli.ts" "$@"
+echo "trace-db is not built; run 'cargo build --release' first" >&2
+exit 127
