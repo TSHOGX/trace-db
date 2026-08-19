@@ -49,7 +49,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
     let mut model = None;
     let mut started = None;
     let mut ended = None;
-    let forked = None;
+    let mut forked = None;
     let mut events = Vec::new();
     for r in &records {
         let t = ts(r.get("timestamp"));
@@ -60,6 +60,16 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             ended = t;
         }
         id = id.or_else(|| s(r.get("sessionId")));
+        if forked.is_none() {
+            forked = r.get("forkedFrom").and_then(|value| {
+                let session_id = s(value.get("sessionId"))?;
+                let message_uuid = s(value.get("messageUuid"));
+                Some(match message_uuid {
+                    Some(message_uuid) => format!("claude:{session_id}#{message_uuid}"),
+                    None => format!("claude:{session_id}"),
+                })
+            });
+        }
         cwd = cwd.or_else(|| s(r.get("cwd")));
         branch = branch.or_else(|| s(r.get("gitBranch")));
         if r.get("type").and_then(Value::as_str) == Some("ai-title") {
@@ -255,5 +265,35 @@ impl Parser for ClaudeParser {
             }
         }
         Ok(Some(parsed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn captures_forked_from_session_and_message() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fork.jsonl");
+        fs::write(
+            &path,
+            [json!({
+                "sessionId":"child",
+                "forkedFrom":{"sessionId":"parent","messageUuid":"m-1"},
+                "type":"user",
+                "timestamp":"2026-08-19T00:00:00Z",
+                "message":{"role":"user","content":"continue"}
+            })
+            .to_string()]
+            .join("\n"),
+        )
+        .unwrap();
+        let parsed = ClaudeParser.parse_all(dir.path()).unwrap();
+        assert_eq!(
+            parsed[0].session.forked_from.as_deref(),
+            Some("claude:parent#m-1")
+        );
     }
 }
