@@ -174,18 +174,53 @@ fn write_session(
     events: &[Event],
     mode: IngestMode,
 ) -> Result<()> {
+    let previous_full_sources = if matches!(mode, IngestMode::Full) {
+        let mut statement = tx.prepare(
+            "SELECT locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash
+             FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL",
+        )?;
+        let rows = statement
+            .query_map([&session.id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    } else {
+        Vec::new()
+    };
     tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
                 ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,mode=excluded.mode,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
         params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, mode.to_string(), session.fingerprint, session.meta.to_string(), now_ms()])?;
     tx.execute("DELETE FROM raw_sources WHERE session_id=?1", [&session.id])?;
+    let mut current_locators = Vec::with_capacity(session.sources.len());
     for src in &session.sources {
+        current_locators.push(src.locator.clone());
         let object_hash = if matches!(mode, IngestMode::Full) {
             capture_source(tx, src)?
         } else {
             None
         };
         tx.execute("INSERT INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![session.id,src.locator,src.kind,src.restore_path,src.role,src.bytes,src.mtime_ns,src.mode.map(|v|v as i64),object_hash])?;
+    }
+    for (locator, kind, restore_path, role, bytes, mtime_ns, source_mode, object_hash) in
+        previous_full_sources
+    {
+        if !current_locators.iter().any(|current| current == &locator) {
+            tx.execute(
+                "INSERT INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![session.id, locator, kind, restore_path, role, bytes, mtime_ns, source_mode, object_hash],
+            )?;
+        }
     }
     tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
     for e in events {
@@ -500,6 +535,37 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn full_reingest_preserves_a_previous_snapshot_when_a_source_disappears() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.jsonl");
+        let second = dir.path().join("second.json");
+        fs::write(&first, "first\n").unwrap();
+        fs::write(&second, "second\n").unwrap();
+        let db_path = dir.path().join("trace.db");
+        let mut conn = open(&db_path).unwrap();
+        let mut initial = session(&first);
+        initial.session.sources.push(NativeSource {
+            locator: second.display().to_string(),
+            kind: "json".into(),
+            restore_path: "second.json".into(),
+            role: Some("sidecar".into()),
+            bytes: None,
+            mtime_ns: None,
+            mode: None,
+            capture: Some(Capture::File {
+                path: second.display().to_string(),
+            }),
+        });
+        upsert(&mut conn, initial, IngestMode::Full).unwrap();
+        upsert(&mut conn, session(&first), IngestMode::Full).unwrap();
+
+        let out = dir.path().join("out");
+        reconstruct(&conn, "codex:test", &out).unwrap();
+        assert_eq!(fs::read(out.join("rollout.jsonl")).unwrap(), b"first\n");
+        assert_eq!(fs::read(out.join("second.json")).unwrap(), b"second\n");
     }
 
     #[test]
