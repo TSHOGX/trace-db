@@ -76,10 +76,30 @@ pub trait Parser {
     /// Parse one candidate. `None` means the candidate is intentionally filtered.
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>>;
 
+    /// Parse a batch of candidates. Implementations may override this to share
+    /// expensive read-only state, such as a database connection, across rows.
+    /// Individual parse failures are retained so callers can preserve the
+    /// historical best-effort ingest behavior.
+    fn parse_many(
+        &self,
+        candidates: &[SessionCandidate],
+        root: &Path,
+    ) -> Vec<(SessionCandidate, Result<Option<ParsedSession>>)> {
+        candidates
+            .iter()
+            .cloned()
+            .map(|candidate| {
+                let parsed = self.parse(&candidate, root);
+                (candidate, parsed)
+            })
+            .collect()
+    }
+
     fn parse_all(&self, root: &Path) -> Result<Vec<ParsedSession>> {
         let mut sessions = Vec::new();
-        for candidate in self.discover(root)? {
-            if let Some(mut parsed) = self.parse(&candidate, root)? {
+        let candidates = self.discover(root)?;
+        for (candidate, parsed) in self.parse_many(&candidates, root) {
+            if let Some(mut parsed) = parsed? {
                 parsed.session.fingerprint = candidate.fingerprint;
                 sessions.push(parsed);
             }

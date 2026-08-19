@@ -42,13 +42,13 @@ fn db_path(root: &Path) -> Option<PathBuf> {
     }
 }
 fn parse_session(
+    connection: &Connection,
     db: &Path,
     id: &str,
     _root: &Path,
     candidate: &SessionCandidate,
 ) -> Result<ParsedSession> {
-    let c = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let (sid, parent, directory, title, agent, model, created, updated): NativeSessionRow = c
+    let (sid, parent, directory, title, agent, model, created, updated): NativeSessionRow = connection
         .query_row(
             "SELECT id,parent_id,directory,title,agent,model,time_created,time_updated FROM session WHERE id=?1",
             [id],
@@ -66,7 +66,7 @@ fn parse_session(
             },
         )?;
     let mut evs = Vec::new();
-    let mut stmt=c.prepare("SELECT m.id,m.data,m.time_created,p.data,p.time_created FROM message m LEFT JOIN part p ON p.message_id=m.id WHERE m.session_id=?1 ORDER BY m.time_created,m.id,p.time_created,p.id")?;
+    let mut stmt=connection.prepare("SELECT m.id,m.data,m.time_created,p.data,p.time_created FROM message m LEFT JOIN part p ON p.message_id=m.id WHERE m.session_id=?1 ORDER BY m.time_created,m.id,p.time_created,p.id")?;
     let mut rows = stmt.query([id])?;
     while let Some(r) = rows.next()? {
         let mid: String = r.get(0)?;
@@ -111,13 +111,13 @@ fn parse_session(
         }
     }
     let mut messages = Vec::new();
-    let mut msq=c.prepare("SELECT id,session_id,time_created,time_updated,data FROM message WHERE session_id=?1 ORDER BY time_created,id")?;
+    let mut msq=connection.prepare("SELECT id,session_id,time_created,time_updated,data FROM message WHERE session_id=?1 ORDER BY time_created,id")?;
     let mut mr = msq.query([id])?;
     while let Some(r) = mr.next()? {
         messages.push(json!({"id":r.get::<_,String>(0)?,"session_id":r.get::<_,String>(1)?,"time_created":r.get::<_,i64>(2)?,"time_updated":r.get::<_,i64>(3)?,"data":j(&r.get::<_,String>(4)?)}));
     }
     let mut parts = Vec::new();
-    let mut psq=c.prepare("SELECT id,message_id,session_id,time_created,time_updated,data FROM part WHERE session_id=?1 ORDER BY time_created,id")?;
+    let mut psq=connection.prepare("SELECT id,message_id,session_id,time_created,time_updated,data FROM part WHERE session_id=?1 ORDER BY time_created,id")?;
     let mut pr = psq.query([id])?;
     while let Some(r) = pr.next()? {
         parts.push(json!({"id":r.get::<_,String>(0)?,"message_id":r.get::<_,String>(1)?,"session_id":r.get::<_,String>(2)?,"time_created":r.get::<_,i64>(3)?,"time_updated":r.get::<_,i64>(4)?,"data":j(&r.get::<_,String>(5)?)}));
@@ -201,6 +201,54 @@ impl Parser for OpenCodeParser {
             .native_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("OpenCode candidate missing session id"))?;
-        Ok(Some(parse_session(&candidate.path, id, root, candidate)?))
+        let connection = Connection::open_with_flags(
+            &candidate.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        Ok(Some(parse_session(
+            &connection,
+            &candidate.path,
+            id,
+            root,
+            candidate,
+        )?))
+    }
+
+    fn parse_many(
+        &self,
+        candidates: &[SessionCandidate],
+        root: &Path,
+    ) -> Vec<(SessionCandidate, Result<Option<ParsedSession>>)> {
+        let Some(first) = candidates.first() else {
+            return Vec::new();
+        };
+        let connection = match Connection::open_with_flags(
+            &first.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            Ok(connection) => connection,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                return candidates
+                    .iter()
+                    .cloned()
+                    .map(|candidate| (candidate, Err(anyhow::anyhow!("{error:#}"))))
+                    .collect();
+            }
+        };
+        candidates
+            .iter()
+            .cloned()
+            .map(|candidate| {
+                let parsed = candidate
+                    .native_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("OpenCode candidate missing session id"))
+                    .and_then(|id| {
+                        parse_session(&connection, &candidate.path, id, root, &candidate).map(Some)
+                    });
+                (candidate, parsed)
+            })
+            .collect()
     }
 }

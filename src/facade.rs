@@ -55,6 +55,7 @@ impl TraceDb {
             let mut ingested = 0;
             let mut unchanged = 0;
             let mut skipped_by_since = 0;
+            let mut pending = Vec::new();
             for candidate in candidates {
                 if request
                     .since_ms
@@ -72,7 +73,10 @@ impl TraceDb {
                     continue;
                 }
                 parsed += 1;
-                if let Ok(Some(mut session)) = parser.parse(&candidate, &root) {
+                pending.push(candidate);
+            }
+            for (candidate, parsed_session) in parser.parse_many(&pending, &root) {
+                if let Ok(Some(mut session)) = parsed_session {
                     session.session.fingerprint = candidate.fingerprint;
                     store::upsert(&mut self.connection, session, request.mode)?;
                     ingested += 1;
