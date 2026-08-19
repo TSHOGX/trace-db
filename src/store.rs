@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -231,7 +232,7 @@ pub fn search_filtered(
     cwd: Option<&str>,
     since_ms: Option<i64>,
 ) -> Result<Vec<(String, String, Option<String>, i64)>> {
-    let mut sql=String::from("SELECT e.session_id,s.agent,s.cwd,count(*) hits,max(bm25(events_fts)) score FROM events_fts JOIN events e ON e.id=events_fts.rowid JOIN sessions s ON s.id=e.session_id WHERE events_fts MATCH ?1");
+    let mut sql=String::from("SELECT e.session_id,s.agent,s.cwd,bm25(events_fts) score FROM events_fts JOIN events e ON e.id=events_fts.rowid JOIN sessions s ON s.id=e.session_id WHERE events_fts MATCH ?1");
     if agent.is_some() {
         sql.push_str(" AND s.agent=?2");
     }
@@ -252,10 +253,7 @@ pub fn search_filtered(
         });
     }
     let n = 1 + agent.is_some() as usize + cwd.is_some() as usize + since_ms.is_some() as usize;
-    sql.push_str(&format!(
-        " GROUP BY e.session_id ORDER BY score DESC LIMIT ?{}",
-        n + 1
-    ));
+    sql.push_str(&format!(" ORDER BY score ASC LIMIT ?{}", n + 1));
     let mut stmt = conn.prepare(&sql)?;
     let mut ps: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_owned())];
     if let Some(a) = agent {
@@ -271,10 +269,37 @@ pub fn search_filtered(
     let rows = stmt
         .query_map(
             rusqlite::params_from_iter(ps.iter().map(|x| x.as_ref())),
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, f64>(3)?,
+                ))
+            },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    let mut grouped: HashMap<String, (String, Option<String>, i64)> = HashMap::new();
+    let mut order = Vec::new();
+    for (sid, agent, cwd, _score) in rows {
+        if !grouped.contains_key(&sid) {
+            order.push(sid.clone());
+        }
+        grouped
+            .entry(sid)
+            .and_modify(|v| v.2 += 1)
+            .or_insert((agent, cwd, 1));
+    }
+    let out = order
+        .into_iter()
+        .filter_map(|sid| {
+            grouped
+                .remove(&sid)
+                .map(|(agent, cwd, hits)| (sid, agent, cwd, hits))
+        })
+        .take(limit)
+        .collect();
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -321,6 +346,15 @@ mod tests {
         }
     }
 
+    fn named_session(id: &str, text: &str) -> ParsedSession {
+        let mut parsed = session(Path::new("/tmp/native.jsonl"));
+        parsed.session.id = id.into();
+        parsed.session.fingerprint = id.into();
+        parsed.session.sources.clear();
+        parsed.events = vec![Event::new(EventKind::User, text)];
+        parsed
+    }
+
     #[test]
     fn full_is_sticky_and_reconstructs_byte_identical_source() {
         let dir = tempdir().unwrap();
@@ -356,5 +390,25 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn search_orders_stronger_bm25_hit_first() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+        upsert(
+            &mut conn,
+            named_session("codex:weak", "deploy"),
+            IngestMode::Partial,
+        )
+        .unwrap();
+        upsert(
+            &mut conn,
+            named_session("codex:strong", "deploy netlify production deploy"),
+            IngestMode::Partial,
+        )
+        .unwrap();
+        let rows = search(&conn, "deploy netlify", 10).unwrap();
+        assert_eq!(rows.first().map(|r| r.0.as_str()), Some("codex:strong"));
     }
 }
