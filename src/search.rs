@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 const PER_SESSION_HIT_CAP: usize = 50;
 const MAX_CANDIDATE_HITS: usize = 5_000;
+const MAX_CONTEXT_SESSIONS: usize = 2_000;
 type LineageEdges = HashMap<String, (Option<String>, Option<String>)>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,7 +180,7 @@ pub fn search(connection: &Connection, request: &SearchRequest) -> Result<Vec<Se
             .then_with(|| left.id.cmp(&right.id))
     });
     collapsed.truncate(request.limit);
-    attach_context(connection, &mut collapsed)?;
+    attach_context(connection, &mut collapsed, &edges)?;
     Ok(collapsed)
 }
 
@@ -201,7 +202,10 @@ fn load_candidates(
     }
     if let Some(since_ms) = request.since_ms {
         values.push(Box::new(since_ms));
-        filters.push(format!("s.ended_at_ms>=?{}", values.len()));
+        filters.push(format!(
+            "COALESCE(s.ended_at_ms,s.started_at_ms)>=?{}",
+            values.len()
+        ));
     }
     values.push(Box::new(PER_SESSION_HIT_CAP as i64));
     let per_session_parameter = values.len();
@@ -383,7 +387,15 @@ fn load_lineage_edges(connection: &Connection) -> Result<LineageEdges> {
 }
 
 fn lineage_root(id: &str, edges: &LineageEdges) -> String {
+    lineage_path(id, edges)
+        .last()
+        .cloned()
+        .unwrap_or_else(|| id.to_owned())
+}
+
+fn lineage_path(id: &str, edges: &LineageEdges) -> Vec<String> {
     let mut current = id.to_owned();
+    let mut path = Vec::new();
     let mut seen = HashSet::new();
     while seen.insert(current.clone()) {
         let Some((parent, forked)) = edges.get(&current) else {
@@ -396,23 +408,45 @@ fn lineage_root(id: &str, edges: &LineageEdges) -> String {
             break;
         }
         current = next.clone();
+        path.push(current.clone());
     }
-    current
+    path
 }
 
-fn attach_context(connection: &Connection, results: &mut [SearchResult]) -> Result<()> {
+fn attach_context(
+    connection: &Connection,
+    results: &mut [SearchResult],
+    edges: &LineageEdges,
+) -> Result<()> {
     if results.is_empty() {
         return Ok(());
     }
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
+    let mut lineage_context_ids = HashMap::<String, Vec<String>>::new();
     for result in results.iter() {
+        let context_ids = lineage_context_ids.entry(result.id.clone()).or_default();
+        for id in std::iter::once(&result.id).chain(result.related_session_ids.iter()) {
+            for ancestor in lineage_path(id, edges) {
+                if !context_ids.contains(&ancestor) {
+                    context_ids.push(ancestor.clone());
+                }
+            }
+        }
         if seen.insert(result.id.clone()) {
             ids.push(result.id.clone());
         }
         for related in &result.related_session_ids {
             if seen.insert(related.clone()) {
                 ids.push(related.clone());
+            }
+        }
+        for ancestor in context_ids.iter() {
+            if ids.len() >= MAX_CONTEXT_SESSIONS {
+                break;
+            }
+            if seen.insert(ancestor.clone()) {
+                ids.push(ancestor.clone());
             }
         }
     }
@@ -447,12 +481,22 @@ fn attach_context(connection: &Connection, results: &mut [SearchResult]) -> Resu
     }
     for result in results {
         let own = context.get(&result.id);
+        let ancestors = lineage_context_ids
+            .get(&result.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         result.ask = own
             .and_then(|(ask, _)| ask.clone())
             .or_else(|| related_context(&context, &result.related_session_ids, true));
         result.outcome = own
             .and_then(|(_, outcome)| outcome.clone())
             .or_else(|| related_context(&context, &result.related_session_ids, false));
+        if result.ask.is_none() {
+            result.ask = related_context(&context, ancestors, true);
+        }
+        if result.outcome.is_none() {
+            result.outcome = related_context(&context, ancestors, false);
+        }
     }
     Ok(())
 }
@@ -641,6 +685,68 @@ mod tests {
         assert!(results[0].score_breakdown.lineage > 0.0);
         assert_eq!(results[1].id, "codex:partial");
         assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn context_falls_back_to_unmatched_lineage_ancestors() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        insert_session(
+            &mut connection,
+            "codex:ancestor",
+            None,
+            vec![
+                Event::new(EventKind::User, "original request"),
+                Event::new(EventKind::Assistant, "ancestor completed the work"),
+            ],
+        );
+        insert_session(
+            &mut connection,
+            "codex:child",
+            Some("codex:ancestor"),
+            vec![Event::new(EventKind::User, "needle child detail")],
+        );
+
+        let results = search(&connection, &SearchRequest::new("needle")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].lineage_root_id, "codex:ancestor");
+        assert_eq!(results[0].ask.as_deref(), Some("needle child detail"));
+        assert_eq!(
+            results[0].outcome.as_deref(),
+            Some("ancestor completed the work")
+        );
+    }
+
+    #[test]
+    fn since_filter_includes_active_sessions_without_end_times() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        insert_session(
+            &mut connection,
+            "codex:active",
+            None,
+            vec![Event::new(EventKind::User, "active deployment")],
+        );
+        let started_at = chrono::Utc::now().timestamp_millis() - 1_000;
+        connection
+            .execute(
+                "UPDATE sessions SET started_at_ms=?1,ended_at_ms=NULL WHERE id='codex:active'",
+                [started_at],
+            )
+            .unwrap();
+
+        let results = search(
+            &connection,
+            &SearchRequest {
+                query: "deployment".into(),
+                limit: 20,
+                agent: None,
+                cwd: None,
+                since_ms: Some(started_at - 1),
+            },
+        )
+        .unwrap();
+        assert_eq!(results[0].id, "codex:active");
     }
 
     fn insert_session(

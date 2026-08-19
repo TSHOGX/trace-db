@@ -9,7 +9,8 @@ not an isolated event, so retrieval is intentionally session-oriented.
    explicit FTS5 syntax is passed through unchanged.
 2. FTS5 produces at most 50 hits per session and 5,000 total event candidates
    in BM25 order.
-3. Agent, working-directory, and time filters are applied in SQL.
+3. Agent, working-directory, and time filters are applied in SQL; time filters
+   use the end time and fall back to the start time for active sessions.
 4. Candidates are aggregated by session while preserving the first and strongest
    hit as the representative ordering signal.
 5. Explainable relevance, coverage, kind, recency, and title components are
@@ -17,7 +18,8 @@ not an isolated event, so retrieval is intentionally session-oriented.
 6. Sessions are walked to their parent or fork root with cycle protection.
 7. Related sessions collapse into one result and their hit counts are merged.
 8. First-user and last-assistant bookends are loaded for all top lineages in one
-   batch query.
+   batch query, including bounded ancestor paths that did not themselves match
+   the query.
 
 Tool results and usage events remain available through `show` but are not
 included in FTS by default.
@@ -74,7 +76,9 @@ half-life. The kind bonus is `user > assistant > system > thinking > tool_call`.
 The public result exposes the full score breakdown, strongest matched event and
 snippet, title and timestamps, lineage root and related members, the first user
 request, and the last assistant outcome. When the strongest lineage member is a
-subagent without an outcome, context assembly falls back to a related member.
+subagent without an outcome, context assembly first falls back to a matched
+related member and then to bounded parent/fork ancestors, so an unmatched
+parent can still supply the task request or final outcome.
 
 ## Tokenizers
 
@@ -94,6 +98,6 @@ kind gating and index noisy tool-result and usage rows.
 - Lineage loading is one small query, not an N+1 walk.
 - Search never reads native trace files.
 - Reindex never reads native trace files.
-- Result context assembly uses one batch query across representatives and
-  related lineage members.
+- Result context assembly uses one batch query across representatives, related
+  lineage members, and bounded ancestor paths.
 - Exact filters run in SQL before aggregation.
