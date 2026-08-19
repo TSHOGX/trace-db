@@ -32,6 +32,9 @@ enum Command {
         mode: IngestMode,
         #[arg(long)]
         root: Option<PathBuf>,
+        /// Only ingest sessions updated within N days or after an RFC3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Search indexed normalized events.
     Search {
@@ -77,7 +80,12 @@ fn main() -> anyhow::Result<()> {
     let db_path = cli.db.unwrap_or_else(default_db_path);
     let mut conn = open_database(&db_path)?;
     match cli.command {
-        Command::Ingest { agent, mode, root } => {
+        Command::Ingest {
+            agent,
+            mode,
+            root,
+            since,
+        } => {
             let agents = if agent.is_empty() {
                 Agent::ALL.to_vec()
             } else {
@@ -86,7 +94,16 @@ fn main() -> anyhow::Result<()> {
             let mut total = 0;
             for a in agents {
                 let root = root.clone().unwrap_or_else(|| native_root(a));
-                let sessions = parser(a).discover(&root)?;
+                let cutoff = since.as_deref().and_then(parse_since);
+                let sessions = parser(a)
+                    .discover(&root)?
+                    .into_iter()
+                    .filter(|s| {
+                        cutoff
+                            .map(|c| s.session.ended_at_ms.unwrap_or_default() >= c)
+                            .unwrap_or(true)
+                    })
+                    .collect::<Vec<_>>();
                 let n = sessions.len();
                 for session in sessions {
                     store::upsert(&mut conn, session, mode)?;
