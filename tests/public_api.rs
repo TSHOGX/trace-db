@@ -32,7 +32,10 @@ fn trace_db_facade_covers_archive_lifecycle() {
                 fingerprint: "facade-v1".into(),
                 sources: Vec::new(),
             },
-            events: vec![Event::new(EventKind::User, "deploy the demo")],
+            events: vec![
+                Event::new(EventKind::User, "deploy the demo"),
+                Event::new(EventKind::Assistant, "the demo is deployed"),
+            ],
         },
         IngestMode::Partial,
     )
@@ -40,10 +43,14 @@ fn trace_db_facade_covers_archive_lifecycle() {
 
     let hits = db.search(SearchRequest::new("deploy")).unwrap();
     assert_eq!(hits[0].id, "codex:facade");
+    assert_eq!(hits[0].ask.as_deref(), Some("deploy the demo"));
+    assert_eq!(hits[0].outcome.as_deref(), Some("the demo is deployed"));
+    assert_eq!(hits[0].best_match.kind, EventKind::User);
+    assert!(hits[0].score > 0.0);
     let trace = db.show("codex:facade").unwrap().unwrap();
     assert_eq!(trace.events[0].text, "deploy the demo");
     let stats = db.stats().unwrap();
     assert_eq!(stats.total_sessions, 1);
-    assert_eq!(stats.total_events, 1);
+    assert_eq!(stats.total_events, 2);
     db.reindex().unwrap();
 }

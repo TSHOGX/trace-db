@@ -136,12 +136,26 @@ fn main() -> anyhow::Result<()> {
             } else {
                 for row in rows {
                     println!(
-                        "{}\t{}\t{}\t{}",
+                        "{}\t{}\t{:.4}\t{} hits\t{}",
                         row.id,
                         row.agent,
+                        row.score,
                         row.hits,
                         row.cwd.unwrap_or_else(|| "-".into())
                     );
+                    if let Some(title) = row.title {
+                        println!("  title: {title}");
+                    }
+                    println!(
+                        "  match[{} {}]: {}",
+                        row.best_match.event_idx, row.best_match.kind, row.best_match.snippet
+                    );
+                    if let Some(ask) = row.ask {
+                        println!("  ask: {ask}");
+                    }
+                    if let Some(outcome) = row.outcome {
+                        println!("  outcome: {outcome}");
+                    }
                 }
             }
         }

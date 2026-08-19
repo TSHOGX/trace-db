@@ -109,10 +109,12 @@ table and are referenced by `raw_sources`.
 
 ## Search
 
-Search is bounded and session-oriented. FTS candidates are ranked by strongest
-BM25 hit, then aggregated per session; parent/fork/subagent results collapse to
-one lineage root and hit counts are merged. Agent, cwd, and time filters are
-applied before aggregation. The algorithm is documented in
+Search is bounded and session-oriented. It combines phrase and term recall,
+then scores normalized BM25 strength, hit and term coverage, event kind,
+recency, and title match. Parent, fork, and subagent results collapse to one
+lineage; results include an explainable score breakdown, strongest snippet,
+first request, and final outcome. Agent, cwd, and time filters are applied in
+SQL before aggregation. The algorithm is documented in
 [`references/search-algorithm.md`](references/search-algorithm.md).
 
 For Chinese segmentation and English stemming, build the optional tokenizer:

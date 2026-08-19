@@ -72,6 +72,9 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
         .unwrap()
         .into_inner();
     assert_eq!(search.results[0].id, "codex:grpc");
+    assert_eq!(search.results[0].lineage_root_id, "codex:grpc");
+    assert!(search.results[0].score > 0.0);
+    assert!(search.results[0].best_match.is_some());
 
     let show = client
         .show(ShowRequest {

@@ -2,7 +2,7 @@ use crate::{
     default_db_path,
     model::{Agent, IngestMode, ParsedSession, Session},
     parsers::parser,
-    store,
+    search, store, SearchRequest, SearchResult,
 };
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
@@ -78,24 +78,7 @@ impl TraceDb {
 
     /// Search normalized events and return lineage-collapsed session results.
     pub fn search(&self, request: SearchRequest) -> Result<Vec<SearchResult>> {
-        let rows = store::search_filtered(
-            &self.connection,
-            &request.query,
-            request.limit,
-            request.agent,
-            request.cwd.as_deref(),
-            request.since_ms,
-        )?;
-        rows.into_iter()
-            .map(|(id, agent, cwd, hits)| {
-                Ok(SearchResult {
-                    id,
-                    agent: agent.parse().map_err(|message: String| anyhow!(message))?,
-                    cwd,
-                    hits,
-                })
-            })
-            .collect()
+        search::search(&self.connection, &request)
     }
 
     /// Load a stored session and its complete normalized event stream.
@@ -182,42 +165,6 @@ impl IngestReport {
     pub fn total_ingested(&self) -> usize {
         self.agents.iter().map(|row| row.ingested).sum()
     }
-}
-
-/// A typed session-search request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchRequest {
-    pub query: String,
-    #[serde(default = "default_search_limit")]
-    pub limit: usize,
-    pub agent: Option<Agent>,
-    pub cwd: Option<String>,
-    pub since_ms: Option<i64>,
-}
-
-impl SearchRequest {
-    pub fn new(query: impl Into<String>) -> Self {
-        Self {
-            query: query.into(),
-            limit: default_search_limit(),
-            agent: None,
-            cwd: None,
-            since_ms: None,
-        }
-    }
-}
-
-fn default_search_limit() -> usize {
-    20
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub id: String,
-    pub agent: Agent,
-    pub cwd: Option<String>,
-    pub hits: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

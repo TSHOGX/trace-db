@@ -127,6 +127,29 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                 agent: row.agent.to_string(),
                 cwd: row.cwd,
                 hits: row.hits,
+                lineage_root_id: row.lineage_root_id,
+                title: row.title,
+                started_at_ms: row.started_at_ms,
+                ended_at_ms: row.ended_at_ms,
+                score: row.score,
+                score_breakdown: Some(pb::ScoreBreakdown {
+                    best_match: row.score_breakdown.best_match,
+                    hit_coverage: row.score_breakdown.hit_coverage,
+                    term_coverage: row.score_breakdown.term_coverage,
+                    kind: row.score_breakdown.kind,
+                    recency: row.score_breakdown.recency,
+                    title: row.score_breakdown.title,
+                    lineage: row.score_breakdown.lineage,
+                }),
+                best_match: Some(pb::SearchMatch {
+                    event_idx: row.best_match.event_idx,
+                    kind: row.best_match.kind.to_string(),
+                    bm25: row.best_match.bm25,
+                    snippet: row.best_match.snippet,
+                }),
+                ask: row.ask,
+                outcome: row.outcome,
+                related_session_ids: row.related_session_ids,
             })
             .collect();
         Ok(Response::new(pb::SearchResponse { results }))

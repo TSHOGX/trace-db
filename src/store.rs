@@ -1,7 +1,5 @@
 use crate::{
-    model::{
-        assign_indexes, Agent, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
-    },
+    model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
     SessionTrace,
 };
 use anyhow::{Context, Result};
@@ -9,7 +7,6 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -376,139 +373,13 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
     }))
 }
 
-pub type SearchRow = (String, String, Option<String>, i64);
-
-pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SearchRow>> {
-    search_filtered(conn, query, limit, None, None, None)
-}
-
-pub fn search_filtered(
-    conn: &Connection,
-    query: &str,
-    limit: usize,
-    agent: Option<Agent>,
-    cwd: Option<&str>,
-    since_ms: Option<i64>,
-) -> Result<Vec<SearchRow>> {
-    let mut sql=String::from("SELECT e.session_id,s.agent,s.cwd,bm25(events_fts) score FROM events_fts JOIN events e ON e.id=events_fts.rowid JOIN sessions s ON s.id=e.session_id WHERE events_fts MATCH ?1");
-    if agent.is_some() {
-        sql.push_str(" AND s.agent=?2");
-    }
-    if cwd.is_some() {
-        sql.push_str(if agent.is_some() {
-            " AND s.cwd LIKE ?3"
-        } else {
-            " AND s.cwd LIKE ?2"
-        });
-    }
-    if since_ms.is_some() {
-        sql.push_str(if agent.is_some() && cwd.is_some() {
-            " AND s.ended_at_ms>=?4"
-        } else if agent.is_some() || cwd.is_some() {
-            " AND s.ended_at_ms>=?3"
-        } else {
-            " AND s.ended_at_ms>=?2"
-        });
-    }
-    let n = 1 + agent.is_some() as usize + cwd.is_some() as usize + since_ms.is_some() as usize;
-    sql.push_str(&format!(" ORDER BY score ASC LIMIT ?{}", n + 1));
-    let mut stmt = conn.prepare(&sql)?;
-    let mut ps: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_owned())];
-    if let Some(a) = agent {
-        ps.push(Box::new(a.as_str().to_owned()));
-    }
-    if let Some(c) = cwd {
-        ps.push(Box::new(format!("%{c}%")));
-    }
-    if let Some(s) = since_ms {
-        ps.push(Box::new(s));
-    }
-    ps.push(Box::new(limit as i64));
-    let rows = stmt
-        .query_map(
-            rusqlite::params_from_iter(ps.iter().map(|x| x.as_ref())),
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, f64>(3)?,
-                ))
-            },
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut grouped: HashMap<String, (String, Option<String>, i64)> = HashMap::new();
-    let mut order = Vec::new();
-    for (sid, agent, cwd, _score) in rows {
-        if !grouped.contains_key(&sid) {
-            order.push(sid.clone());
-        }
-        grouped
-            .entry(sid)
-            .and_modify(|v| v.2 += 1)
-            .or_insert((agent, cwd, 1));
-    }
-    let mut edges: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    let mut edge_stmt = conn.prepare("SELECT id,parent_session_id,forked_from FROM sessions")?;
-    for row in edge_stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?,
-            r.get::<_, Option<String>>(2)?,
-        ))
-    })? {
-        let (id, parent, forked) = row?;
-        edges.insert(
-            id,
-            (
-                parent,
-                forked.map(|x| x.split('#').next().unwrap_or(&x).to_owned()),
-            ),
-        );
-    }
-    fn root(id: &str, edges: &HashMap<String, (Option<String>, Option<String>)>) -> String {
-        let mut cur = id.to_owned();
-        let mut seen = std::collections::HashSet::new();
-        while seen.insert(cur.clone()) {
-            let Some((parent, forked)) = edges.get(&cur) else {
-                break;
-            };
-            let next = parent.as_ref().or(forked.as_ref());
-            let Some(next) = next else { break };
-            if !edges.contains_key(next) {
-                break;
-            }
-            cur = next.clone();
-        }
-        cur
-    }
-    let mut collapsed: HashMap<String, (String, String, Option<String>, i64)> = HashMap::new();
-    let mut roots = Vec::new();
-    for sid in order {
-        let Some((agent, cwd, hits)) = grouped.remove(&sid) else {
-            continue;
-        };
-        let r = root(&sid, &edges);
-        if let Some(existing) = collapsed.get_mut(&r) {
-            existing.3 += hits;
-        } else {
-            roots.push(r.clone());
-            collapsed.insert(r, (sid, agent, cwd, hits));
-        }
-    }
-    Ok(roots
-        .into_iter()
-        .filter_map(|r| collapsed.remove(&r))
-        .take(limit)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{
         Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session,
     };
+    use crate::{search, SearchRequest};
     use tempfile::tempdir;
 
     fn session(path: &Path) -> ParsedSession {
@@ -609,8 +480,11 @@ mod tests {
             IngestMode::Partial,
         )
         .unwrap();
-        let rows = search(&conn, "deploy netlify", 10).unwrap();
-        assert_eq!(rows.first().map(|r| r.0.as_str()), Some("codex:strong"));
+        let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
+        assert_eq!(
+            rows.first().map(|row| row.id.as_str()),
+            Some("codex:strong")
+        );
     }
 
     #[test]
@@ -626,8 +500,8 @@ mod tests {
         let mut child = named_session("codex:child", "deploy netlify deploy");
         child.session.parent_session_id = Some("codex:parent".into());
         upsert(&mut conn, child, IngestMode::Partial).unwrap();
-        let rows = search(&conn, "deploy netlify", 10).unwrap();
+        let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].3, 2);
+        assert_eq!(rows[0].hits, 2);
     }
 }

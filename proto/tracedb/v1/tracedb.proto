@@ -56,6 +56,33 @@ message SearchResult {
   string agent = 2;
   optional string cwd = 3;
   int64 hits = 4;
+  string lineage_root_id = 5;
+  optional string title = 6;
+  optional int64 started_at_ms = 7;
+  optional int64 ended_at_ms = 8;
+  double score = 9;
+  ScoreBreakdown score_breakdown = 10;
+  SearchMatch best_match = 11;
+  optional string ask = 12;
+  optional string outcome = 13;
+  repeated string related_session_ids = 14;
+}
+
+message ScoreBreakdown {
+  double best_match = 1;
+  double hit_coverage = 2;
+  double term_coverage = 3;
+  double kind = 4;
+  double recency = 5;
+  double title = 6;
+  double lineage = 7;
+}
+
+message SearchMatch {
+  int64 event_idx = 1;
+  string kind = 2;
+  double bm25 = 3;
+  string snippet = 4;
 }
 
 message ShowRequest {

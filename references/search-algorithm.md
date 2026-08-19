@@ -5,23 +5,38 @@ not an isolated event, so retrieval is intentionally session-oriented.
 
 ## Pipeline
 
-1. FTS5 produces bounded event candidates in BM25 order.
-2. Agent, working-directory, and time filters are applied in SQL.
-3. Candidates are aggregated by session while preserving the first and strongest
+1. The planner combines an exact phrase arm with individual-term recall arms;
+   explicit FTS5 syntax is passed through unchanged.
+2. FTS5 produces at most 50 hits per session and 5,000 total event candidates
+   in BM25 order.
+3. Agent, working-directory, and time filters are applied in SQL.
+4. Candidates are aggregated by session while preserving the first and strongest
    hit as the representative ordering signal.
-4. Sessions are walked to their parent or fork root with cycle protection.
-5. Related sessions collapse into one result and their hit counts are merged.
+5. Explainable relevance, coverage, kind, recency, and title components are
+   calculated for each session.
+6. Sessions are walked to their parent or fork root with cycle protection.
+7. Related sessions collapse into one result and their hit counts are merged.
+8. First-user and last-assistant bookends are loaded for all top lineages in one
+   batch query.
 
-The current Rust implementation caps the SQL event stream and returns at most
-the requested number of collapsed sessions. Tool results and usage events remain
-available through `show` but are not included in FTS by default.
+Tool results and usage events remain available through `show` but are not
+included in FTS by default.
+
+For a plain query such as `deploy netlify`, the planner emits:
+
+```text
+"deploy netlify" OR "deploy" OR "netlify"
+```
+
+The phrase arm rewards precision, while the individual arms retain sessions
+where the terms occur in different events. Session term coverage then rewards
+results that explain more of the query.
 
 ## BM25 constraints
 
 SQLite FTS5 auxiliary functions such as `bm25()` cannot be used directly in an
 aggregate query. TraceDB therefore streams ranked event rows and performs
-session aggregation in Rust. This also keeps the implementation ready for kind,
-recency, title, and coverage scoring without changing the FTS schema.
+session aggregation and scoring in Rust.
 
 BM25 scores are smaller for stronger matches. SQL must use ascending order.
 Regression tests protect this invariant.
@@ -36,22 +51,30 @@ remains the representative and hit counts from related members are added.
 This prevents a parent task and its subagents from occupying multiple result
 slots while still rewarding work spread across the lineage.
 
-## Planned scoring model
+## Scoring model
 
-The next scoring layer will combine normalized components:
+TraceDB combines normalized components:
 
 ```text
-score = best_bm25
-      + coverage_weight * log1p(hit_count)
-      + kind_weight * kind_bonus
-      + recency_weight * exp(-ln(2) * age_days / half_life_days)
-      + title_weight * title_match
-      + lineage_weight * related_score
+score = best_match
+      + 0.25 * hit_coverage
+      + 0.35 * term_coverage
+      + 0.20 * kind_bonus
+      + 0.25 * recency
+      + 0.15 * title_match
+      + 0.10 * sum(related_session_scores)
 ```
 
-The public result type will expose the score breakdown, strongest hit, distant
-secondary hit clusters, the first user request, and the last assistant outcome.
-All candidate and context fan-out will remain explicitly bounded.
+`best_match` is min-max normalized within the candidate set after reversing
+FTS5's smaller-is-better BM25 direction. `hit_coverage` is normalized
+`log1p(hit_count)`. `term_coverage` is the fraction of plain query terms found
+across matched snippets and the title. Recency uses a 30-day exponential
+half-life. The kind bonus is `user > assistant > system > thinking > tool_call`.
+
+The public result exposes the full score breakdown, strongest matched event and
+snippet, title and timestamps, lineage root and related members, the first user
+request, and the last assistant outcome. When the strongest lineage member is a
+subagent without an outcome, context assembly falls back to a related member.
 
 ## Tokenizers
 
@@ -67,9 +90,10 @@ kind gating and index noisy tool-result and usage rows.
 
 ## Performance invariants
 
-- Candidate event count is bounded before Rust aggregation.
+- Candidate event count is bounded globally and per session before aggregation.
 - Lineage loading is one small query, not an N+1 walk.
 - Search never reads native trace files.
 - Reindex never reads native trace files.
-- Result context assembly must use batch queries.
+- Result context assembly uses one batch query across representatives and
+  related lineage members.
 - Exact filters run in SQL before aggregation.

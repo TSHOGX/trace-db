@@ -8,6 +8,7 @@ pub mod service;
 
 pub mod model;
 pub mod parsers;
+pub mod search;
 pub mod store;
 
 pub mod proto {
@@ -16,11 +17,12 @@ pub mod proto {
 
 pub use facade::{
     native_root, AgentIngestReport, AgentStats, ArchiveStats, IngestReport, IngestRequest,
-    SearchRequest, SearchResult, SessionTrace, TraceDb,
+    SessionTrace, TraceDb,
 };
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
 };
+pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};
 
 use anyhow::Result;
 use rusqlite::Connection;
