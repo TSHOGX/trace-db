@@ -237,23 +237,18 @@ fn main() -> anyhow::Result<()> {
             let trace = db
                 .show(&id)?
                 .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
-            let mut events = Vec::new();
-            for event in trace.events {
-                if include_tools
-                    || matches!(
-                        event.kind,
-                        tracedb::EventKind::User | tracedb::EventKind::Assistant
-                    )
-                {
-                    events.push(event)
-                }
-            }
             if json {
-                let values = events.iter().map(event_json).collect::<Vec<_>>();
-                println!("{}", serde_json::to_string_pretty(&values)?)
+                println!("{}", serde_json::to_string_pretty(&trace)?)
             } else {
-                for event in events {
-                    println!("[{}] {}: {}", event.idx, event.kind, event.text);
+                for event in trace.events {
+                    if include_tools
+                        || matches!(
+                            event.kind,
+                            tracedb::EventKind::User | tracedb::EventKind::Assistant
+                        )
+                    {
+                        println!("[{}] {}: {}", event.idx, event.kind, event.text);
+                    }
                 }
             }
         }
@@ -277,19 +272,7 @@ fn main() -> anyhow::Result<()> {
         Command::Stats { json } => {
             let stats = db.stats()?;
             if json {
-                let values = stats
-                    .agents
-                    .iter()
-                    .map(|row| {
-                        serde_json::json!({
-                            "agent": row.agent,
-                            "sessions": row.sessions,
-                            "events": row.events,
-                            "full": row.full_sessions,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                println!("{}", serde_json::to_string_pretty(&values)?);
+                println!("{}", serde_json::to_string_pretty(&stats)?);
             } else {
                 println!("db: {}", stats.path.display());
                 for row in stats.agents {
@@ -396,11 +379,7 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
             }
             "show" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                serde_json::to_value(
-                    db.show(id)?
-                        .map(|trace| trace.events.iter().map(event_json).collect::<Vec<_>>())
-                        .unwrap_or_default(),
-                )?
+                serde_json::to_value(db.show(id)?)?
             }
             "reconstruct" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -432,19 +411,6 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-fn event_json(event: &tracedb::Event) -> serde_json::Value {
-    serde_json::json!({
-        "idx": event.idx,
-        "kind": event.kind,
-        "subtype": event.subtype,
-        "name": event.name,
-        "callId": event.call_id,
-        "isError": event.is_error,
-        "text": event.text,
-        "createdAtMs": event.created_at_ms,
-    })
 }
 
 #[cfg(test)]
