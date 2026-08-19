@@ -1,7 +1,7 @@
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{Agent, IngestMode, IngestRequest, SearchRequest, TraceDb};
+use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, SearchRequest, TraceDb};
 
 fn runtime_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
@@ -95,10 +95,16 @@ impl PyTraceDb {
     }
 
     /// Reconstruct full-capture native sources and return their paths as JSON.
-    fn reconstruct_json(&self, session_id: String, out_dir: String) -> PyResult<String> {
+    #[pyo3(signature = (session_id, out_dir, overwrite=false))]
+    fn reconstruct_json(
+        &self,
+        session_id: String,
+        out_dir: String,
+        overwrite: bool,
+    ) -> PyResult<String> {
         json(
             self.db
-                .reconstruct(&session_id, out_dir)
+                .reconstruct_with_options(&session_id, out_dir, ReconstructionOptions { overwrite })
                 .map_err(runtime_error)?
                 .into_iter()
                 .map(|path| path.display().to_string())

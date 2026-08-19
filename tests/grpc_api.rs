@@ -6,8 +6,8 @@ use tonic::{transport::Server, Code};
 use tracedb::service::TraceDbGrpc;
 use tracedb::{
     proto::{
-        trace_db_service_client::TraceDbServiceClient, SearchRequest as ProtoSearchRequest,
-        ShowRequest, StatsRequest,
+        trace_db_service_client::TraceDbServiceClient, ReconstructRequest,
+        SearchRequest as ProtoSearchRequest, ShowRequest, StatsRequest,
     },
     Agent, Event, EventKind, IngestMode, ParsedSession, Session, TraceDb,
 };
@@ -95,6 +95,58 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
         .unwrap_err();
     assert_eq!(error.code(), Code::InvalidArgument);
 
+    let reconstruct_error = client
+        .reconstruct(ReconstructRequest {
+            id: "codex:grpc".into(),
+            out_dir: "restore".into(),
+            overwrite: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(reconstruct_error.code(), Code::PermissionDenied);
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn grpc_reconstruction_rejects_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempdir().unwrap();
+    let database = TraceDb::open(dir.path().join("trace.db")).unwrap();
+    let root = dir.path().join("restore-root");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    symlink(&outside, root.join("escape")).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(TraceDbGrpc::with_reconstruct_root(database, root).into_server())
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    let mut client = TraceDbServiceClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+
+    let error = client
+        .reconstruct(ReconstructRequest {
+            id: "codex:missing".into(),
+            out_dir: "escape/target".into(),
+            overwrite: false,
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), Code::InvalidArgument);
+    assert!(error.message().contains("outside"));
     shutdown_tx.send(()).unwrap();
     server.await.unwrap().unwrap();
 }

@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use tracedb::{Agent, IngestMode, IngestRequest, TraceDb};
+use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, TraceDb};
 
 fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, TraceDb) {
     let dir = tempdir().unwrap();
@@ -17,6 +17,123 @@ fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, Trace
     assert_eq!(report.total_parsed(), 1);
     assert_eq!(report.total_ingested(), 1);
     (dir, db)
+}
+
+#[test]
+fn reconstruction_preflights_conflicts_before_writing() {
+    let fixtures = tempdir().unwrap();
+    let first = fixtures.path().join("rollout-conflict.jsonl");
+    let second = fixtures.path().join("sidecar.json");
+    std::fs::write(
+        &first,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"conflict\"}}\n",
+    )
+    .unwrap();
+    std::fs::write(&second, "sidecar\n").unwrap();
+    let archive = tempdir().unwrap();
+    let db_path = archive.path().join("trace.db");
+    let mut db = TraceDb::open(&db_path).unwrap();
+    let report = db
+        .ingest(IngestRequest {
+            agents: vec![Agent::Codex],
+            mode: IngestMode::Full,
+            root: Some(fixtures.path().to_path_buf()),
+            since_ms: None,
+        })
+        .unwrap();
+    assert_eq!(report.total_ingested(), 1);
+    let connection = rusqlite::Connection::open(&db_path).unwrap();
+    let object_hash: String = connection
+        .query_row("SELECT hash FROM objects LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO raw_sources(session_id,locator,kind,restore_path,object_hash) VALUES('codex:conflict','sidecar','json','sidecar.json',?1)",
+            [&object_hash],
+        )
+        .unwrap();
+    drop(connection);
+    let output = archive.path().join("restore");
+    std::fs::create_dir(&output).unwrap();
+    std::fs::write(output.join("sidecar.json"), "existing\n").unwrap();
+
+    let error = db.reconstruct("codex:conflict", &output).unwrap_err();
+
+    assert!(error.to_string().contains("already exists"));
+    assert!(!output.join("rollout-conflict.jsonl").exists());
+    assert_eq!(
+        std::fs::read(output.join("sidecar.json")).unwrap(),
+        b"existing\n"
+    );
+}
+
+#[test]
+fn reconstruction_revalidates_objects_before_writing() {
+    let fixtures = tempdir().unwrap();
+    let source = fixtures.path().join("rollout-corrupt.jsonl");
+    std::fs::write(
+        &source,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"corrupt\"}}\n",
+    )
+    .unwrap();
+    let (archive, db) = ingest_one(fixtures.path(), Agent::Codex);
+    let connection = rusqlite::Connection::open(archive.path().join("trace.db")).unwrap();
+    connection
+        .execute("UPDATE objects SET bytes=bytes+1", [])
+        .unwrap();
+    drop(connection);
+    let output = archive.path().join("restore");
+
+    let error = db.reconstruct("codex:corrupt", &output).unwrap_err();
+
+    assert!(error.to_string().contains("length mismatch"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn reconstruction_requires_explicit_overwrite() {
+    let fixtures = tempdir().unwrap();
+    let source = fixtures.path().join("rollout-overwrite.jsonl");
+    let native = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"overwrite\"}}\n";
+    std::fs::write(&source, native).unwrap();
+    let (archive, db) = ingest_one(fixtures.path(), Agent::Codex);
+    let output = archive.path().join("restore");
+    std::fs::create_dir(&output).unwrap();
+    let target = output.join("rollout-overwrite.jsonl");
+    std::fs::write(&target, "existing\n").unwrap();
+
+    db.reconstruct_with_options(
+        "codex:overwrite",
+        &output,
+        ReconstructionOptions { overwrite: true },
+    )
+    .unwrap();
+
+    assert_eq!(std::fs::read_to_string(target).unwrap(), native);
+}
+
+#[cfg(unix)]
+#[test]
+fn reconstruction_preserves_unix_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixtures = tempdir().unwrap();
+    let source = fixtures.path().join("rollout-mode.jsonl");
+    std::fs::write(
+        &source,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"mode\"}}\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let (archive, db) = ingest_one(fixtures.path(), Agent::Codex);
+    let output = archive.path().join("restore");
+
+    let paths = db.reconstruct("codex:mode", &output).unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&paths[0]).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
 }
 
 #[test]

@@ -190,7 +190,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
         role: None,
         bytes: candidate.bytes,
         mtime_ns: candidate.mtime_ns,
-        mode: None,
+        mode: candidate.mode,
         capture: Some(Capture::File {
             path: path.display().to_string(),
         }),

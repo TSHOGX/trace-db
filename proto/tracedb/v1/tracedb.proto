@@ -183,6 +183,7 @@ message ReindexResponse {}
 message ReconstructRequest {
   string id = 1;
   string out_dir = 2;
+  bool overwrite = 3;
 }
 
 message ReconstructResponse {

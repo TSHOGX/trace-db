@@ -51,6 +51,7 @@ pub struct SessionCandidate {
     pub updated_at_ms: Option<i64>,
     pub bytes: Option<i64>,
     pub mtime_ns: Option<i64>,
+    pub mode: Option<u32>,
     pub parent_session_id: Option<String>,
     pub agent_type: Option<String>,
 }
@@ -70,6 +71,7 @@ impl SessionCandidate {
             updated_at_ms: mtime_ns.map(|value| value / 1_000_000),
             bytes: Some(metadata.len() as i64),
             mtime_ns,
+            mode: file_mode(&metadata),
             path,
             native_id: None,
             parent_session_id: None,
@@ -87,6 +89,17 @@ impl SessionCandidate {
         ));
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn file_mode(_metadata: &Metadata) -> Option<u32> {
+    None
 }
 
 fn modified_ns(metadata: &Metadata) -> Option<i64> {

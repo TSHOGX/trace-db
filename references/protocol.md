@@ -37,6 +37,10 @@ The service has no authentication or TLS. TraceDB refuses a non-loopback TCP
 listener unless `--allow-remote` is explicit. Remote deployments should place
 the service behind a secured transport rather than expose it directly.
 
+Reconstruction is disabled unless the server starts with
+`--reconstruct-root PATH`. Clients then provide only a safe relative
+`out_dir`; absolute paths and parent traversal are rejected.
+
 ## Methods
 
 | Method | Behavior |

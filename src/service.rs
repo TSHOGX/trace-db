@@ -2,7 +2,7 @@
 
 use crate::{
     proto as pb, Agent, ArchiveStats, Event, IngestMode, IngestRequest, NativeSource,
-    SearchRequest, Session, SessionTrace, TraceDb,
+    ReconstructionOptions, SearchRequest, Session, SessionTrace, TraceDb,
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -23,12 +23,21 @@ pub enum ServiceEndpoint {
 #[derive(Clone)]
 pub struct TraceDbGrpc {
     database: Arc<Mutex<TraceDb>>,
+    reconstruct_root: Option<Arc<PathBuf>>,
 }
 
 impl TraceDbGrpc {
     pub fn new(database: TraceDb) -> Self {
         Self {
             database: Arc::new(Mutex::new(database)),
+            reconstruct_root: None,
+        }
+    }
+
+    pub fn with_reconstruct_root(database: TraceDb, root: PathBuf) -> Self {
+        Self {
+            database: Arc::new(Mutex::new(database)),
+            reconstruct_root: Some(Arc::new(root)),
         }
     }
 
@@ -218,16 +227,56 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         if request.id.is_empty() || request.out_dir.is_empty() {
             return Err(Status::invalid_argument("id and out_dir must not be empty"));
         }
+        let root = self.reconstruct_root.as_deref().ok_or_else(|| {
+            Status::permission_denied(
+                "reconstruction is disabled; configure a server reconstruction root",
+            )
+        })?;
+        let relative = std::path::Path::new(&request.out_dir);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(Status::invalid_argument(
+                "out_dir must be a safe path relative to the configured reconstruction root",
+            ));
+        }
+        let out_dir = resolve_reconstruct_out(root, relative)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let paths = self
             .database()
             .map_err(internal)?
-            .reconstruct(&request.id, request.out_dir)
+            .reconstruct_with_options(
+                &request.id,
+                out_dir,
+                ReconstructionOptions {
+                    overwrite: request.overwrite,
+                },
+            )
             .map_err(internal)?
             .into_iter()
             .map(|path| path.display().to_string())
             .collect();
         Ok(Response::new(pb::ReconstructResponse { paths }))
     }
+}
+
+fn resolve_reconstruct_out(root: &PathBuf, relative: &std::path::Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(root)?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    let candidate = canonical_root.join(relative);
+    let mut ancestor = candidate.as_path();
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("reconstruction path has no existing ancestor"))?;
+    }
+    let canonical_ancestor = std::fs::canonicalize(ancestor)?;
+    if !canonical_ancestor.starts_with(&canonical_root) {
+        bail!("out_dir resolves outside the configured reconstruction root");
+    }
+    Ok(candidate)
 }
 
 fn issue_to_proto(issue: crate::IngestIssue) -> pb::IngestIssue {
@@ -239,11 +288,21 @@ fn issue_to_proto(issue: crate::IngestIssue) -> pb::IngestIssue {
     }
 }
 
-pub fn serve(database: TraceDb, endpoint: ServiceEndpoint) -> Result<()> {
+pub fn serve(
+    database: TraceDb,
+    endpoint: ServiceEndpoint,
+    reconstruct_root: Option<PathBuf>,
+) -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(serve_async(TraceDbGrpc::new(database), endpoint))
+        .block_on(serve_async(
+            match reconstruct_root {
+                Some(root) => TraceDbGrpc::with_reconstruct_root(database, root),
+                None => TraceDbGrpc::new(database),
+            },
+            endpoint,
+        ))
 }
 
 async fn serve_async(service: TraceDbGrpc, endpoint: ServiceEndpoint) -> Result<()> {

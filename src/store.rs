@@ -1,6 +1,6 @@
 use crate::{
     model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
-    SessionTrace,
+    ReconstructionOptions, SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -484,24 +485,26 @@ pub fn rebuild_fts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn reconstruct(conn: &Connection, session_id: &str, out_dir: &Path) -> Result<Vec<PathBuf>> {
-    fs::create_dir_all(out_dir)?;
-    let mut stmt = conn.prepare("SELECT locator,restore_path,object_hash FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL ORDER BY locator")?;
+pub fn reconstruct(
+    conn: &Connection,
+    session_id: &str,
+    out_dir: &Path,
+    options: ReconstructionOptions,
+) -> Result<Vec<PathBuf>> {
+    let mut stmt = conn.prepare("SELECT locator,restore_path,object_hash,mtime_ns,mode FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL ORDER BY locator")?;
     let rows = stmt.query_map([session_id], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+            r.get::<_, Option<i64>>(4)?,
         ))
     })?;
-    let mut written = Vec::new();
+    let mut planned = Vec::new();
+    let mut targets = std::collections::HashSet::new();
     for row in rows {
-        let (_locator, restore, hash) = row?;
-        let payload: Vec<u8> =
-            conn.query_row("SELECT payload FROM objects WHERE hash=?1", [&hash], |r| {
-                r.get(0)
-            })?;
-        let bytes = zstd::decode_all(payload.as_slice())?;
+        let (locator, restore, hash, mtime_ns, source_mode) = row?;
         let rel = Path::new(&restore);
         if rel.is_absolute()
             || rel
@@ -511,10 +514,87 @@ pub fn reconstruct(conn: &Connection, session_id: &str, out_dir: &Path) -> Resul
             anyhow::bail!("unsafe restore path: {restore}");
         }
         let target = out_dir.join(rel);
-        if let Some(p) = target.parent() {
-            fs::create_dir_all(p)?;
+        if !targets.insert(target.clone()) {
+            anyhow::bail!("duplicate restore target: {}", target.display());
         }
-        fs::write(&target, bytes)?;
+        if target.exists() && !options.overwrite {
+            anyhow::bail!(
+                "restore target already exists: {} (use --overwrite to replace it)",
+                target.display()
+            );
+        }
+        let (compression, expected_bytes, payload) = conn
+            .query_row(
+                "SELECT compression,bytes,payload FROM objects WHERE hash=?1",
+                [&hash],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .with_context(|| format!("load archived object {hash} for {locator}"))?;
+        if compression != "zstd" {
+            anyhow::bail!("unsupported compression {compression:?} for archived object {hash}");
+        }
+        let bytes = zstd::decode_all(payload.as_slice())
+            .with_context(|| format!("decompress archived object {hash} for {locator}"))?;
+        if i64::try_from(bytes.len()).ok() != Some(expected_bytes) {
+            anyhow::bail!(
+                "archived object {hash} length mismatch: expected {expected_bytes}, decoded {}",
+                bytes.len()
+            );
+        }
+        let actual_hash = hex::encode(Sha256::digest(&bytes));
+        if actual_hash != hash {
+            anyhow::bail!(
+                "archived object {hash} SHA-256 mismatch: decoded object hashes to {actual_hash}"
+            );
+        }
+        planned.push((target, bytes, mtime_ns, source_mode));
+    }
+
+    for (target, _, _, _) in &planned {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut written = Vec::with_capacity(planned.len());
+    for (target, bytes, mtime_ns, source_mode) in planned {
+        let parent = target.parent().unwrap_or(out_dir);
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("create temporary restore file in {}", parent.display()))?;
+        temporary.write_all(&bytes)?;
+        temporary.as_file_mut().sync_all()?;
+        #[cfg(unix)]
+        if let Some(source_mode) = source_mode {
+            use std::os::unix::fs::PermissionsExt;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(source_mode as u32))?;
+        }
+        if options.overwrite {
+            temporary
+                .persist(&target)
+                .map_err(|error| error.error)
+                .with_context(|| format!("atomically replace {}", target.display()))?;
+        } else {
+            temporary
+                .persist_noclobber(&target)
+                .map_err(|error| error.error)
+                .with_context(|| format!("atomically create {}", target.display()))?;
+        }
+        if let Some(mtime_ns) = mtime_ns {
+            filetime::set_file_mtime(
+                &target,
+                filetime::FileTime::from_unix_time(
+                    mtime_ns.div_euclid(1_000_000_000),
+                    mtime_ns.rem_euclid(1_000_000_000) as u32,
+                ),
+            )?;
+        }
         written.push(target);
     }
     Ok(written)
@@ -751,7 +831,7 @@ mod tests {
             1
         );
         let out = dir.path().join("out");
-        reconstruct(&conn, "codex:test", &out).unwrap();
+        reconstruct(&conn, "codex:test", &out, ReconstructionOptions::default()).unwrap();
         assert_eq!(
             fs::read(out.join("rollout.jsonl")).unwrap(),
             fs::read(&src).unwrap()
@@ -793,7 +873,7 @@ mod tests {
         upsert(&mut conn, session(&first), IngestMode::Full).unwrap();
 
         let out = dir.path().join("out");
-        reconstruct(&conn, "codex:test", &out).unwrap();
+        reconstruct(&conn, "codex:test", &out, ReconstructionOptions::default()).unwrap();
         assert_eq!(fs::read(out.join("rollout.jsonl")).unwrap(), b"first\n");
         assert_eq!(fs::read(out.join("second.json")).unwrap(), b"second\n");
     }

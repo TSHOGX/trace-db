@@ -2,7 +2,7 @@ use napi::{Error, Result, Status};
 use napi_derive::napi;
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{Agent, IngestMode, IngestRequest, SearchRequest, TraceDb};
+use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, SearchRequest, TraceDb};
 
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
@@ -103,9 +103,20 @@ impl NodeTraceDb {
     /// Reconstruct full-capture native sources and return their paths as JSON.
     #[napi]
     pub fn reconstruct_json(&self, session_id: String, out_dir: String) -> Result<String> {
+        self.reconstruct_json_with_options(session_id, out_dir, false)
+    }
+
+    /// Reconstruct full-capture native sources with explicit overwrite handling.
+    #[napi]
+    pub fn reconstruct_json_with_options(
+        &self,
+        session_id: String,
+        out_dir: String,
+        overwrite: bool,
+    ) -> Result<String> {
         json(
             self.db
-                .reconstruct(&session_id, out_dir)
+                .reconstruct_with_options(&session_id, out_dir, ReconstructionOptions { overwrite })
                 .map_err(native_error)?
                 .into_iter()
                 .map(|path| path.display().to_string())

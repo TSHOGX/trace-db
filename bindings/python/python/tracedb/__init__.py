@@ -84,16 +84,22 @@ class TraceDb:
         return json.loads(self.show_json(session_id))
 
     def reconstruct_json(
-        self, session_id: str, out_dir: os.PathLike[str] | str
+        self,
+        session_id: str,
+        out_dir: os.PathLike[str] | str,
+        overwrite: bool = False,
     ) -> str:
         """Reconstruct full native sources and return their paths as raw JSON."""
-        return self._native.reconstruct_json(session_id, os.fspath(out_dir))
+        return self._native.reconstruct_json(session_id, os.fspath(out_dir), overwrite)
 
     def reconstruct(
-        self, session_id: str, out_dir: os.PathLike[str] | str
+        self,
+        session_id: str,
+        out_dir: os.PathLike[str] | str,
+        overwrite: bool = False,
     ) -> list[str]:
         """Reconstruct full native sources and return their written paths."""
-        return json.loads(self.reconstruct_json(session_id, out_dir))
+        return json.loads(self.reconstruct_json(session_id, out_dir, overwrite))
 
     def reindex(self) -> None:
         """Rebuild the full-text index."""

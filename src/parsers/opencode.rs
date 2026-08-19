@@ -135,7 +135,7 @@ fn parse_session(
         role: None,
         bytes: candidate.bytes,
         mtime_ns: candidate.mtime_ns,
-        mode: None,
+        mode: candidate.mode,
         capture: Some(Capture::Bytes {
             label: sid.clone(),
             bytes,
@@ -193,6 +193,7 @@ impl Parser for OpenCodeParser {
                 updated_at_ms: updated.or(created),
                 bytes: Some(metadata.len() as i64),
                 mtime_ns: file_candidate.mtime_ns,
+                mode: file_candidate.mode,
                 parent_session_id: None,
                 agent_type: None,
             });

@@ -224,8 +224,25 @@ impl TraceDb {
 
     /// Restore full-capture native sources below `out_dir`.
     pub fn reconstruct(&self, session_id: &str, out_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-        store::reconstruct(&self.connection, session_id, out_dir.as_ref())
+        self.reconstruct_with_options(session_id, out_dir, ReconstructionOptions::default())
     }
+
+    /// Restore full-capture sources with explicit conflict handling.
+    pub fn reconstruct_with_options(
+        &self,
+        session_id: &str,
+        out_dir: impl AsRef<Path>,
+        options: ReconstructionOptions,
+    ) -> Result<Vec<PathBuf>> {
+        store::reconstruct(&self.connection, session_id, out_dir.as_ref(), options)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconstructionOptions {
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// Open an existing archive without migration and verify its stored contract.

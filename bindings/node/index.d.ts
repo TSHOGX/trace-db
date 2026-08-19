@@ -22,7 +22,24 @@ export interface AgentIngestReport {
   parsed: number;
   ingested: number;
   unchanged: number;
+  skipped: number;
   skippedBySince: number;
+  failed: number;
+  warnings: IngestIssue[];
+  failures: IngestIssue[];
+}
+
+export interface IngestIssue {
+  stage: "discovery" | "parsing" | "database";
+  locator: string;
+  category:
+    | "unsupported_format"
+    | "corrupt_data"
+    | "permission"
+    | "transient_read"
+    | "read"
+    | "database";
+  message: string;
 }
 
 export interface IngestReport {
@@ -91,7 +108,12 @@ export class TraceDb {
   show(sessionId: string): SessionTrace | null;
 
   reconstructJson(sessionId: string, outDir: string): string;
-  reconstruct(sessionId: string, outDir: string): string[];
+  reconstructJsonWithOptions(
+    sessionId: string,
+    outDir: string,
+    overwrite?: boolean,
+  ): string;
+  reconstruct(sessionId: string, outDir: string, overwrite?: boolean): string[];
 
   reindex(): void;
 }

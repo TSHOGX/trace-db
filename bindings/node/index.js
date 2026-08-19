@@ -49,8 +49,18 @@ class TraceDb {
     return this._native.reconstructJson(sessionId, outDir);
   }
 
-  reconstruct(sessionId, outDir) {
-    return JSON.parse(this.reconstructJson(sessionId, outDir));
+  reconstructJsonWithOptions(sessionId, outDir, overwrite = false) {
+    return this._native.reconstructJsonWithOptions(
+      sessionId,
+      outDir,
+      overwrite,
+    );
+  }
+
+  reconstruct(sessionId, outDir, overwrite = false) {
+    return JSON.parse(
+      this.reconstructJsonWithOptions(sessionId, outDir, overwrite),
+    );
   }
 
   reindex() {

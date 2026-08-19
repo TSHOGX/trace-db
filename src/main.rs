@@ -70,6 +70,9 @@ enum Command {
         id: String,
         #[arg(long)]
         out: PathBuf,
+        /// Replace existing restore targets atomically.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Print archive health and per-agent counts.
     Stats {
@@ -95,6 +98,9 @@ enum Command {
         /// Permit an unauthenticated TCP listener outside loopback.
         #[arg(long)]
         allow_remote: bool,
+        /// Enable reconstruction below this server-controlled root.
+        #[arg(long)]
+        reconstruct_root: Option<PathBuf>,
     },
 }
 
@@ -255,8 +261,12 @@ fn main() -> anyhow::Result<()> {
             db.reindex()?;
             println!("events_fts rebuilt");
         }
-        Command::Reconstruct { id, out } => {
-            let paths = db.reconstruct(&id, &out)?;
+        Command::Reconstruct { id, out, overwrite } => {
+            let paths = db.reconstruct_with_options(
+                &id,
+                &out,
+                tracedb::ReconstructionOptions { overwrite },
+            )?;
             for p in &paths {
                 println!("{}", p.display());
             }
@@ -296,6 +306,7 @@ fn main() -> anyhow::Result<()> {
             listen,
             socket,
             allow_remote,
+            reconstruct_root,
         } => {
             let endpoint = match (listen, socket) {
                 (Some(_), Some(_)) => {
@@ -313,7 +324,7 @@ fn main() -> anyhow::Result<()> {
                 )
             }
             eprintln!("serving tracedb.v1 on {}", display_endpoint(&endpoint));
-            serve(db, endpoint)?;
+            serve(db, endpoint, reconstruct_root)?;
         }
     }
     Ok(())
@@ -394,11 +405,19 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
             "reconstruct" => {
                 let id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let out = req.get("out").and_then(|v| v.as_str()).unwrap_or(".");
+                let overwrite = req
+                    .get("overwrite")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
                 serde_json::to_value(
-                    db.reconstruct(id, PathBuf::from(out))?
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>(),
+                    db.reconstruct_with_options(
+                        id,
+                        PathBuf::from(out),
+                        tracedb::ReconstructionOptions { overwrite },
+                    )?
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>(),
                 )?
             }
             _ => {
