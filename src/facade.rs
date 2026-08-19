@@ -217,10 +217,22 @@ impl TraceDb {
         store::rebuild_fts(&self.connection)
     }
 
+    /// Verify SQLite, index, contract, reference, and archived-object integrity.
+    pub fn verify(&self) -> Result<VerifyReport> {
+        store::verify(&self.connection, &self.path)
+    }
+
     /// Restore full-capture native sources below `out_dir`.
     pub fn reconstruct(&self, session_id: &str, out_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         store::reconstruct(&self.connection, session_id, out_dir.as_ref())
     }
+}
+
+/// Open an existing archive without migration and verify its stored contract.
+pub fn verify_archive(path: impl AsRef<Path>) -> Result<VerifyReport> {
+    let path = path.as_ref();
+    let connection = store::open_for_verification(path)?;
+    store::verify(&connection, path)
 }
 
 /// Options for discovering and ingesting native sessions.
@@ -407,6 +419,59 @@ pub struct ArchiveStats {
     pub total_events: i64,
     pub total_full_sessions: i64,
     pub agents: Vec<AgentStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationFailure {
+    pub locator: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyCheck {
+    pub name: String,
+    pub checked: usize,
+    pub passed: bool,
+    pub failures: Vec<VerificationFailure>,
+}
+
+impl VerifyCheck {
+    pub(crate) fn new(
+        name: impl Into<String>,
+        checked: usize,
+        failures: Vec<VerificationFailure>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            checked,
+            passed: failures.is_empty(),
+            failures,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyReport {
+    pub path: PathBuf,
+    pub passed: bool,
+    pub checks: Vec<VerifyCheck>,
+}
+
+impl VerifyReport {
+    pub(crate) fn new(path: PathBuf, checks: Vec<VerifyCheck>) -> Self {
+        Self {
+            path,
+            passed: checks.iter().all(|check| check.passed),
+            checks,
+        }
+    }
+
+    pub fn failure_count(&self) -> usize {
+        self.checks.iter().map(|check| check.failures.len()).sum()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

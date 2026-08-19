@@ -40,6 +40,7 @@ trace-db ingest --mode full --agent codex
 trace-db ingest --strict --json
 trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
+trace-db verify --json
 ```
 
 Tagged releases publish archives for x86-64 and ARM64 Linux, x86-64 and ARM64
@@ -70,6 +71,7 @@ trace-db show SESSION_ID [--include-tools] [--json]
 trace-db reconstruct SESSION_ID --out DIRECTORY
 trace-db reindex
 trace-db stats [--json]
+trace-db verify [--json]
 trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH]
 ```

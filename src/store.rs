@@ -14,6 +14,9 @@ use std::{
 };
 
 pub const SCHEMA_VERSION: i64 = 1;
+pub const ARCHIVE_CONTRACT: &str = "partial-v1/full-v1";
+pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
+pub const JIEBA_TOKENIZER: &str = "jieba";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateState {
@@ -57,11 +60,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
-    let tokenizer = if jieba {
-        "jieba"
-    } else {
-        "unicode61 remove_diacritics 2"
-    };
+    let tokenizer = if jieba { "jieba" } else { PORTABLE_TOKENIZER };
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )?;
@@ -145,8 +144,200 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('tokenizer',?1)",
         [tokenizer],
     )?;
-    conn.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('archive_contract','partial-v1/full-v1')", [])?;
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('archive_contract',?1)",
+        [ARCHIVE_CONTRACT],
+    )?;
     Ok(())
+}
+
+pub fn open_for_verification(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        anyhow::bail!("TraceDB archive does not exist: {}", path.display());
+    }
+    let connection = Connection::open(path)?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "busy_timeout", 5000i64)?;
+    Ok(connection)
+}
+
+pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyReport> {
+    use crate::{VerificationFailure, VerifyCheck, VerifyReport};
+
+    let mut checks = Vec::new();
+
+    let integrity_rows = connection
+        .prepare("PRAGMA integrity_check")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let integrity_failures = integrity_rows
+        .iter()
+        .filter(|row| row.as_str() != "ok")
+        .map(|message| VerificationFailure {
+            locator: path.display().to_string(),
+            message: message.clone(),
+        })
+        .collect::<Vec<_>>();
+    checks.push(VerifyCheck::new(
+        "sqlite_integrity",
+        integrity_rows.len(),
+        integrity_failures,
+    ));
+
+    let foreign_key_failures = connection
+        .prepare("PRAGMA foreign_key_check")?
+        .query_map([], |row| {
+            Ok(VerificationFailure {
+                locator: format!("{} row {}", row.get::<_, String>(0)?, row.get::<_, i64>(1)?),
+                message: format!("references missing parent in {}", row.get::<_, String>(2)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    checks.push(VerifyCheck::new(
+        "foreign_keys",
+        foreign_key_failures.len(),
+        foreign_key_failures,
+    ));
+
+    let contract_failures = verify_contract(connection)?;
+    checks.push(VerifyCheck::new("archive_contract", 3, contract_failures));
+
+    let fts_failures = match connection.execute(
+        "INSERT INTO events_fts(events_fts,rank) VALUES('integrity-check',1)",
+        [],
+    ) {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![VerificationFailure {
+            locator: "events_fts".into(),
+            message: error.to_string(),
+        }],
+    };
+    let searchable_events = connection.query_row(
+        "SELECT count(*) FROM events WHERE kind NOT IN ('tool_result','usage')",
+        [],
+        |row| row.get::<_, usize>(0),
+    )?;
+    checks.push(VerifyCheck::new(
+        "fts_consistency",
+        searchable_events,
+        fts_failures,
+    ));
+
+    let reference_failures = connection
+        .prepare(
+            "SELECT r.session_id,r.locator,r.object_hash
+             FROM raw_sources r
+             LEFT JOIN objects o ON o.hash=r.object_hash
+             WHERE r.object_hash IS NOT NULL AND o.hash IS NULL
+             ORDER BY r.session_id,r.locator",
+        )?
+        .query_map([], |row| {
+            Ok(VerificationFailure {
+                locator: format!("{}:{}", row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                message: format!("referenced object {} is missing", row.get::<_, String>(2)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let referenced_objects = connection.query_row(
+        "SELECT count(*) FROM raw_sources WHERE object_hash IS NOT NULL",
+        [],
+        |row| row.get::<_, usize>(0),
+    )?;
+    checks.push(VerifyCheck::new(
+        "object_references",
+        referenced_objects,
+        reference_failures,
+    ));
+
+    let mut object_statement =
+        connection.prepare("SELECT hash,compression,bytes,payload FROM objects ORDER BY hash")?;
+    let objects = object_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut object_failures = Vec::new();
+    for (hash, compression, expected_bytes, payload) in &objects {
+        if compression != "zstd" {
+            object_failures.push(VerificationFailure {
+                locator: hash.clone(),
+                message: format!("unsupported compression {compression:?}"),
+            });
+            continue;
+        }
+        let bytes = match zstd::decode_all(payload.as_slice()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                object_failures.push(VerificationFailure {
+                    locator: hash.clone(),
+                    message: format!("zstd decompression failed: {error}"),
+                });
+                continue;
+            }
+        };
+        if i64::try_from(bytes.len()).ok() != Some(*expected_bytes) {
+            object_failures.push(VerificationFailure {
+                locator: hash.clone(),
+                message: format!(
+                    "length mismatch: expected {expected_bytes}, decoded {}",
+                    bytes.len()
+                ),
+            });
+        }
+        let actual_hash = hex::encode(Sha256::digest(&bytes));
+        if actual_hash != *hash {
+            object_failures.push(VerificationFailure {
+                locator: hash.clone(),
+                message: format!("SHA-256 mismatch: decoded object hashes to {actual_hash}"),
+            });
+        }
+    }
+    checks.push(VerifyCheck::new("objects", objects.len(), object_failures));
+
+    Ok(VerifyReport::new(path.to_path_buf(), checks))
+}
+
+fn verify_contract(connection: &Connection) -> Result<Vec<crate::VerificationFailure>> {
+    let mut failures = Vec::new();
+    let expected = [
+        ("schema_version", SCHEMA_VERSION.to_string()),
+        ("archive_contract", ARCHIVE_CONTRACT.to_owned()),
+    ];
+    for (key, expected_value) in expected {
+        let actual = connection
+            .query_row("SELECT value FROM schema_meta WHERE key=?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+        if actual.as_deref() != Some(expected_value.as_str()) {
+            failures.push(crate::VerificationFailure {
+                locator: format!("schema_meta.{key}"),
+                message: format!("expected {expected_value:?}, found {actual:?}"),
+            });
+        }
+    }
+    let tokenizer = connection
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='tokenizer'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if !matches!(
+        tokenizer.as_deref(),
+        Some(PORTABLE_TOKENIZER | JIEBA_TOKENIZER)
+    ) {
+        failures.push(crate::VerificationFailure {
+            locator: "schema_meta.tokenizer".into(),
+            message: format!("unsupported tokenizer contract {tokenizer:?}"),
+        });
+    }
+    Ok(failures)
 }
 
 fn now_ms() -> i64 {

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tracedb::{
     default_db_path,
     service::{serve, ServiceEndpoint},
-    Agent, IngestMode, IngestRequest, SearchRequest, TraceDb,
+    verify_archive, Agent, IngestMode, IngestRequest, SearchRequest, TraceDb,
 };
 
 #[derive(Parser, Debug)]
@@ -76,6 +76,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Verify database, index, contract, references, and archived objects.
+    Verify {
+        /// Print the complete machine-readable verification report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Line-oriented JSON API for language-neutral integrations.
     Api,
     /// Serve the versioned tracedb.v1 gRPC API.
@@ -95,6 +101,33 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let db_path = cli.db.unwrap_or_else(default_db_path);
+    if let Command::Verify { json } = &cli.command {
+        let report = verify_archive(&db_path)?;
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("db: {}", report.path.display());
+            for check in &report.checks {
+                println!(
+                    "{}\t{}\t{} checked\t{} failure(s)",
+                    if check.passed { "ok" } else { "failed" },
+                    check.name,
+                    check.checked,
+                    check.failures.len()
+                );
+                for failure in &check.failures {
+                    eprintln!("{}: {}", failure.locator, failure.message);
+                }
+            }
+        }
+        if !report.passed {
+            anyhow::bail!(
+                "archive verification failed: {} failure(s)",
+                report.failure_count()
+            );
+        }
+        return Ok(());
+    }
     let mut db = TraceDb::open(&db_path)?;
     match cli.command {
         Command::Ingest {
@@ -257,6 +290,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Verify { .. } => unreachable!("verify returns before opening the archive"),
         Command::Api => run_api(&db)?,
         Command::Serve {
             listen,
