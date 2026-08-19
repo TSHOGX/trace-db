@@ -23,6 +23,7 @@ fn full_archive() -> (tempfile::TempDir, std::path::PathBuf) {
             mode: IngestMode::Full,
             root: Some(native),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
     assert_eq!(report.total_ingested(), 1);

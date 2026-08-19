@@ -15,6 +15,7 @@ TraceDB has four layers:
 
 ```text
 src/
+  config.rs       typed TOML/environment/CLI resolution and exclusion globs
   lib.rs          crate exports and database path resolution
   facade.rs       typed TraceDb lifecycle and request/result API
   service.rs      tracedb.v1 gRPC adapter and local transports
@@ -41,6 +42,19 @@ and are restored only through validated relative paths.
 
 The `mode` column is monotonic: once a session has been captured in full mode,
 subsequent partial ingests retain full mode and recapture the source object.
+
+## Runtime configuration
+
+`TraceDbConfig` is the canonical resolved runtime configuration shared by the
+CLI and `TraceDb::open_default`. It applies CLI/embedding overrides,
+environment variables, a strict TOML file, and platform defaults in descending
+precedence. Python and Node default opens remain thin facade calls and inherit
+the same behavior. Explicit-path facade opens retain their narrow legacy
+semantics for embedders that manage storage and tokenizer loading themselves.
+
+Configuration-file paths are anchored to the file directory before later
+layers are applied. Native-source exclusions compile once per ingest request
+and run against normalized candidate locators and paths before parsing.
 
 ## Lineage
 

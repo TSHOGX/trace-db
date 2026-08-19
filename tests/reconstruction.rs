@@ -11,6 +11,7 @@ fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, Trace
             mode: IngestMode::Full,
             root: Some(root.to_path_buf()),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
     assert_eq!(report.total_discovered(), 1);
@@ -39,6 +40,7 @@ fn reconstruction_preflights_conflicts_before_writing() {
             mode: IngestMode::Full,
             root: Some(fixtures.path().to_path_buf()),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
     assert_eq!(report.total_ingested(), 1);

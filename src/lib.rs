@@ -6,6 +6,7 @@
 mod facade;
 pub mod service;
 
+pub mod config;
 pub mod model;
 pub mod parsers;
 pub mod search;
@@ -15,13 +16,16 @@ pub mod proto {
     tonic::include_proto!("tracedb.v1");
 }
 
+pub use config::{
+    default_config_path, ConfigOverrides, OutputFormat, TokenizerKind, TraceDbConfig,
+};
 pub use facade::{
-    doctor_archive, native_root, verify_archive, AgentIngestDryRunReport, AgentIngestReport,
-    AgentStats, ArchiveStats, DoctorAgent, DoctorDatabase, DoctorFailure, DoctorReport,
-    DoctorRuntime, DoctorTokenizer, IngestDryRunReport, IngestErrorCategory, IngestIssue,
-    IngestReport, IngestRequest, IngestStage, ListPage, ListRequest, ReconstructionOptions,
-    SessionSummary, SessionTrace, ShowRequest, TraceDb, VerificationFailure, VerifyCheck,
-    VerifyReport,
+    doctor_archive, doctor_configured, native_root, verify_archive, AgentIngestDryRunReport,
+    AgentIngestReport, AgentStats, ArchiveStats, DoctorAgent, DoctorDatabase, DoctorFailure,
+    DoctorReport, DoctorRuntime, DoctorTokenizer, IngestDryRunReport, IngestErrorCategory,
+    IngestIssue, IngestReport, IngestRequest, IngestStage, ListPage, ListRequest,
+    ReconstructionOptions, SessionSummary, SessionTrace, ShowRequest, TraceDb, VerificationFailure,
+    VerifyCheck, VerifyReport,
 };
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
@@ -39,11 +43,7 @@ pub fn default_db_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TRACEDB_PATH") {
         return PathBuf::from(path);
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::data_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("trace-db").join("trace.db")
+    config::default_database_path()
 }
 
 pub fn open_database(path: impl AsRef<Path>) -> Result<Connection> {

@@ -83,6 +83,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                 mode,
                 root: request.root.map(PathBuf::from),
                 since_ms: request.since_ms,
+                exclude: Vec::new(),
             })
             .map_err(internal)?;
         Ok(Response::new(pb::IngestResponse {

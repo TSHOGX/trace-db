@@ -41,6 +41,7 @@ fn native_ingest_reports_corrupt_candidates_and_continues() {
             mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
 
@@ -80,6 +81,7 @@ fn native_ingest_distinguishes_unsupported_format() {
             mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
 
@@ -88,6 +90,20 @@ fn native_ingest_distinguishes_unsupported_format() {
         report.agents[0].failures[0].category,
         IngestErrorCategory::UnsupportedFormat
     );
+}
+
+#[test]
+fn native_ingest_rejects_invalid_exclusion_patterns() {
+    let mut db = TraceDb::open(":memory:").unwrap();
+    let error = db
+        .ingest(IngestRequest {
+            agents: vec![Agent::Codex],
+            exclude: vec!["[unterminated".into()],
+            ..IngestRequest::default()
+        })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("invalid exclude pattern"));
 }
 
 #[cfg(unix)]
@@ -116,6 +132,7 @@ fn native_ingest_reports_permission_failures() {
             mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
+            exclude: Vec::new(),
         })
         .unwrap();
     std::fs::set_permissions(&source, original_permissions).unwrap();
@@ -219,6 +236,7 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
         mode,
         root: Some(native.clone()),
         since_ms,
+        exclude: Vec::new(),
     };
 
     let first = db.ingest(request(IngestMode::Partial, None)).unwrap();
@@ -232,7 +250,7 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     assert_eq!(unchanged.total_ingested(), 0);
     assert_eq!(unchanged.total_unchanged(), 1);
 
-    let full_plan = db.ingest_dry_run(request(IngestMode::Full, None));
+    let full_plan = db.ingest_dry_run(request(IngestMode::Full, None)).unwrap();
     assert_eq!(full_plan.total_discovered(), 1);
     assert_eq!(full_plan.total_changed(), 1);
     assert_eq!(full_plan.total_unchanged(), 0);

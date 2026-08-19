@@ -3,10 +3,10 @@ use std::io::{self, BufRead};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracedb::{
-    default_db_path, doctor_archive,
+    doctor_configured,
     service::{serve, ServiceEndpoint},
-    verify_archive, Agent, EventKind, IngestMode, IngestRequest, ListRequest, SearchRequest,
-    ShowRequest, TraceDb,
+    verify_archive, Agent, ConfigOverrides, EventKind, IngestMode, IngestRequest, ListRequest,
+    OutputFormat, SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig,
 };
 
 #[derive(Parser, Debug)]
@@ -16,8 +16,21 @@ use tracedb::{
     about = "Loss-aware archive and retrieval for coding-agent traces"
 )]
 struct Cli {
-    #[arg(long, env = "TRACEDB_PATH", global = true)]
+    /// Load this TOML file instead of the platform default.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Override the configured archive path.
+    #[arg(long, global = true)]
     db: Option<PathBuf>,
+    /// Override the configured text or JSON output default.
+    #[arg(long, global = true)]
+    format: Option<OutputFormat>,
+    /// Override the configured tokenizer.
+    #[arg(long, global = true)]
+    tokenizer: Option<TokenizerKind>,
+    /// Load the jieba tokenizer from this extension path.
+    #[arg(long, global = true)]
+    tokenizer_extension: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -26,10 +39,13 @@ struct Cli {
 enum Command {
     /// Discover and ingest native sessions. The default is loss-minimizing partial mode.
     Ingest {
-        #[arg(long, value_delimiter = ',')]
-        agent: Vec<Agent>,
-        #[arg(long, default_value = "partial")]
-        mode: IngestMode,
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        agent: Option<Vec<Agent>>,
+        #[arg(long)]
+        mode: Option<IngestMode>,
+        /// Replace configured native-source exclusion globs.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        exclude: Option<Vec<String>>,
         #[arg(long)]
         root: Option<PathBuf>,
         /// Only ingest sessions updated within N days or after an RFC3339 timestamp.
@@ -125,6 +141,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the fully resolved configuration and its selected file.
+    Config {
+        #[arg(long)]
+        json: bool,
+    },
     /// Line-oriented JSON API for language-neutral integrations.
     Api,
     /// Serve the versioned tracedb.v1 gRPC API.
@@ -146,10 +167,63 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let db_path = cli.db.unwrap_or_else(default_db_path);
+    let (default_agents, capture_mode, exclude) = match &cli.command {
+        Command::Ingest {
+            agent,
+            mode,
+            exclude,
+            ..
+        } => (agent.clone(), *mode, exclude.clone()),
+        _ => (None, None, None),
+    };
+    let config = TraceDbConfig::load(ConfigOverrides {
+        config_path: cli.config.clone(),
+        database_path: cli.db.clone(),
+        default_agents,
+        capture_mode,
+        exclude,
+        tokenizer: cli.tokenizer,
+        tokenizer_extension: cli.tokenizer_extension.clone(),
+        output_format: cli.format,
+        watch_interval_seconds: None,
+        watch_debounce_ms: None,
+    })?;
+    let db_path = &config.database_path;
+    if let Command::Config { json } = &cli.command {
+        if *json || matches!(config.output_format, OutputFormat::Json) {
+            println!("{}", serde_json::to_string_pretty(&config)?);
+        } else {
+            println!("config: {}", config.config_path.display());
+            println!("config exists: {}", config.config_file_exists);
+            println!("db: {}", config.database_path.display());
+            println!(
+                "agents: {}",
+                config
+                    .default_agents
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            println!("capture mode: {}", config.capture_mode);
+            println!("exclude: {}", config.exclude.join(","));
+            println!("tokenizer: {}", config.tokenizer);
+            println!(
+                "tokenizer extension: {}",
+                config
+                    .tokenizer_extension
+                    .as_ref()
+                    .map_or_else(|| "-".into(), |path| path.display().to_string())
+            );
+            println!("output format: {}", config.output_format);
+            println!("watch interval: {}s", config.watch_interval_seconds);
+            println!("watch debounce: {}ms", config.watch_debounce_ms);
+        }
+        return Ok(());
+    }
     if let Command::Verify { json } = &cli.command {
-        let report = verify_archive(&db_path)?;
-        if *json {
+        let report = verify_archive(db_path)?;
+        if *json || matches!(config.output_format, OutputFormat::Json) {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             println!("db: {}", report.path.display());
@@ -175,8 +249,8 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Command::Doctor { json } = &cli.command {
-        let report = doctor_archive(&db_path);
-        if *json {
+        let report = doctor_configured(&config);
+        if *json || matches!(config.output_format, OutputFormat::Json) {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             println!("db: {}", report.database.path.display());
@@ -228,30 +302,25 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Command::Ingest {
-        agent,
-        mode,
         root,
         since,
         strict,
         dry_run: true,
         json,
+        ..
     } = &cli.command
     {
-        let agents = if agent.is_empty() {
-            Agent::ALL.to_vec()
-        } else {
-            agent.clone()
-        };
         let report = TraceDb::ingest_dry_run_at(
-            &db_path,
+            db_path,
             IngestRequest {
-                agents,
-                mode: *mode,
+                agents: config.default_agents.clone(),
+                mode: config.capture_mode,
                 root: root.clone(),
                 since_ms: since.as_deref().map(parse_since).transpose()?,
+                exclude: config.exclude.clone(),
             },
         )?;
-        if *json {
+        if *json || matches!(config.output_format, OutputFormat::Json) {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             for row in &report.agents {
@@ -286,29 +355,23 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    let mut db = TraceDb::open(&db_path)?;
+    let mut db = TraceDb::open_configured(&config)?;
     match cli.command {
         Command::Ingest {
-            agent,
-            mode,
             root,
             since,
             strict,
-            dry_run: _,
             json,
+            ..
         } => {
-            let agents = if agent.is_empty() {
-                Agent::ALL.to_vec()
-            } else {
-                agent
-            };
             let report = db.ingest(IngestRequest {
-                agents,
-                mode,
+                agents: config.default_agents.clone(),
+                mode: config.capture_mode,
                 root,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
+                exclude: config.exclude.clone(),
             })?;
-            if json {
+            if json || matches!(config.output_format, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 for row in &report.agents {
@@ -354,7 +417,7 @@ fn main() -> anyhow::Result<()> {
                 cwd,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
             })?;
-            if json {
+            if json || matches!(config.output_format, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {
                 for row in rows {
@@ -403,7 +466,7 @@ fn main() -> anyhow::Result<()> {
                 model,
                 provider,
             })?;
-            if json {
+            if json || matches!(config.output_format, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&page)?);
             } else {
                 for session in &page.sessions {
@@ -441,7 +504,7 @@ fn main() -> anyhow::Result<()> {
                     kinds: kind,
                 })?
                 .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
-            if json {
+            if json || matches!(config.output_format, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&trace)?)
             } else {
                 for event in trace.events {
@@ -476,7 +539,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Stats { json } => {
             let stats = db.stats()?;
-            if json {
+            if json || matches!(config.output_format, OutputFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             } else {
                 println!("db: {}", stats.path.display());
@@ -490,6 +553,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Verify { .. } => unreachable!("verify returns before opening the archive"),
         Command::Doctor { .. } => unreachable!("doctor returns before opening the archive"),
+        Command::Config { .. } => unreachable!("config returns before opening the archive"),
         Command::Api => run_api(&db)?,
         Command::Serve {
             listen,

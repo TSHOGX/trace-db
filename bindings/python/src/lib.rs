@@ -122,6 +122,7 @@ impl PyTraceDb {
                     mode,
                     root: root.map(PathBuf::from),
                     since_ms,
+                    exclude: Vec::new(),
                 })
                 .map_err(runtime_error)?,
         )

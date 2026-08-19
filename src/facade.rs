@@ -1,8 +1,8 @@
 use crate::{
-    default_db_path,
+    config::ExcludeMatcher,
     model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
     parsers::{parser, SessionCandidate},
-    search, store, SearchRequest, SearchResult,
+    search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
 };
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
@@ -30,9 +30,21 @@ impl TraceDb {
         Ok(Self { path, connection })
     }
 
-    /// Open the archive selected by `TRACEDB_PATH` or the platform data path.
+    /// Load the resolved runtime configuration and open its selected archive.
     pub fn open_default() -> Result<Self> {
-        Self::open(default_db_path())
+        let config = TraceDbConfig::load(ConfigOverrides::default())?;
+        Self::open_configured(&config)
+    }
+
+    /// Open or create the archive selected by a resolved TraceDB configuration.
+    pub fn open_configured(config: &TraceDbConfig) -> Result<Self> {
+        let path = config.database_path.clone();
+        let connection = store::open_configured(
+            &path,
+            config.tokenizer,
+            config.tokenizer_extension.as_deref(),
+        )?;
+        Ok(Self { path, connection })
     }
 
     /// Open an existing archive without migrations or archive-record writes.
@@ -53,7 +65,7 @@ impl TraceDb {
         } else {
             Self::open(":memory:")?
         };
-        Ok(db.ingest_dry_run(request))
+        db.ingest_dry_run(request)
     }
 
     /// Return the path used to open this archive.
@@ -63,6 +75,7 @@ impl TraceDb {
 
     /// Discover and ingest sessions from the requested native agent stores.
     pub fn ingest(&mut self, request: IngestRequest) -> Result<IngestReport> {
+        let exclusions = ExcludeMatcher::new(&request.exclude)?;
         let agents = if request.agents.is_empty() {
             Agent::ALL.to_vec()
         } else {
@@ -78,7 +91,7 @@ impl TraceDb {
                 skipped_by_since,
                 mut failures,
                 parsed_candidates,
-            } = self.scan_agent(agent, &root, request.mode, request.since_ms);
+            } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
             let mut parsed = 0;
             let mut ingested = 0;
             for (candidate, parsed_session) in parsed_candidates {
@@ -124,7 +137,8 @@ impl TraceDb {
     }
 
     /// Discover and parse sessions without mutating the selected archive.
-    pub fn ingest_dry_run(&self, request: IngestRequest) -> IngestDryRunReport {
+    pub fn ingest_dry_run(&self, request: IngestRequest) -> Result<IngestDryRunReport> {
+        let exclusions = ExcludeMatcher::new(&request.exclude)?;
         let agents = if request.agents.is_empty() {
             Agent::ALL.to_vec()
         } else {
@@ -140,7 +154,7 @@ impl TraceDb {
                 skipped_by_since,
                 mut failures,
                 parsed_candidates,
-            } = self.scan_agent(agent, &root, request.mode, request.since_ms);
+            } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
             let mut changed = 0;
             let mut estimated_full_capture_bytes = 0;
             for (candidate, parsed_session) in parsed_candidates {
@@ -171,11 +185,11 @@ impl TraceDb {
                 failures,
             });
         }
-        IngestDryRunReport {
+        Ok(IngestDryRunReport {
             dry_run: true,
             mode: request.mode,
             agents: reports,
-        }
+        })
     }
 
     fn scan_agent(
@@ -184,6 +198,7 @@ impl TraceDb {
         root: &Path,
         mode: IngestMode,
         since_ms: Option<i64>,
+        exclusions: &ExcludeMatcher,
     ) -> AgentScan {
         let parser = parser(agent);
         let mut failures = Vec::new();
@@ -222,13 +237,19 @@ impl TraceDb {
             }
         };
         let mut unchanged = 0;
+        let mut skipped = 0;
         let mut skipped_by_since = 0;
         let mut pending = Vec::new();
         for candidate in discovery.candidates {
+            if exclusions.matches(&candidate.locator, &candidate.path) {
+                skipped += 1;
+                continue;
+            }
             if since_ms
                 .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
             {
                 skipped_by_since += 1;
+                skipped += 1;
                 continue;
             }
             if states.get(&candidate.locator).is_some_and(|state| {
@@ -244,7 +265,7 @@ impl TraceDb {
         AgentScan {
             discovered,
             unchanged,
-            skipped: skipped_by_since,
+            skipped,
             skipped_by_since,
             failures,
             parsed_candidates: parser.parse_many(&pending, root),
@@ -424,16 +445,35 @@ pub fn doctor_archive(path: impl AsRef<Path>) -> DoctorReport {
         .into_iter()
         .map(|agent| (agent, native_root(agent)))
         .collect();
+    let extension = std::env::var_os("TRACEDB_JIEBA_EXT").map(PathBuf::from);
+    let tokenizer = if extension.is_some() {
+        TokenizerKind::Jieba
+    } else {
+        TokenizerKind::Unicode61
+    };
+    doctor_with_roots(path.as_ref(), roots, tokenizer, extension)
+}
+
+/// Inspect readiness using the database, agents, and tokenizer in a resolved config.
+pub fn doctor_configured(config: &TraceDbConfig) -> DoctorReport {
+    let roots = config
+        .default_agents
+        .iter()
+        .copied()
+        .map(|agent| (agent, native_root(agent)))
+        .collect();
     doctor_with_roots(
-        path.as_ref(),
+        &config.database_path,
         roots,
-        std::env::var_os("TRACEDB_JIEBA_EXT").map(PathBuf::from),
+        config.tokenizer,
+        config.tokenizer_extension.clone(),
     )
 }
 
 fn doctor_with_roots(
     path: &Path,
     roots: Vec<(Agent, PathBuf)>,
+    tokenizer_kind: TokenizerKind,
     tokenizer_extension: Option<PathBuf>,
 ) -> DoctorReport {
     let database = doctor_database(path);
@@ -477,8 +517,8 @@ fn doctor_with_roots(
             failures,
         });
     }
-    let tokenizer = match tokenizer_extension {
-        Some(extension) => match store::probe_jieba_extension(&extension) {
+    let tokenizer = match (tokenizer_kind, tokenizer_extension) {
+        (TokenizerKind::Jieba, Some(extension)) => match store::probe_jieba_extension(&extension) {
             Ok(()) => DoctorTokenizer {
                 tokenizer: "jieba".into(),
                 extension: Some(extension),
@@ -492,7 +532,13 @@ fn doctor_with_roots(
                 error: Some(format!("{error:#}")),
             },
         },
-        None => DoctorTokenizer {
+        (TokenizerKind::Jieba, None) => DoctorTokenizer {
+            tokenizer: "jieba".into(),
+            extension: None,
+            available: false,
+            error: Some("jieba tokenizer requires a configured extension path".into()),
+        },
+        (TokenizerKind::Unicode61, _) => DoctorTokenizer {
             tokenizer: store::PORTABLE_TOKENIZER.into(),
             extension: None,
             available: true,
@@ -577,6 +623,8 @@ pub struct IngestRequest {
     pub mode: IngestMode,
     pub root: Option<PathBuf>,
     pub since_ms: Option<i64>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl Default for IngestRequest {
@@ -586,6 +634,7 @@ impl Default for IngestRequest {
             mode: IngestMode::Partial,
             root: None,
             since_ms: None,
+            exclude: Vec::new(),
         }
     }
 }

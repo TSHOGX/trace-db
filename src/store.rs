@@ -1,4 +1,5 @@
 use crate::{
+    config::TokenizerKind,
     model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
     ListPage, ListRequest, ReconstructionOptions, SessionSummary, SessionTrace,
 };
@@ -26,8 +27,52 @@ pub struct CandidateState {
 }
 
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
+    let conn = open_connection(path.as_ref())?;
+    let jieba = if let Some(ext) = std::env::var_os("TRACEDB_JIEBA_EXT") {
+        let loaded = unsafe {
+            conn.load_extension_enable()
+                .and_then(|_| {
+                    conn.load_extension(PathBuf::from(ext), Some("sqlite3_fts5jieba_init"))
+                })
+                .and_then(|result| conn.load_extension_disable().map(|_| result))
+        };
+        loaded.is_ok()
+    } else {
+        false
+    };
+    migrate_with_tokenizer(&conn, jieba)?;
+    Ok(conn)
+}
+
+pub fn open_configured(
+    path: &Path,
+    tokenizer: TokenizerKind,
+    tokenizer_extension: Option<&Path>,
+) -> Result<Connection> {
+    let connection = open_connection(path)?;
+    let jieba = match tokenizer {
+        TokenizerKind::Unicode61 => false,
+        TokenizerKind::Jieba => {
+            let extension = tokenizer_extension
+                .context("jieba tokenizer requires a configured extension path")?;
+            unsafe {
+                connection.load_extension_enable()?;
+                let load_result =
+                    connection.load_extension(extension, Some("sqlite3_fts5jieba_init"));
+                connection.load_extension_disable()?;
+                load_result.with_context(|| {
+                    format!("load jieba tokenizer extension {}", extension.display())
+                })?;
+            }
+            true
+        }
+    };
+    migrate_with_tokenizer(&connection, jieba)?;
+    Ok(connection)
+}
+
+fn open_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path
-        .as_ref()
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
@@ -37,22 +82,6 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000i64)?;
-    let jieba = if let Some(ext) = std::env::var_os("TRACEDB_JIEBA_EXT") {
-        // Loading is explicitly opt-in because dynamic libraries are a
-        // deployment concern. The bundled release can point this at the
-        // `fts5-jieba` cdylib produced by `cargo build -p fts5-jieba --release`.
-        let loaded = unsafe {
-            conn.load_extension_enable()
-                .and_then(|_| {
-                    conn.load_extension(PathBuf::from(ext), Some("sqlite3_fts5jieba_init"))
-                })
-                .and_then(|r| conn.load_extension_disable().map(|_| r))
-        };
-        loaded.is_ok()
-    } else {
-        false
-    };
-    migrate_with_tokenizer(&conn, jieba)?;
     Ok(conn)
 }
 

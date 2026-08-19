@@ -67,14 +67,44 @@ The repository wrapper is also available during development:
 ./trace-db --help
 ```
 
-The database path is `$TRACEDB_PATH` when set, otherwise
-`$XDG_DATA_HOME/trace-db/trace.db`, falling back to
-`~/.local/share/trace-db/trace.db`.
+TraceDB loads configuration from `$TRACEDB_CONFIG` when set, otherwise from
+the platform configuration directory at `trace-db/config.toml`. On Linux this
+is normally `~/.config/trace-db/config.toml`; `$XDG_CONFIG_HOME` overrides the
+base directory. A missing platform-default file is normal and is never created
+implicitly. Use `trace-db config --json` to inspect every resolved value and
+the selected file.
+
+```toml
+database_path = "data/trace.db"
+default_agents = ["claude", "codex", "gemini"]
+capture_mode = "partial"
+exclude = ["**/private/**", "**/scratch-*"]
+tokenizer = "unicode61"
+output_format = "text"
+watch_interval_seconds = 300
+watch_debounce_ms = 1000
+```
+
+Relative `database_path` and `tokenizer_extension` values are resolved from
+the configuration file's directory. Exclusion globs match both a candidate's
+native locator and its normalized path with `/` separators. Excluded
+candidates are reported as skipped and are never parsed or archived.
+
+Configuration precedence is CLI > environment > TOML file > built-in default.
+The environment variables are `TRACEDB_PATH`, `TRACEDB_AGENTS`,
+`TRACEDB_CAPTURE_MODE`, `TRACEDB_EXCLUDE`, `TRACEDB_TOKENIZER`,
+`TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_WATCH_INTERVAL`, and
+`TRACEDB_WATCH_DEBOUNCE`; agent and exclusion lists are comma-separated. The
+built-in database path is the platform data directory at
+`trace-db/trace.db`, agents default to all five supported agents, capture mode
+defaults to `partial`, output defaults to `text`, and watch timing defaults to
+300 seconds with a 1000 ms debounce.
 
 ## CLI
 
 ```text
-trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
+trace-db [--config PATH] [--db PATH] [--format text|json] [--tokenizer unicode61|jieba] [--tokenizer-extension PATH] COMMAND
+trace-db ingest [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]
@@ -83,6 +113,7 @@ trace-db reindex
 trace-db stats [--json]
 trace-db verify [--json]
 trace-db doctor [--json]
+trace-db config [--json]
 trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PATH]
 ```
@@ -201,8 +232,12 @@ cargo build --release -p fts5-jieba
 TRACEDB_JIEBA_EXT=target/release/libfts5jieba.dylib trace-db ingest
 ```
 
-Without `TRACEDB_JIEBA_EXT`, the portable binary uses SQLite's bundled
-`unicode61` tokenizer.
+Without tokenizer configuration, the portable binary uses SQLite's bundled
+`unicode61` tokenizer. Setting `tokenizer_extension` or
+`TRACEDB_JIEBA_EXT` without an explicit tokenizer selects `jieba`; selecting
+`jieba` requires an extension path, and a configured extension load failure is
+reported instead of silently falling back. A higher-precedence explicit
+`unicode61` selection clears a lower-precedence extension.
 
 ## Development and release checks
 
