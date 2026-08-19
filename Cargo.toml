@@ -1,0 +1,47 @@
+[package]
+name = "trace-db"
+version = "0.1.0"
+edition = "2021"
+description = "A loss-aware, local archive and retrieval CLI for coding-agent traces"
+license = "MIT"
+repository = "https://github.com/TSHOGX/trace-db"
+rust-version = "1.82"
+
+[lib]
+name = "tracedb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trace-db"
+path = "src/main.rs"
+
+[workspace]
+members = ["native/fts5-jieba"]
+resolver = "2"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+dirs = "6"
+filetime = "0.2"
+hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+walkdir = "2.5"
+zstd = "0.13"
+
+[dependencies.fts5-jieba]
+package = "fts5-jieba"
+path = "native/fts5-jieba"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

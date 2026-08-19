@@ -1,0 +1,8 @@
+.DS_Store
+node_modules/
+trace-db-bin
+trace.db
+trace.db-*
+target/
+native/fts5-jieba/target/
+native/libfts5jieba.*

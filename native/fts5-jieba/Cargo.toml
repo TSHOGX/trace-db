@@ -1,0 +1,21 @@
+[package]
+name = "fts5-jieba"
+version = "0.1.0"
+edition = "2021"
+description = "SQLite FTS5 tokenizer: jieba for Chinese + folding/stemming for English"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "fts5jieba"
+# cdylib -> the loadable .so/.dylib/.dll ; rlib -> lets us unit-test internals
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+jieba-rs = "0.10"
+unicode-normalization = "0.1"
+rust-stemmers = "1.2"
+
+[dev-dependencies]
+# bundled: compile a known SQLite with FTS5; load_extension: allow .load in tests.
+rusqlite = { version = "0.32", features = ["bundled", "load_extension"] }
