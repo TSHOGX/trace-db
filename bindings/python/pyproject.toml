@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "tracedb"
+version = "0.1.0"
+description = "Thin Python binding for the TraceDB local archive"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+readme = "README.md"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "tracedb._native"
+python-source = "python"

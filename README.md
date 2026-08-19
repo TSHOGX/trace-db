@@ -99,6 +99,24 @@ checked-in Protobuf contract supports ingest, search, show, stats, reindex, and
 reconstruction; see [`references/protocol.md`](references/protocol.md) for
 compatibility and security details.
 
+The optional Python package in `bindings/python` is a thin PyO3 wrapper around
+the same `TraceDb` facade. It uses the stable Python 3.10 ABI and exposes
+ingest, search, show, stats, and reindex operations as JSON-returning methods:
+
+```bash
+cd bindings/python
+python -m pip install maturin
+maturin develop --release
+```
+
+```python
+from tracedb import TraceDb
+import json
+
+db = TraceDb.open()
+rows = json.loads(db.search_json("deploy", limit=10))
+```
+
 ## Native stores and data model
 
 | Agent | Native store |
