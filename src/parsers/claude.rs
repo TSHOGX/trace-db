@@ -219,8 +219,30 @@ impl Parser for ClaudeParser {
             .filter_map(Result::ok)
         {
             if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(s) = parse(e.path(), root) {
-                    out.push(s)
+                if let Ok(mut parsed) = parse(e.path(), root) {
+                    let rel_path = e.path().strip_prefix(root).unwrap_or(e.path());
+                    let parts: Vec<_> = rel_path.components().collect();
+                    if let Some(i) = parts.iter().position(|p| p.as_os_str() == "subagents") {
+                        if i > 0 {
+                            let parent = parts[i - 1].as_os_str().to_string_lossy();
+                            let child = e
+                                .path()
+                                .file_stem()
+                                .and_then(|x| x.to_str())
+                                .unwrap_or("agent");
+                            parsed.session.id = format!("claude:{parent}/{child}");
+                            parsed.session.parent_session_id = Some(format!("claude:{parent}"));
+                            let meta_path = e.path().with_extension("meta.json");
+                            if let Ok(meta_text) = fs::read_to_string(meta_path) {
+                                if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
+                                    parsed.session.meta["agentType"] =
+                                        meta.get("agentType").cloned().unwrap_or(Value::Null);
+                                    parsed.session.meta["isSubagent"] = Value::Bool(true);
+                                }
+                            }
+                        }
+                    }
+                    out.push(parsed)
                 }
             }
         }

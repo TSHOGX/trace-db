@@ -12,7 +12,11 @@ use anyhow::Result;
 use chrono::DateTime;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 use walkdir::WalkDir;
 
 pub struct CodexParser;
@@ -227,6 +231,72 @@ fn restore_path(path: &Path) -> String {
         .to_owned()
 }
 
+fn rollout_paths(root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_type().is_file()
+                && e.file_name().to_string_lossy().starts_with("rollout-")
+                && e.path().extension().is_some_and(|x| x == "jsonl")
+        })
+        .map(|e| e.into_path())
+        .collect()
+}
+
+/// Codex records the parent edge only in the parent's spawn_agent output. A
+/// full pre-pass is therefore required even when the caller later filters by
+/// date or project.
+fn build_lineage(paths: &[PathBuf]) -> HashMap<String, (String, Option<String>)> {
+    let mut edges = HashMap::new();
+    for path in paths {
+        let records: Vec<Value> = fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let parent = records.iter().find_map(|r| {
+            (r.get("type").and_then(Value::as_str) == Some("session_meta"))
+                .then(|| strv(payload(r).get("id")).or_else(|| strv(payload(r).get("session_id"))))
+                .flatten()
+        });
+        let Some(parent) = parent else { continue };
+        let mut pending: HashMap<String, Option<String>> = HashMap::new();
+        for r in records {
+            if r.get("type").and_then(Value::as_str) != Some("response_item") {
+                continue;
+            }
+            let p = payload(&r);
+            let typ = p.get("type").and_then(Value::as_str).unwrap_or("");
+            let call = strv(p.get("call_id"));
+            if typ == "function_call" && strv(p.get("name")).as_deref() == Some("spawn_agent") {
+                if let Some(call) = call {
+                    let role = strv(p.get("arguments"))
+                        .and_then(|args| serde_json::from_str::<Value>(&args).ok())
+                        .and_then(|v| strv(v.get("agent_type")));
+                    pending.insert(call, role);
+                }
+            } else if typ == "function_call_output" {
+                if let Some(call) = call {
+                    if let Some(role) = pending.remove(&call) {
+                        if let Some(child) = strv(p.get("output"))
+                            .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                            .and_then(|v| strv(v.get("agent_id")))
+                        {
+                            edges.insert(
+                                format!("codex:{child}"),
+                                (format!("codex:{parent}"), role),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    edges
+}
+
 impl Parser for CodexParser {
     fn agent(&self) -> Agent {
         Agent::Codex
@@ -236,18 +306,16 @@ impl Parser for CodexParser {
         if !root.exists() {
             return Ok(out);
         };
-        for e in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            if e.file_type().is_file()
-                && e.file_name().to_string_lossy().starts_with("rollout-")
-                && e.path().extension().is_some_and(|x| x == "jsonl")
-            {
-                if let Ok(s) = parse_file(e.path()) {
-                    out.push(s)
+        let paths = rollout_paths(root);
+        let lineage = build_lineage(&paths);
+        for path in paths {
+            if let Ok(mut parsed) = parse_file(&path) {
+                if let Some((parent, role)) = lineage.get(&parsed.session.id) {
+                    parsed.session.parent_session_id = Some(parent.clone());
+                    parsed.session.meta["agentType"] =
+                        role.clone().map(Value::String).unwrap_or(Value::Null);
                 }
+                out.push(parsed)
             }
         }
         Ok(out)
@@ -295,6 +363,50 @@ mod tests {
                 .filter(|e| e.kind == EventKind::Assistant)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn derives_subagent_parent_from_spawn_output() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("rollout-parent.jsonl");
+        let child = dir.path().join("rollout-child.jsonl");
+        let parent_rows = [
+            json!({"type":"session_meta","payload":{"id":"parent"}}),
+            json!({"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","call_id":"c1","arguments":"{\"agent_type\":\"explorer\"}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"agent_id\":\"child\"}"}}),
+        ];
+        let child_rows = [json!({"type":"session_meta","payload":{"id":"child"}})];
+        fs::write(
+            &parent,
+            parent_rows
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            &child,
+            child_rows
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let sessions = CodexParser.discover(dir.path()).unwrap();
+        let child = sessions
+            .iter()
+            .find(|s| s.session.id == "codex:child")
+            .unwrap();
+        assert_eq!(
+            child.session.parent_session_id.as_deref(),
+            Some("codex:parent")
+        );
+        assert_eq!(
+            child.session.meta["agentType"],
+            Value::String("explorer".into())
         );
     }
 }
