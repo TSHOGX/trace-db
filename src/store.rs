@@ -91,6 +91,11 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       END;
     "#.replace("TOKENIZER_PLACEHOLDER", tokenizer);
     conn.execute_batch(&schema)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('tokenizer',?1)",
+        [tokenizer],
+    )?;
+    conn.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('archive_contract','partial-v1/full-v1')", [])?;
     Ok(())
 }
 
