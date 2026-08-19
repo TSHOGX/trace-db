@@ -94,6 +94,18 @@ impl PyTraceDb {
         json(self.db.show(&session_id).map_err(runtime_error)?)
     }
 
+    /// Reconstruct full-capture native sources and return their paths as JSON.
+    fn reconstruct_json(&self, session_id: String, out_dir: String) -> PyResult<String> {
+        json(
+            self.db
+                .reconstruct(&session_id, out_dir)
+                .map_err(runtime_error)?
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+        )
+    }
+
     /// Rebuild the full-text index.
     fn reindex(&self) -> PyResult<()> {
         self.db.reindex().map_err(runtime_error)

@@ -17,8 +17,11 @@ writeFileSync(
   }),
 );
 const db = TraceDb.open(join(root, "trace.db"));
-const report = JSON.parse(db.ingestJson(["gemini"], "partial", root));
+const report = db.ingest({ agents: ["gemini"], root });
 assert.equal(report.agents[0].ingested, 1);
-assert.equal(JSON.parse(db.searchJson("deploy"))[0].id, "gemini:node");
-assert.equal(JSON.parse(db.showJson("gemini:node")).events[0].text, "deploy node");
+assert.equal(db.search("deploy")[0].id, "gemini:node");
+assert.equal(db.show("gemini:node").events[0].text, "deploy node");
+assert.deepEqual(db.reconstruct("gemini:node", join(root, "restored")), []);
+assert.equal(JSON.parse(db.statsJson()).totalSessions, 1);
+db.reindex();
 console.log("node binding smoke: ok");

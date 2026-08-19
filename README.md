@@ -101,7 +101,8 @@ compatibility and security details.
 
 The optional Python package in `bindings/python` is a thin PyO3 wrapper around
 the same `TraceDb` facade. It uses the stable Python 3.10 ABI and exposes
-ingest, search, show, stats, and reindex operations as JSON-returning methods:
+native Python dictionaries and lists while retaining raw JSON methods for
+low-overhead integrations:
 
 ```bash
 cd bindings/python
@@ -111,14 +112,15 @@ maturin develop --release
 
 ```python
 from tracedb import TraceDb
-import json
 
 db = TraceDb.open()
-rows = json.loads(db.search_json("deploy", limit=10))
+rows = db.search("deploy", limit=10)
+trace = db.show(rows[0]["id"])
 ```
 
 The optional Node.js package in `bindings/node` provides the equivalent thin
-napi-rs wrapper. It targets N-API 6 and builds without a JavaScript dependency
+napi-rs wrapper with native JavaScript objects and bundled TypeScript
+declarations. It targets N-API 6 and builds without a JavaScript dependency
 install:
 
 ```bash
@@ -130,8 +132,13 @@ npm test
 ```javascript
 const { TraceDb } = require("@tracedb/core");
 const db = TraceDb.open();
-const rows = JSON.parse(db.searchJson("deploy", 10));
+const rows = db.search("deploy", { limit: 10 });
+const trace = db.show(rows[0].id);
 ```
+
+Both bindings cover ingest, search, show, stats, reindex, and full-capture
+reconstruction. Methods ending in `Json`/`_json` remain available when callers
+prefer to avoid an intermediate object conversion.
 
 ## Native stores and data model
 

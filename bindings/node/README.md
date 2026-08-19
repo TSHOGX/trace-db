@@ -1,8 +1,9 @@
 # TraceDB Node.js binding
 
 This package is a thin napi-rs wrapper around the public Rust `TraceDb`
-facade. Archive behavior stays in Rust; Node methods return JSON strings to
-keep the native surface small and stable.
+facade. Archive behavior stays in Rust; the public JavaScript facade returns
+native objects while matching `*Json` methods retain the small raw native
+surface. TypeScript declarations ship with the package.
 
 Build and test locally without npm dependencies:
 
@@ -18,9 +19,12 @@ Example:
 const { TraceDb } = require("@tracedb/core");
 
 const db = TraceDb.open();
-const rows = JSON.parse(db.searchJson("deploy", 10));
+const rows = db.search("deploy", { limit: 10 });
 console.log(rows);
 ```
+
+Available operations are `ingest`, `search`, `show`, `stats`, `reindex`, and
+`reconstruct`.
 
 The addon uses N-API 6 and supports Node.js 18 or newer. Rust 1.82 or newer is
 required to build from source.

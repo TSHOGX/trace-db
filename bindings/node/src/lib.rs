@@ -100,6 +100,19 @@ impl NodeTraceDb {
         json(self.db.show(&session_id).map_err(native_error)?)
     }
 
+    /// Reconstruct full-capture native sources and return their paths as JSON.
+    #[napi]
+    pub fn reconstruct_json(&self, session_id: String, out_dir: String) -> Result<String> {
+        json(
+            self.db
+                .reconstruct(&session_id, out_dir)
+                .map_err(native_error)?
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+        )
+    }
+
     /// Rebuild the full-text index.
     #[napi]
     pub fn reindex(&self) -> Result<()> {

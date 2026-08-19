@@ -4,8 +4,10 @@
   "description": "Thin Node.js binding for the TraceDB local archive",
   "license": "MIT",
   "main": "index.js",
+  "types": "index.d.ts",
   "files": [
     "index.js",
+    "index.d.ts",
     "tracedb_node.node"
   ],
   "engines": {
