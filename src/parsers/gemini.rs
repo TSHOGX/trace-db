@@ -1,11 +1,13 @@
-use super::{Parser, SessionCandidate};
+use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFormat};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
 use anyhow::Result;
 use chrono::DateTime;
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+#[cfg(test)]
+use std::fs;
+use std::path::Path;
 use walkdir::WalkDir;
 
 pub struct GeminiParser;
@@ -18,17 +20,16 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .map(|x| x.timestamp_millis())
 }
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let text = fs::read_to_string(path)?;
+    let records = read_json_lines(path)?;
     let mut rows = Vec::new();
     let mut sid = None;
     let mut start = None;
     let mut end = None;
     let mut model = None;
-    for line in text.lines() {
-        let Ok(v): Result<Value, _> = serde_json::from_str(line) else {
-            continue;
-        };
+    let mut recognized = false;
+    for v in records {
         if let Some(x) = s(v.get("sessionId")) {
+            recognized = true;
             sid = Some(x);
             start = start.or(ts(v.get("startTime")));
             end = ts(v.get("lastUpdated")).or(end);
@@ -40,6 +41,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             continue;
         }
         if let Some(set) = v.get("$set") {
+            recognized = true;
             if let Some(ms) = set.get("messages").and_then(Value::as_array) {
                 rows.extend(ms.iter().cloned());
             }
@@ -49,8 +51,16 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             v.get("type").and_then(Value::as_str),
             Some("user") | Some("gemini") | Some("info") | Some("error")
         ) {
+            recognized = true;
             rows.push(v);
         }
+    }
+    if !recognized {
+        return Err(UnsupportedFormat(format!(
+            "unrecognized Gemini session format: {}",
+            path.display()
+        ))
+        .into());
     }
     let sid = sid.unwrap_or_else(|| {
         path.file_stem()
@@ -197,23 +207,32 @@ impl Parser for GeminiParser {
     fn agent(&self) -> Agent {
         Agent::Gemini
     }
-    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
-        let mut out = Vec::new();
+    fn discover(&self, root: &Path) -> Result<Discovery> {
+        let mut discovery = Discovery::default();
         if !root.exists() {
-            return Ok(out);
+            return Ok(discovery);
         };
-        for e in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        for entry in WalkDir::new(root).follow_links(false) {
+            let e = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    discovery.push_failure(
+                        error.path().unwrap_or(root).display().to_string(),
+                        error.into(),
+                    );
+                    continue;
+                }
+            };
             if e.file_type().is_file() && e.file_name().to_string_lossy().starts_with("session-") {
-                if let Ok(candidate) = SessionCandidate::file(e.path().to_path_buf()) {
-                    out.push(candidate);
+                match SessionCandidate::file(e.path().to_path_buf()) {
+                    Ok(candidate) => discovery.candidates.push(candidate),
+                    Err(error) => {
+                        discovery.push_failure(e.path().display().to_string(), error);
+                    }
                 }
             }
         }
-        Ok(out)
+        Ok(discovery)
     }
 
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {

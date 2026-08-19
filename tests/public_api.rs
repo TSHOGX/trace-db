@@ -1,14 +1,134 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Event, EventKind, IngestMode, IngestRequest, ParsedSession, SearchRequest, Session,
-    TraceDb,
+    Agent, Event, EventKind, IngestErrorCategory, IngestMode, IngestRequest, IngestStage,
+    ParsedSession, SearchRequest, Session, TraceDb,
 };
 
 #[test]
 fn trace_db_opens_an_in_memory_archive() {
     let db = TraceDb::open(":memory:").unwrap();
     assert_eq!(db.stats().unwrap().total_sessions, 0);
+}
+
+#[test]
+fn native_ingest_reports_corrupt_candidates_and_continues() {
+    let dir = tempdir().unwrap();
+    let native = dir.path().join("native");
+    std::fs::create_dir(&native).unwrap();
+    std::fs::write(
+        native.join("rollout-good.jsonl"),
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"good\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"hello\"}}\n"
+        ),
+    )
+    .unwrap();
+    let corrupt = native.join("rollout-corrupt.jsonl");
+    std::fs::write(
+        &corrupt,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"bad\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":\n"
+        ),
+    )
+    .unwrap();
+    let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
+
+    let report = db
+        .ingest(IngestRequest {
+            agents: vec![Agent::Codex],
+            mode: IngestMode::Partial,
+            root: Some(native),
+            since_ms: None,
+        })
+        .unwrap();
+
+    assert_eq!(report.total_discovered(), 2);
+    assert_eq!(report.total_parsed(), 1);
+    assert_eq!(report.total_ingested(), 1);
+    assert_eq!(report.total_failed(), 1);
+    assert_eq!(report.agents[0].failures[0].stage, IngestStage::Parsing);
+    assert_eq!(
+        report.agents[0].failures[0].category,
+        IngestErrorCategory::CorruptData
+    );
+    assert_eq!(
+        report.agents[0].failures[0].locator,
+        corrupt.display().to_string()
+    );
+    assert!(report.agents[0].failures[0].message.contains("line 2"));
+    assert!(db.show("codex:good").unwrap().is_some());
+    assert!(db.show("codex:bad").unwrap().is_none());
+}
+
+#[test]
+fn native_ingest_distinguishes_unsupported_format() {
+    let dir = tempdir().unwrap();
+    let native = dir.path().join("native");
+    std::fs::create_dir(&native).unwrap();
+    std::fs::write(
+        native.join("rollout-unknown.jsonl"),
+        "{\"type\":\"future_record\",\"payload\":{}}\n",
+    )
+    .unwrap();
+    let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
+
+    let report = db
+        .ingest(IngestRequest {
+            agents: vec![Agent::Codex],
+            mode: IngestMode::Partial,
+            root: Some(native),
+            since_ms: None,
+        })
+        .unwrap();
+
+    assert_eq!(report.total_failed(), 1);
+    assert_eq!(
+        report.agents[0].failures[0].category,
+        IngestErrorCategory::UnsupportedFormat
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_ingest_reports_permission_failures() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let native = dir.path().join("native");
+    std::fs::create_dir(&native).unwrap();
+    let source = native.join("rollout-private.jsonl");
+    std::fs::write(
+        &source,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"private\"}}\n",
+    )
+    .unwrap();
+    let original_permissions = std::fs::metadata(&source).unwrap().permissions();
+    let mut private_permissions = original_permissions.clone();
+    private_permissions.set_mode(0o000);
+    std::fs::set_permissions(&source, private_permissions).unwrap();
+    let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
+
+    let report = db
+        .ingest(IngestRequest {
+            agents: vec![Agent::Codex],
+            mode: IngestMode::Partial,
+            root: Some(native),
+            since_ms: None,
+        })
+        .unwrap();
+    std::fs::set_permissions(&source, original_permissions).unwrap();
+
+    assert_eq!(report.total_failed(), 1);
+    assert_eq!(
+        report.agents[0].failures[0].category,
+        IngestErrorCategory::Permission
+    );
+    assert_eq!(
+        report.agents[0].failures[0].locator,
+        source.display().to_string()
+    );
 }
 
 #[test]

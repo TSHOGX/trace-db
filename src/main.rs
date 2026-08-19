@@ -34,6 +34,12 @@ enum Command {
         /// Only ingest sessions updated within N days or after an RFC3339 timestamp.
         #[arg(long)]
         since: Option<String>,
+        /// Return a nonzero exit status when any candidate fails.
+        #[arg(long)]
+        strict: bool,
+        /// Print the complete machine-readable ingest report.
+        #[arg(long)]
+        json: bool,
     },
     /// Search indexed normalized events.
     Search {
@@ -96,6 +102,8 @@ fn main() -> anyhow::Result<()> {
             mode,
             root,
             since,
+            strict,
+            json,
         } => {
             let agents = if agent.is_empty() {
                 Agent::ALL.to_vec()
@@ -108,18 +116,36 @@ fn main() -> anyhow::Result<()> {
                 root,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
             })?;
-            for row in &report.agents {
-                println!(
-                    "{}: discovered {}, parsed {}, ingested {}, unchanged {}, skipped by since {}",
-                    row.agent,
-                    row.discovered,
-                    row.parsed,
-                    row.ingested,
-                    row.unchanged,
-                    row.skipped_by_since
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                for row in &report.agents {
+                    println!(
+                        "{}: discovered {}, parsed {}, ingested {}, unchanged {}, skipped {}, failed {}, warnings {}",
+                        row.agent,
+                        row.discovered,
+                        row.parsed,
+                        row.ingested,
+                        row.unchanged,
+                        row.skipped,
+                        row.failed,
+                        row.warnings.len()
+                    );
+                    for issue in row.warnings.iter().chain(&row.failures) {
+                        eprintln!(
+                            "{} {} [{}]: {}",
+                            issue.stage, issue.locator, issue.category, issue.message
+                        );
+                    }
+                }
+                println!("total sessions: {}", report.total_ingested());
+            }
+            if strict && report.total_failed() > 0 {
+                anyhow::bail!(
+                    "strict ingest failed: {} candidate(s) failed",
+                    report.total_failed()
                 );
             }
-            println!("total sessions: {}", report.total_ingested());
         }
         Command::Search {
             query,

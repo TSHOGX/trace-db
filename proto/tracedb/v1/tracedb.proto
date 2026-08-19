@@ -32,6 +32,9 @@ message IngestResponse {
   uint64 total_parsed = 4;
   uint64 total_unchanged = 5;
   uint64 total_skipped_by_since = 6;
+  uint64 total_skipped = 7;
+  uint64 total_failed = 8;
+  uint64 total_warnings = 9;
 }
 
 message AgentIngestReport {
@@ -42,6 +45,17 @@ message AgentIngestReport {
   uint64 skipped_by_since = 5;
   uint64 parsed = 6;
   uint64 unchanged = 7;
+  uint64 skipped = 8;
+  uint64 failed = 9;
+  repeated IngestIssue warnings = 10;
+  repeated IngestIssue failures = 11;
+}
+
+message IngestIssue {
+  string stage = 1;
+  string locator = 2;
+  string category = 3;
+  string message = 4;
 }
 
 message SearchRequest {

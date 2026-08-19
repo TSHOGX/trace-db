@@ -82,6 +82,9 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             total_parsed: report.total_parsed() as u64,
             total_unchanged: report.total_unchanged() as u64,
             total_skipped_by_since: report.total_skipped_by_since() as u64,
+            total_skipped: report.total_skipped() as u64,
+            total_failed: report.total_failed() as u64,
+            total_warnings: report.total_warnings() as u64,
             agents: report
                 .agents
                 .into_iter()
@@ -93,6 +96,10 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     ingested: row.ingested as u64,
                     unchanged: row.unchanged as u64,
                     skipped_by_since: row.skipped_by_since as u64,
+                    skipped: row.skipped as u64,
+                    failed: row.failed as u64,
+                    warnings: row.warnings.into_iter().map(issue_to_proto).collect(),
+                    failures: row.failures.into_iter().map(issue_to_proto).collect(),
                 })
                 .collect(),
         }))
@@ -220,6 +227,15 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .map(|path| path.display().to_string())
             .collect();
         Ok(Response::new(pb::ReconstructResponse { paths }))
+    }
+}
+
+fn issue_to_proto(issue: crate::IngestIssue) -> pb::IngestIssue {
+    pb::IngestIssue {
+        stage: issue.stage.to_string(),
+        locator: issue.locator,
+        category: issue.category.to_string(),
+        message: issue.message,
     }
 }
 

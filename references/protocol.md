@@ -41,7 +41,7 @@ the service behind a secured transport rather than expose it directly.
 
 | Method | Behavior |
 |---|---|
-| `Ingest` | Discovers native stores and transactionally ingests sessions. |
+| `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures. |
 | `Search` | Returns lineage-collapsed session hits. |
 | `Show` | Returns session metadata, sources, and normalized events. |
 | `Stats` | Returns archive-wide and per-agent counts. |

@@ -1,8 +1,8 @@
-use super::{Parser, SessionCandidate};
+use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFormat};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde_json::{json, Value};
 use std::{fs, path::Path};
@@ -37,11 +37,7 @@ fn rel(root: &Path, p: &Path) -> String {
 }
 
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let text = fs::read_to_string(path)?;
-    let records: Vec<Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    let records = read_json_lines(path)?;
     let mut id = None;
     let mut cwd = None;
     let mut branch = None;
@@ -158,12 +154,12 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             _ => {}
         }
     }
-    let id = id.unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|x| x.to_str())
-            .unwrap_or("unknown")
-            .into()
-    });
+    let id = id.ok_or_else(|| {
+        UnsupportedFormat(format!(
+            "Claude JSONL missing sessionId: {}",
+            path.display()
+        ))
+    })?;
     let mut sources = vec![NativeSource {
         locator: path.display().to_string(),
         kind: "jsonl".into(),
@@ -178,20 +174,19 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
     }];
     let sidecar = path.with_extension("meta.json");
     if sidecar.exists() {
-        if let Ok(sm) = fs::metadata(&sidecar) {
-            sources.push(NativeSource {
-                locator: sidecar.display().to_string(),
-                kind: "json".into(),
-                restore_path: rel(root, &sidecar),
-                role: Some("subagent-meta".into()),
-                bytes: Some(sm.len() as i64),
-                mtime_ns: None,
-                mode: None,
-                capture: Some(Capture::File {
-                    path: sidecar.display().to_string(),
-                }),
-            });
-        }
+        let metadata = fs::metadata(&sidecar)?;
+        sources.push(NativeSource {
+            locator: sidecar.display().to_string(),
+            kind: "json".into(),
+            restore_path: rel(root, &sidecar),
+            role: Some("subagent-meta".into()),
+            bytes: Some(metadata.len() as i64),
+            mtime_ns: None,
+            mode: None,
+            capture: Some(Capture::File {
+                path: sidecar.display().to_string(),
+            }),
+        });
     }
     Ok(ParsedSession {
         session: Session {
@@ -217,24 +212,41 @@ impl Parser for ClaudeParser {
     fn agent(&self) -> Agent {
         Agent::Claude
     }
-    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
-        let mut out = Vec::new();
+    fn discover(&self, root: &Path) -> Result<Discovery> {
+        let mut discovery = Discovery::default();
         if !root.exists() {
-            return Ok(out);
+            return Ok(discovery);
         };
-        for e in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        for entry in WalkDir::new(root).follow_links(false) {
+            let e = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    discovery.push_failure(
+                        error.path().unwrap_or(root).display().to_string(),
+                        error.into(),
+                    );
+                    continue;
+                }
+            };
             if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(mut candidate) = SessionCandidate::file(e.path().to_path_buf()) {
-                    candidate.include_file(&e.path().with_extension("meta.json"));
-                    out.push(candidate);
+                match SessionCandidate::file(e.path().to_path_buf()) {
+                    Ok(mut candidate) => {
+                        let sidecar = e.path().with_extension("meta.json");
+                        if sidecar.exists() {
+                            if let Err(error) = candidate.include_file(&sidecar) {
+                                discovery.push_failure(sidecar.display().to_string(), error);
+                                continue;
+                            }
+                        }
+                        discovery.candidates.push(candidate);
+                    }
+                    Err(error) => {
+                        discovery.push_failure(e.path().display().to_string(), error);
+                    }
                 }
             }
         }
-        Ok(out)
+        Ok(discovery)
     }
 
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
@@ -255,12 +267,22 @@ impl Parser for ClaudeParser {
                 parsed.session.id = format!("claude:{parent}/{child}");
                 parsed.session.parent_session_id = Some(format!("claude:{parent}"));
                 let meta_path = candidate.path.with_extension("meta.json");
-                if let Ok(meta_text) = fs::read_to_string(meta_path) {
-                    if let Ok(meta) = serde_json::from_str::<Value>(&meta_text) {
-                        parsed.session.meta["agentType"] =
-                            meta.get("agentType").cloned().unwrap_or(Value::Null);
-                        parsed.session.meta["isSubagent"] = Value::Bool(true);
-                    }
+                if meta_path.exists() {
+                    let meta_text = fs::read_to_string(&meta_path).with_context(|| {
+                        format!(
+                            "failed to read Claude subagent metadata {}",
+                            meta_path.display()
+                        )
+                    })?;
+                    let meta = serde_json::from_str::<Value>(&meta_text).with_context(|| {
+                        format!(
+                            "invalid JSON in Claude subagent metadata {}",
+                            meta_path.display()
+                        )
+                    })?;
+                    parsed.session.meta["agentType"] =
+                        meta.get("agentType").cloned().unwrap_or(Value::Null);
+                    parsed.session.meta["isSubagent"] = Value::Bool(true);
                 }
             }
         }

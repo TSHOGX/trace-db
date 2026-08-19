@@ -1,11 +1,11 @@
-use super::{Parser, SessionCandidate};
+use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFormat};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
 use anyhow::Result;
 use chrono::DateTime;
 use serde_json::{json, Value};
-use std::{fs, path::Path};
+use std::path::Path;
 use walkdir::WalkDir;
 
 pub struct PiParser;
@@ -19,21 +19,17 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .or_else(|| v.and_then(Value::as_i64).map(|x| x / 1_000))
 }
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let text = fs::read_to_string(path)?;
-    let rows: Vec<Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    let rows = read_json_lines(path)?;
     let head = rows
         .iter()
         .find(|r| r.get("type").and_then(Value::as_str) == Some("session"))
         .unwrap_or(&Value::Null);
-    let id = s(head.get("id")).unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|x| x.to_str())
-            .unwrap_or("unknown")
-            .into()
-    });
+    let id = s(head.get("id")).ok_or_else(|| {
+        UnsupportedFormat(format!(
+            "Pi JSONL missing session header: {}",
+            path.display()
+        ))
+    })?;
     let cwd = s(head.get("cwd"));
     let mut model = None;
     let mut provider = None;
@@ -175,23 +171,32 @@ impl Parser for PiParser {
     fn agent(&self) -> Agent {
         Agent::Pi
     }
-    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
-        let mut out = Vec::new();
+    fn discover(&self, root: &Path) -> Result<Discovery> {
+        let mut discovery = Discovery::default();
         if !root.exists() {
-            return Ok(out);
+            return Ok(discovery);
         };
-        for e in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        for entry in WalkDir::new(root).follow_links(false) {
+            let e = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    discovery.push_failure(
+                        error.path().unwrap_or(root).display().to_string(),
+                        error.into(),
+                    );
+                    continue;
+                }
+            };
             if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
-                if let Ok(candidate) = SessionCandidate::file(e.path().to_path_buf()) {
-                    out.push(candidate);
+                match SessionCandidate::file(e.path().to_path_buf()) {
+                    Ok(candidate) => discovery.candidates.push(candidate),
+                    Err(error) => {
+                        discovery.push_failure(e.path().display().to_string(), error);
+                    }
                 }
             }
         }
-        Ok(out)
+        Ok(discovery)
     }
 
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {

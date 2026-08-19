@@ -3,7 +3,7 @@
 //! `response_item/message`). Native records are retained in full mode; this
 //! parser only emits the cross-agent projection used by search/show.
 
-use super::{Parser, SessionCandidate};
+use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFormat};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
     TokenUsage,
@@ -44,11 +44,7 @@ fn event(kind: EventKind, text: String, native: Option<String>, ts: Option<i64>)
 }
 
 fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let data = fs::read_to_string(path)?;
-    let records: Vec<Value> = data
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    let records = read_json_lines(path)?;
     let mut id = None;
     let mut cwd = None;
     let mut branch = None;
@@ -183,7 +179,9 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
             _ => {}
         }
     }
-    let id = id.ok_or_else(|| anyhow::anyhow!("rollout missing session id: {}", path.display()))?;
+    let id = id.ok_or_else(|| {
+        UnsupportedFormat(format!("rollout missing session id: {}", path.display()))
+    })?;
     let fingerprint = format!("{}:{}", records.len(), ended.unwrap_or_default());
     let source = NativeSource {
         locator: path.display().to_string(),
@@ -230,18 +228,27 @@ fn restore_path(path: &Path) -> String {
         .to_owned()
 }
 
-fn rollout_paths(root: &Path) -> Vec<PathBuf> {
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_type().is_file()
-                && e.file_name().to_string_lossy().starts_with("rollout-")
-                && e.path().extension().is_some_and(|x| x == "jsonl")
-        })
-        .map(|e| e.into_path())
-        .collect()
+fn rollout_paths(root: &Path, discovery: &mut Discovery) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                discovery.push_failure(
+                    error.path().unwrap_or(root).display().to_string(),
+                    error.into(),
+                );
+                continue;
+            }
+        };
+        if entry.file_type().is_file()
+            && entry.file_name().to_string_lossy().starts_with("rollout-")
+            && entry.path().extension().is_some_and(|x| x == "jsonl")
+        {
+            paths.push(entry.into_path());
+        }
+    }
+    paths
 }
 
 /// Codex records the parent edge only in the parent's spawn_agent output. A
@@ -306,30 +313,35 @@ impl Parser for CodexParser {
     fn agent(&self) -> Agent {
         Agent::Codex
     }
-    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
+    fn discover(&self, root: &Path) -> Result<Discovery> {
+        let mut discovery = Discovery::default();
         if !root.exists() {
-            return Ok(Vec::new());
+            return Ok(discovery);
         };
-        let paths = rollout_paths(root);
+        let paths = rollout_paths(root, &mut discovery);
         let (lineage, session_ids) = build_lineage(&paths);
-        let mut out = Vec::new();
         for path in paths {
-            if let Ok(mut candidate) = SessionCandidate::file(path.clone()) {
-                if let Some(native_id) = session_ids.get(&path) {
-                    candidate.native_id = Some(native_id.clone());
-                    if let Some((parent, role)) = lineage.get(&format!("codex:{native_id}")) {
-                        candidate.parent_session_id = Some(parent.clone());
-                        candidate.agent_type = role.clone();
-                        candidate.fingerprint.push_str(&format!(
-                            ":lineage:{parent}:{}",
-                            role.as_deref().unwrap_or_default()
-                        ));
+            match SessionCandidate::file(path.clone()) {
+                Ok(mut candidate) => {
+                    if let Some(native_id) = session_ids.get(&path) {
+                        candidate.native_id = Some(native_id.clone());
+                        if let Some((parent, role)) = lineage.get(&format!("codex:{native_id}")) {
+                            candidate.parent_session_id = Some(parent.clone());
+                            candidate.agent_type = role.clone();
+                            candidate.fingerprint.push_str(&format!(
+                                ":lineage:{parent}:{}",
+                                role.as_deref().unwrap_or_default()
+                            ));
+                        }
                     }
+                    discovery.candidates.push(candidate);
                 }
-                out.push(candidate);
+                Err(error) => {
+                    discovery.push_failure(path.display().to_string(), error);
+                }
             }
         }
-        Ok(out)
+        Ok(discovery)
     }
 
     fn parse(&self, candidate: &SessionCandidate, _root: &Path) -> Result<Option<ParsedSession>> {

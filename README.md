@@ -23,8 +23,11 @@ databases are archives and should be backed up.
 Ingestion first discovers lightweight candidates from file metadata or native
 session rows. It compares their fingerprints with archived source locators and
 only parses changed sessions or sessions that need a partial-to-full upgrade.
-The CLI and APIs report discovered, parsed, ingested, unchanged, and
-time-filtered counts separately.
+The CLI and APIs report discovered, parsed, ingested, unchanged, skipped,
+failed, warning, and time-filtered counts separately. Best-effort ingest
+continues past malformed or unreadable candidates and reports structured
+per-locator failures. `--strict` prints the same complete report, then exits
+nonzero when any candidate failed.
 
 ## Install and run
 
@@ -34,6 +37,7 @@ Requirements: Rust 1.82+ and Cargo.
 cargo install --path .
 trace-db ingest
 trace-db ingest --mode full --agent codex
+trace-db ingest --strict --json
 trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 ```
@@ -60,7 +64,7 @@ The database path is `$TRACEDB_PATH` when set, otherwise
 ## CLI
 
 ```text
-trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH]
+trace-db ingest [--agent A[,A...]] [--mode partial|full] [--since DAYS|RFC3339] [--root PATH] [--strict] [--json]
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db show SESSION_ID [--include-tools] [--json]
 trace-db reconstruct SESSION_ID --out DIRECTORY

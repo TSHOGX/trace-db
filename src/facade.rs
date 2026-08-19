@@ -7,7 +7,10 @@ use crate::{
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 /// An open TraceDB archive.
 ///
@@ -48,20 +51,76 @@ impl TraceDb {
         for agent in agents {
             let root = request.root.clone().unwrap_or_else(|| native_root(agent));
             let parser = parser(agent);
-            let candidates = parser.discover(&root)?;
-            let states = store::candidate_states(&self.connection, agent)?;
-            let discovered = candidates.len();
+            let mut failures = Vec::new();
+            let discovery = match parser.discover(&root) {
+                Ok(discovery) => discovery,
+                Err(error) => {
+                    failures.push(IngestIssue::from_error(
+                        IngestStage::Discovery,
+                        root.display().to_string(),
+                        &error,
+                    ));
+                    reports.push(AgentIngestReport {
+                        agent,
+                        root,
+                        discovered: 0,
+                        parsed: 0,
+                        ingested: 0,
+                        unchanged: 0,
+                        skipped: 0,
+                        skipped_by_since: 0,
+                        failed: failures.len(),
+                        warnings: Vec::new(),
+                        failures,
+                    });
+                    continue;
+                }
+            };
+            for failure in discovery.failures {
+                failures.push(IngestIssue::from_error(
+                    IngestStage::Discovery,
+                    failure.locator,
+                    &failure.error,
+                ));
+            }
+            let discovered = discovery.candidates.len() + failures.len();
+            let states = match store::candidate_states(&self.connection, agent) {
+                Ok(states) => states,
+                Err(error) => {
+                    failures.push(IngestIssue::from_error(
+                        IngestStage::Database,
+                        self.path.display().to_string(),
+                        &error,
+                    ));
+                    reports.push(AgentIngestReport {
+                        agent,
+                        root,
+                        discovered,
+                        parsed: 0,
+                        ingested: 0,
+                        unchanged: 0,
+                        skipped: 0,
+                        skipped_by_since: 0,
+                        failed: failures.len(),
+                        warnings: Vec::new(),
+                        failures,
+                    });
+                    continue;
+                }
+            };
             let mut parsed = 0;
             let mut ingested = 0;
             let mut unchanged = 0;
+            let mut skipped = 0;
             let mut skipped_by_since = 0;
             let mut pending = Vec::new();
-            for candidate in candidates {
+            for candidate in discovery.candidates {
                 if request
                     .since_ms
                     .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
                 {
                     skipped_by_since += 1;
+                    skipped += 1;
                     continue;
                 }
                 if states.get(&candidate.locator).is_some_and(|state| {
@@ -72,14 +131,31 @@ impl TraceDb {
                     unchanged += 1;
                     continue;
                 }
-                parsed += 1;
                 pending.push(candidate);
             }
             for (candidate, parsed_session) in parser.parse_many(&pending, &root) {
-                if let Ok(Some(mut session)) = parsed_session {
-                    session.session.fingerprint = candidate.fingerprint;
-                    store::upsert(&mut self.connection, session, request.mode)?;
-                    ingested += 1;
+                match parsed_session {
+                    Ok(Some(mut session)) => {
+                        parsed += 1;
+                        session.session.fingerprint = candidate.fingerprint;
+                        match store::upsert(&mut self.connection, session, request.mode) {
+                            Ok(()) => ingested += 1,
+                            Err(error) => failures.push(IngestIssue::from_error(
+                                IngestStage::Database,
+                                candidate.locator,
+                                &error,
+                            )),
+                        }
+                    }
+                    Ok(None) => {
+                        parsed += 1;
+                        skipped += 1;
+                    }
+                    Err(error) => failures.push(IngestIssue::from_error(
+                        IngestStage::Parsing,
+                        candidate.locator,
+                        &error,
+                    )),
                 }
             }
             reports.push(AgentIngestReport {
@@ -89,7 +165,11 @@ impl TraceDb {
                 parsed,
                 ingested,
                 unchanged,
+                skipped,
                 skipped_by_since,
+                failed: failures.len(),
+                warnings: Vec::new(),
+                failures,
             });
         }
         Ok(IngestReport { agents: reports })
@@ -175,7 +255,100 @@ pub struct AgentIngestReport {
     pub parsed: usize,
     pub ingested: usize,
     pub unchanged: usize,
+    pub skipped: usize,
     pub skipped_by_since: usize,
+    pub failed: usize,
+    pub warnings: Vec<IngestIssue>,
+    pub failures: Vec<IngestIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestStage {
+    Discovery,
+    Parsing,
+    Database,
+}
+
+impl fmt::Display for IngestStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Discovery => "discovery",
+            Self::Parsing => "parsing",
+            Self::Database => "database",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestErrorCategory {
+    UnsupportedFormat,
+    CorruptData,
+    Permission,
+    TransientRead,
+    Read,
+    Database,
+}
+
+impl fmt::Display for IngestErrorCategory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedFormat => "unsupported_format",
+            Self::CorruptData => "corrupt_data",
+            Self::Permission => "permission",
+            Self::TransientRead => "transient_read",
+            Self::Read => "read",
+            Self::Database => "database",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestIssue {
+    pub stage: IngestStage,
+    pub locator: String,
+    pub category: IngestErrorCategory,
+    pub message: String,
+}
+
+impl IngestIssue {
+    fn from_error(stage: IngestStage, locator: String, error: &anyhow::Error) -> Self {
+        let io_error = error.downcast_ref::<std::io::Error>();
+        let category = if matches!(stage, IngestStage::Database)
+            || error.downcast_ref::<rusqlite::Error>().is_some()
+        {
+            IngestErrorCategory::Database
+        } else if error
+            .downcast_ref::<crate::parsers::UnsupportedFormat>()
+            .is_some()
+        {
+            IngestErrorCategory::UnsupportedFormat
+        } else if io_error.is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            IngestErrorCategory::Permission
+        } else if io_error.is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            )
+        }) {
+            IngestErrorCategory::TransientRead
+        } else if error.downcast_ref::<serde_json::Error>().is_some() {
+            IngestErrorCategory::CorruptData
+        } else {
+            IngestErrorCategory::Read
+        };
+        Self {
+            stage,
+            locator,
+            category,
+            message: format!("{error:#}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +375,18 @@ impl IngestReport {
 
     pub fn total_skipped_by_since(&self) -> usize {
         self.agents.iter().map(|row| row.skipped_by_since).sum()
+    }
+
+    pub fn total_skipped(&self) -> usize {
+        self.agents.iter().map(|row| row.skipped).sum()
+    }
+
+    pub fn total_failed(&self) -> usize {
+        self.agents.iter().map(|row| row.failed).sum()
+    }
+
+    pub fn total_warnings(&self) -> usize {
+        self.agents.iter().map(|row| row.warnings.len()).sum()
     }
 }
 

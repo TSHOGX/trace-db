@@ -1,8 +1,8 @@
-use super::{Parser, SessionCandidate};
+use super::{Discovery, Parser, SessionCandidate};
 use crate::model::{
     compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{
@@ -29,8 +29,8 @@ fn s(v: Option<&Value>) -> Option<String> {
 fn ms(v: Option<i64>) -> Option<i64> {
     v
 }
-fn j(s: &str) -> Value {
-    serde_json::from_str(s).unwrap_or(Value::Null)
+fn parse_json(value: &str, locator: &str) -> Result<Value> {
+    serde_json::from_str(value).with_context(|| format!("invalid JSON in OpenCode {locator}"))
 }
 fn db_path(root: &Path) -> Option<PathBuf> {
     if root.is_file() && root.extension().is_some_and(|x| x == "db") {
@@ -70,7 +70,7 @@ fn parse_session(
     let mut rows = stmt.query([id])?;
     while let Some(r) = rows.next()? {
         let mid: String = r.get(0)?;
-        let md = j(&r.get::<_, String>(1)?);
+        let md = parse_json(&r.get::<_, String>(1)?, &format!("message {mid}"))?;
         let pd: Option<String> = r.get(3)?;
         let role = md
             .get("role")
@@ -78,7 +78,7 @@ fn parse_session(
             .unwrap_or("assistant");
         let t = r.get::<_, Option<i64>>(4)?.or(r.get(2)?);
         if let Some(pds) = pd {
-            let p = j(&pds);
+            let p = parse_json(&pds, &format!("part for message {mid}"))?;
             let typ = p.get("type").and_then(Value::as_str).unwrap_or("");
             let kind = match typ {
                 "text" => {
@@ -114,13 +114,17 @@ fn parse_session(
     let mut msq=connection.prepare("SELECT id,session_id,time_created,time_updated,data FROM message WHERE session_id=?1 ORDER BY time_created,id")?;
     let mut mr = msq.query([id])?;
     while let Some(r) = mr.next()? {
-        messages.push(json!({"id":r.get::<_,String>(0)?,"session_id":r.get::<_,String>(1)?,"time_created":r.get::<_,i64>(2)?,"time_updated":r.get::<_,i64>(3)?,"data":j(&r.get::<_,String>(4)?)}));
+        let message_id = r.get::<_, String>(0)?;
+        let data = parse_json(&r.get::<_, String>(4)?, &format!("message {message_id}"))?;
+        messages.push(json!({"id":message_id,"session_id":r.get::<_,String>(1)?,"time_created":r.get::<_,i64>(2)?,"time_updated":r.get::<_,i64>(3)?,"data":data}));
     }
     let mut parts = Vec::new();
     let mut psq=connection.prepare("SELECT id,message_id,session_id,time_created,time_updated,data FROM part WHERE session_id=?1 ORDER BY time_created,id")?;
     let mut pr = psq.query([id])?;
     while let Some(r) = pr.next()? {
-        parts.push(json!({"id":r.get::<_,String>(0)?,"message_id":r.get::<_,String>(1)?,"session_id":r.get::<_,String>(2)?,"time_created":r.get::<_,i64>(3)?,"time_updated":r.get::<_,i64>(4)?,"data":j(&r.get::<_,String>(5)?)}));
+        let part_id = r.get::<_, String>(0)?;
+        let data = parse_json(&r.get::<_, String>(5)?, &format!("part {part_id}"))?;
+        parts.push(json!({"id":part_id,"message_id":r.get::<_,String>(1)?,"session_id":r.get::<_,String>(2)?,"time_created":r.get::<_,i64>(3)?,"time_updated":r.get::<_,i64>(4)?,"data":data}));
     }
     let envelope = json!({"format":"trace-db/opencode-session-v1","session":{"id":sid,"parent_id":parent,"directory":directory,"title":title,"agent":agent,"model":model,"time_created":created,"time_updated":updated},"message":messages,"part":parts});
     let bytes = serde_json::to_vec(&envelope)?;
@@ -161,9 +165,9 @@ impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
     }
-    fn discover(&self, root: &Path) -> Result<Vec<SessionCandidate>> {
+    fn discover(&self, root: &Path) -> Result<Discovery> {
         let Some(db) = db_path(root) else {
-            return Ok(vec![]);
+            return Ok(Discovery::default());
         };
         let metadata = fs::metadata(&db)?;
         let file_candidate = SessionCandidate::file(db.clone())?;
@@ -193,7 +197,10 @@ impl Parser for OpenCodeParser {
                 agent_type: None,
             });
         }
-        Ok(out)
+        Ok(Discovery {
+            candidates: out,
+            failures: Vec::new(),
+        })
     }
 
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>> {
