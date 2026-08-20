@@ -79,7 +79,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 if r.get("toolUseResult").is_some() {
                     let mut e = ev(
                         EventKind::ToolResult,
-                        compact(r.get("toolUseResult").unwrap()),
+                        compact(r.get("toolUseResult").unwrap_or(&Value::Null)),
                         r,
                         t.unwrap_or_default(),
                     );

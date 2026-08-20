@@ -64,6 +64,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 protoc-bin-vendored = "3"
 tonic-build = "0.12"
 
+[dev-dependencies]
+proptest = "=1.9.0"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

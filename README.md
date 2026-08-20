@@ -410,6 +410,7 @@ cargo test -p fts5-jieba
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 python3 scripts/verify-release-package.py ARTIFACT --version 0.1.0
+cargo test -p trace-db --test parser_robustness
 ```
 
 The `native/fts5-jieba` crate is an optional loadable SQLite extension and is

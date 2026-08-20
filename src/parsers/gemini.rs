@@ -133,7 +133,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         if x.get("result").is_some() {
                             let mut z = Event::new(
                                 EventKind::ToolResult,
-                                compact(x.get("result").unwrap()),
+                                compact(x.get("result").unwrap_or(&Value::Null)),
                             );
                             z.call_id = qcall;
                             z.name = qname;

@@ -802,7 +802,8 @@ fn write_session(
     }
     tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
     for e in events {
-        tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,e.usage.as_ref().map(|v|serde_json::to_string(v).unwrap()),e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
+        let usage_json = e.usage.as_ref().map(serde_json::to_string).transpose()?;
+        tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
     }
     Ok(())
 }
