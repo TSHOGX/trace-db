@@ -27,4 +27,9 @@ cp "$root/target/$target/release/trace-db-relevance" "$stage/$package/trace-db-r
 cp "$root/target/$target/release/libfts5jieba.$extension" "$stage/$package/"
 cp "$root/README.md" "$root/LICENSE" "$stage/$package/"
 cp "$root/proto/tracedb/v1/tracedb.proto" "$stage/$package/proto/tracedb/v1/"
-tar -C "$stage" -czf "$output_dir/$package.tar.gz" "$package"
+# Prevent macOS resource-fork metadata (._*) from becoming release members.
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$output_dir/$package.tar.gz" "$package"
+python3 "$root/scripts/verify-release-package.py" \
+  "$output_dir/$package.tar.gz" \
+  --version "$version" \
+  --target "$target"

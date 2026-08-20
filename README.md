@@ -64,7 +64,25 @@ The same release also attaches ABI3 Python wheels and target-labeled Node.js
 package tarballs for all five targets. These are GitHub release artifacts, not
 automatic PyPI or npm registry publications. `SHA256SUMS` covers every attached
 archive, wheel, and package, and GitHub publishes signed build-provenance
-attestations for the release assets.
+attestations for the release assets. The release workflow runs
+`scripts/verify-release-package.py` against every artifact before publication;
+consumers can verify an attached asset with
+`gh attestation verify ASSET --repo TSHOGX/trace-db`.
+
+For a reproducible Unix install, download the installer from the same release
+tag and pin the version explicitly:
+
+```bash
+curl --fail --location --output /tmp/tracedb-install.sh \
+  https://raw.githubusercontent.com/TSHOGX/trace-db/v0.1.0/scripts/install-release.sh
+bash /tmp/tracedb-install.sh --version 0.1.0 --prefix "$HOME/.local"
+```
+
+The installer detects the host target, downloads the matching archive and
+`SHA256SUMS`, verifies the checksum before extraction, installs into a
+user-local prefix by default, and checks the installed CLI version. Set
+`TRACEDB_INSTALL_PREFIX` or pass `--prefix` for another location. Windows
+users can extract the matching `.zip` archive directly.
 
 The repository wrapper is also available during development:
 
@@ -380,6 +398,7 @@ cargo package --allow-dirty
 cargo test -p fts5-jieba
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+python3 scripts/verify-release-package.py ARTIFACT --version 0.1.0
 ```
 
 The `native/fts5-jieba` crate is an optional loadable SQLite extension and is

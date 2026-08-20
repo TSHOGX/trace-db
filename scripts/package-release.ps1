@@ -20,7 +20,9 @@ try {
     Copy-Item (Join-Path $Root "README.md") $Stage
     Copy-Item (Join-Path $Root "LICENSE") $Stage
     Copy-Item (Join-Path $Root "proto/tracedb/v1/tracedb.proto") (Join-Path $Stage "proto/tracedb/v1/tracedb.proto")
-    Compress-Archive -Path $Stage -DestinationPath (Join-Path $OutputDirectory "$Package.zip")
+    $Archive = Join-Path $OutputDirectory "$Package.zip"
+    Compress-Archive -Path $Stage -DestinationPath $Archive
+    python (Join-Path $Root "scripts/verify-release-package.py") $Archive --version $Version --target $Target
 }
 finally {
     Remove-Item -Recurse -Force $StageRoot -ErrorAction SilentlyContinue
