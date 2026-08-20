@@ -415,6 +415,7 @@ node scripts/smoke-node-package.js PACKAGE_TGZ
 cargo test -p trace-db --test parser_robustness
 cargo test -p trace-db --test migrations
 cargo test -p trace-db --test sqlite_lifecycle
+cargo test -p trace-db --test platform_paths
 ```
 
 The `native/fts5-jieba` crate is an optional loadable SQLite extension and is

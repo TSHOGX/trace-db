@@ -862,6 +862,8 @@ pub fn reconstruct_manifest(
     out_dir: &Path,
     options: ReconstructionOptions,
 ) -> Result<crate::RestoreManifest> {
+    let canonical_out_dir = canonicalize_with_missing(out_dir)
+        .with_context(|| format!("resolve reconstruction output {}", out_dir.display()))?;
     let mut stmt = conn.prepare("SELECT locator,restore_path,object_hash,mtime_ns,mode FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL ORDER BY locator")?;
     let rows = stmt.query_map([session_id], |r| {
         Ok((
@@ -885,6 +887,14 @@ pub fn reconstruct_manifest(
             anyhow::bail!("unsafe restore path: {restore}");
         }
         let target = out_dir.join(rel);
+        let canonical_target = canonicalize_with_missing(&target)
+            .with_context(|| format!("resolve reconstruction target {}", target.display()))?;
+        if !canonical_target.starts_with(&canonical_out_dir) {
+            anyhow::bail!(
+                "restore target resolves outside output directory: {}",
+                target.display()
+            );
+        }
         if !targets.insert(target.clone()) {
             anyhow::bail!("duplicate restore target: {}", target.display());
         }
@@ -1269,6 +1279,30 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         mode: mode.parse().map_err(anyhow::Error::msg)?,
         events,
     }))
+}
+
+/// Canonicalize a path while preserving not-yet-created trailing components.
+///
+/// This lets reconstruction validate symlinked ancestors without creating any
+/// output before every archived object has passed preflight validation.
+fn canonicalize_with_missing(path: &Path) -> Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .context("reconstruction path has no filename component")?
+            .to_os_string();
+        missing.push(name);
+        existing = existing
+            .parent()
+            .context("reconstruction path has no existing ancestor")?;
+    }
+    let mut canonical = fs::canonicalize(existing)?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
 }
 
 #[cfg(test)]

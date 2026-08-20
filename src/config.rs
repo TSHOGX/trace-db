@@ -461,5 +461,9 @@ mod tests {
             r"C:\\sessions\\private\\rollout.jsonl",
             Path::new(r"C:\\sessions\\private\\rollout.jsonl")
         ));
+        assert!(matcher.matches(
+            r"\\server\share\private\rollout.jsonl",
+            Path::new(r"\\server\share\private\rollout.jsonl")
+        ));
     }
 }

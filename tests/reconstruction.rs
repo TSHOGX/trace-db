@@ -95,6 +95,40 @@ fn reconstruction_revalidates_objects_before_writing() {
     assert!(!output.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn reconstruction_rejects_symlinked_restore_ancestors() {
+    use std::os::unix::fs::symlink;
+
+    let fixtures = tempdir().unwrap();
+    let source = fixtures.path().join("rollout-symlink.jsonl");
+    std::fs::write(
+        &source,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"symlink\"}}\n",
+    )
+    .unwrap();
+    let (archive, db) = ingest_one(fixtures.path(), Agent::Codex);
+    let connection = rusqlite::Connection::open(archive.path().join("trace.db")).unwrap();
+    connection
+        .execute(
+            "UPDATE raw_sources SET restore_path='escape/restored.jsonl' WHERE session_id='codex:symlink'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let output = archive.path().join("restore");
+    let outside = archive.path().join("outside");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    symlink(&outside, output.join("escape")).unwrap();
+
+    let error = db.reconstruct("codex:symlink", &output).unwrap_err();
+
+    assert!(error.to_string().contains("outside output directory"));
+    assert!(!outside.join("restored.jsonl").exists());
+}
+
 #[test]
 fn reconstruction_requires_explicit_overwrite() {
     let fixtures = tempdir().unwrap();
