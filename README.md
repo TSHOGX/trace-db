@@ -125,6 +125,7 @@ trace-db config [--json]
 trace-db watch [--agent A[,A...]] [--mode partial|full] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
 trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PATH]
+trace-db completions bash|elvish|fish|powershell|zsh
 ```
 
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
@@ -182,6 +183,11 @@ snippets also apply presentation redaction. Set `TRACEDB_REDACT_PATTERNS` to a
 semicolon-separated list, or pass repeatable global `--redact-pattern` flags;
 CLI values override environment and config-file values. Invalid expressions
 are rejected before an ingest starts.
+
+Generate shell completions directly from the installed CLI, for example
+`trace-db completions zsh > _trace-db` or
+`trace-db completions bash > ~/.local/share/bash-completion/completions/trace-db`.
+Completion generation does not open or create the archive.
 
 For a versioned cross-language boundary, `trace-db serve` exposes the
 `tracedb.v1` gRPC service over loopback TCP or a Unix domain socket. The

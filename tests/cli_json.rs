@@ -56,6 +56,20 @@ fn stats_json_serializes_the_complete_archive_stats() {
 }
 
 #[test]
+fn completions_generate_without_opening_an_archive() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("not-created.db");
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args(["--db", path.to_str().unwrap(), "completions", "bash"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let script = String::from_utf8(output.stdout).unwrap();
+    assert!(script.contains("_trace__db"));
+    assert!(!path.exists());
+}
+
+#[test]
 fn list_json_returns_the_canonical_cursor_page() {
     let (_dir, path) = archive();
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))

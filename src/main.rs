@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use std::io::{self, BufRead};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -208,10 +209,20 @@ enum Command {
         #[arg(long)]
         reconstruct_root: Option<PathBuf>,
     },
+    /// Generate shell completion scripts.
+    Completions {
+        /// Target shell (bash, elvish, fish, powershell, or zsh).
+        shell: Shell,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Command::Completions { shell } = &cli.command {
+        let mut command = Cli::command();
+        generate(*shell, &mut command, "trace-db", &mut io::stdout());
+        return Ok(());
+    }
     let (default_agents, capture_mode, exclude, watch_interval_seconds, watch_debounce_ms) =
         match &cli.command {
             Command::Ingest {
@@ -790,6 +801,10 @@ fn main() -> anyhow::Result<()> {
                 config.tokenizer_extension.clone(),
                 reconstruct_root,
             )?;
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            generate(shell, &mut command, "trace-db", &mut io::stdout());
         }
     }
     Ok(())
