@@ -126,6 +126,45 @@ pub fn open_read_only_configured(
     Ok(connection)
 }
 
+pub fn backup(connection: &Connection, destination: &Path) -> Result<crate::BackupReport> {
+    if destination.as_os_str().is_empty() {
+        anyhow::bail!("backup destination must not be empty");
+    }
+    if destination.exists() {
+        anyhow::bail!(
+            "backup destination already exists: {}",
+            destination.display()
+        );
+    }
+    if let Some(parent) = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::tempdir_in(parent)?;
+    let staged_path = staging.path().join("archive.db");
+    connection.execute("VACUUM INTO ?1", [staged_path.to_string_lossy().as_ref()])?;
+    fs::rename(&staged_path, destination)
+        .with_context(|| format!("publish verified archive backup {}", destination.display()))?;
+    let snapshot = open_read_only(destination)?;
+    let sessions = snapshot.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?;
+    let events = snapshot.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
+    verify(&snapshot, destination)?;
+    let bytes = fs::metadata(destination)?.len();
+    Ok(crate::BackupReport {
+        path: destination.to_path_buf(),
+        bytes,
+        sessions,
+        events,
+        verified: true,
+    })
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
 }

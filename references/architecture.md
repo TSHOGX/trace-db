@@ -48,6 +48,10 @@ and are restored only through validated relative paths.
 The `mode` column is monotonic: once a session has been captured in full mode,
 subsequent partial ingests retain full mode and recapture the source object.
 
+`TraceDb::backup` uses SQLite's consistent `VACUUM INTO` snapshot mechanism in
+a sibling staging directory, refuses existing destinations, atomically publishes
+the completed file, and verifies the published archive before returning.
+
 ## Runtime configuration
 
 `TraceDbConfig` is the canonical resolved runtime configuration shared by the

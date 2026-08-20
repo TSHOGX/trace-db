@@ -141,6 +141,12 @@ enum Command {
     },
     /// Rebuild FTS from the gated normalized event set.
     Reindex,
+    /// Create and verify a consistent archive snapshot.
+    Backup {
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Reconstruct native traces captured by a full ingest.
     Reconstruct {
         id: String,
@@ -664,6 +670,21 @@ fn main() -> anyhow::Result<()> {
         Command::Reindex => {
             db.reindex()?;
             println!("events_fts rebuilt");
+        }
+        Command::Backup { out, json } => {
+            let report = db.backup(out)?;
+            if json || matches!(config.output_format, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "backup: {} ({} bytes, {} sessions, {} events, verified {})",
+                    report.path.display(),
+                    report.bytes,
+                    report.sessions,
+                    report.events,
+                    report.verified
+                );
+            }
         }
         Command::Reconstruct { id, out, overwrite } => {
             let paths = db.reconstruct_with_options(

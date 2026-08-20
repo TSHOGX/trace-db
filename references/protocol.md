@@ -50,6 +50,7 @@ Reconstruction is disabled unless the server starts with
 | `Show` | Returns session metadata, sources, and normalized events. |
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |
+| `Backup` | Exposed by the CLI and Rust facade; creates a verified archive snapshot. |
 | `Reconstruct` | Writes full-capture native sources below a server-local output directory. |
 
 Messages are capped at 64 MiB by the bundled server. Generated clients may

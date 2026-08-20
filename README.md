@@ -114,6 +114,7 @@ trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--sin
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]
 trace-db reconstruct SESSION_ID --out DIRECTORY [--overwrite]
 trace-db reindex
+trace-db backup PATH [--json]
 trace-db stats [--json]
 trace-db verify [--json]
 trace-db doctor [--json]
@@ -151,8 +152,15 @@ for row in rows {
 ```
 
 `TraceDb` also provides typed `ingest`, `ingest_session`, `list`, `show`,
-`stats`, `reindex`, and `reconstruct` methods. Lower-level `model`, `parsers`, and
-`store` modules remain public for custom importers and specialized SQL access.
+`stats`, `reindex`, `backup`, and `reconstruct` methods. Lower-level `model`,
+`parsers`, and `store` modules remain public for custom importers and
+specialized SQL access.
+
+`trace-db backup PATH` publishes a consistent SQLite snapshot through a staging
+directory and verifies the snapshot before returning. The destination must not
+already exist; this avoids accidental replacement and includes WAL state,
+normalized rows, the FTS index, provenance, and full-capture objects in one
+portable archive file.
 
 For a versioned cross-language boundary, `trace-db serve` exposes the
 `tracedb.v1` gRPC service over loopback TCP or a Unix domain socket. The

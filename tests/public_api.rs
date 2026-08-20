@@ -214,6 +214,46 @@ fn trace_db_facade_covers_archive_lifecycle() {
 }
 
 #[test]
+fn backup_publishes_verified_snapshot_without_overwriting() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.db");
+    let destination = dir.path().join("backup.db");
+    let mut database = TraceDb::open(&source).unwrap();
+    database
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:backup".into(),
+                    agent: Agent::Codex,
+                    cwd: None,
+                    started_at_ms: Some(1),
+                    ended_at_ms: Some(2),
+                    title: Some("backup".into()),
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: serde_json::json!({}),
+                    fingerprint: "backup-v1".into(),
+                    sources: Vec::new(),
+                },
+                events: vec![Event::new(EventKind::User, "backup this")],
+            },
+            IngestMode::Partial,
+        )
+        .unwrap();
+    let report = database.backup(&destination).unwrap();
+    assert!(report.verified);
+    assert_eq!(report.sessions, 1);
+    assert_eq!(report.events, 1);
+    assert!(destination.exists());
+    assert!(database.backup(&destination).is_err());
+    let restored = TraceDb::open_read_only(&destination).unwrap();
+    assert_eq!(restored.stats().unwrap().total_sessions, 1);
+}
+
+#[test]
 fn native_ingest_skips_unchanged_sessions_before_parsing() {
     let dir = tempdir().unwrap();
     let native = dir.path().join("native");

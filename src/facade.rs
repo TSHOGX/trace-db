@@ -522,6 +522,11 @@ impl TraceDb {
         store::rebuild_fts(&self.connection)
     }
 
+    /// Create a verified, consistent SQLite snapshot at `destination`.
+    pub fn backup(&self, destination: impl AsRef<Path>) -> Result<BackupReport> {
+        store::backup(&self.connection, destination.as_ref())
+    }
+
     /// Verify SQLite, index, contract, reference, and archived-object integrity.
     pub fn verify(&self) -> Result<VerifyReport> {
         store::verify(&self.connection, &self.path)
@@ -1659,6 +1664,16 @@ pub struct SessionTrace {
     pub session: Session,
     pub mode: IngestMode,
     pub events: Vec<crate::model::Event>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupReport {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub sessions: u64,
+    pub events: u64,
+    pub verified: bool,
 }
 
 /// Resolve the default native store root for one supported agent.
