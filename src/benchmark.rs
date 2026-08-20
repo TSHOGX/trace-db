@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-pub const BENCHMARK_SCHEMA_VERSION: &str = "tracedb-benchmark-v1";
+pub const BENCHMARK_SCHEMA_VERSION: &str = "tracedb-benchmark-v2";
 pub const STANDARD_SESSION_COUNTS: [usize; 3] = [1_000, 10_000, 100_000];
 pub const EVENTS_PER_SESSION: usize = 6;
 const GENERATOR_VERSION: u32 = 1;
@@ -97,10 +97,9 @@ pub struct BenchmarkOperation {
 #[serde(rename_all = "snake_case")]
 pub enum BenchmarkOperationName {
     Generate,
-    FirstPartialIngest,
-    UnchangedPartialIngest,
-    ChangedPartialIngest,
-    FullIngest,
+    FirstIngest,
+    UnchangedIngest,
+    ChangedIngest,
     Search,
     List,
     Show,
@@ -114,10 +113,9 @@ impl std::fmt::Display for BenchmarkOperationName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Generate => "generate",
-            Self::FirstPartialIngest => "first_partial_ingest",
-            Self::UnchangedPartialIngest => "unchanged_partial_ingest",
-            Self::ChangedPartialIngest => "changed_partial_ingest",
-            Self::FullIngest => "full_ingest",
+            Self::FirstIngest => "first_ingest",
+            Self::UnchangedIngest => "unchanged_ingest",
+            Self::ChangedIngest => "changed_ingest",
             Self::Search => "search",
             Self::List => "list",
             Self::Show => "show",
@@ -241,7 +239,7 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
     let native = root.join("native");
     let db_path = root.join("trace.db");
     let restore = root.join("reconstructed");
-    let mut operations = Vec::with_capacity(12);
+    let mut operations = Vec::with_capacity(11);
     let (native_bytes, op) = measure(BenchmarkOperationName::Generate, &db_path, 0, || {
         let bytes = generate_codex_dataset(&native, sessions)?;
         Ok((
@@ -261,36 +259,31 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
         exclude: Vec::new(),
     };
     let (mut archive, op) = measure(
-        BenchmarkOperationName::FirstPartialIngest,
+        BenchmarkOperationName::FirstIngest,
         &db_path,
         native_bytes,
         || {
             let mut db = TraceDb::open(&db_path)?;
-            let report = db.ingest(request(IngestMode::Partial))?;
+            let report = db.ingest(request(IngestMode::Full))?;
             require_ingest(&report, sessions, sessions, sessions, 0)?;
-            Ok((db, ingest_result(IngestMode::Partial, &report)))
+            Ok((db, ingest_result(IngestMode::Full, &report)))
         },
     )?;
     operations.push(op);
-    let (_, op) = measure(
-        BenchmarkOperationName::UnchangedPartialIngest,
-        &db_path,
-        0,
-        || {
-            let report = archive.ingest(request(IngestMode::Partial))?;
-            require_ingest(&report, sessions, 0, 0, sessions)?;
-            Ok(((), ingest_result(IngestMode::Partial, &report)))
-        },
-    )?;
+    let (_, op) = measure(BenchmarkOperationName::UnchangedIngest, &db_path, 0, || {
+        let report = archive.ingest(request(IngestMode::Full))?;
+        require_ingest(&report, sessions, 0, 0, sessions)?;
+        Ok(((), ingest_result(IngestMode::Full, &report)))
+    })?;
     operations.push(op);
     let changed_sessions = sessions.div_ceil(CHANGE_DIVISOR);
     let changed_bytes = change_sessions(&native, changed_sessions)?;
     let (_, op) = measure(
-        BenchmarkOperationName::ChangedPartialIngest,
+        BenchmarkOperationName::ChangedIngest,
         &db_path,
         changed_bytes,
         || {
-            let report = archive.ingest(request(IngestMode::Partial))?;
+            let report = archive.ingest(request(IngestMode::Full))?;
             require_ingest(
                 &report,
                 sessions,
@@ -298,17 +291,6 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
                 changed_sessions,
                 sessions - changed_sessions,
             )?;
-            Ok(((), ingest_result(IngestMode::Partial, &report)))
-        },
-    )?;
-    operations.push(op);
-    let (_, op) = measure(
-        BenchmarkOperationName::FullIngest,
-        &db_path,
-        directory_file_bytes(&native)?,
-        || {
-            let report = archive.ingest(request(IngestMode::Full))?;
-            require_ingest(&report, sessions, sessions, sessions, 0)?;
             Ok(((), ingest_result(IngestMode::Full, &report)))
         },
     )?;
@@ -546,12 +528,6 @@ fn benchmark_session_id(index: usize) -> String {
 }
 fn session_path(root: &Path, index: usize) -> PathBuf {
     root.join(format!("rollout-bench-{index:06}.jsonl"))
-}
-fn directory_file_bytes(root: &Path) -> Result<u64> {
-    Ok(fs::read_dir(root)?.try_fold(0, |sum, e| {
-        let m = e?.metadata()?;
-        Ok::<_, std::io::Error>(sum + if m.is_file() { m.len() } else { 0 })
-    })?)
 }
 fn database_bytes(path: &Path) -> Result<u64> {
     Ok([

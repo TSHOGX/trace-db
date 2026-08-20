@@ -76,7 +76,7 @@ class TraceDb:
     def ingest_json(
         self,
         agents: Iterable[str] | None = None,
-        mode: str = "partial",
+        mode: str = "full",
         root: os.PathLike[str] | str | None = None,
         since_ms: int | None = None,
     ) -> str:
@@ -88,7 +88,7 @@ class TraceDb:
     def ingest(
         self,
         agents: Iterable[str] | None = None,
-        mode: str = "partial",
+        mode: str = "full",
         root: os.PathLike[str] | str | None = None,
         since_ms: int | None = None,
     ) -> dict[str, Any]:

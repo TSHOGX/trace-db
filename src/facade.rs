@@ -2,7 +2,6 @@ use crate::{
     config::{ExcludeMatcher, DEFAULT_WATCH_DEBOUNCE_MS, DEFAULT_WATCH_INTERVAL_SECONDS},
     model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
     parsers::{parser, SessionCandidate},
-    privacy::Redactor,
     search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
 };
 use anyhow::{anyhow, Result};
@@ -26,7 +25,6 @@ use std::{
 pub struct TraceDb {
     path: PathBuf,
     connection: Connection,
-    redactor: Redactor,
 }
 
 impl TraceDb {
@@ -34,11 +32,7 @@ impl TraceDb {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let connection = store::open(&path)?;
-        Ok(Self {
-            path,
-            connection,
-            redactor: Redactor::new(&[])?,
-        })
+        Ok(Self { path, connection })
     }
 
     /// Load the resolved runtime configuration and open its selected archive.
@@ -55,22 +49,14 @@ impl TraceDb {
             config.tokenizer,
             config.tokenizer_extension.as_deref(),
         )?;
-        Ok(Self {
-            path,
-            connection,
-            redactor: Redactor::new(&config.redact_patterns)?,
-        })
+        Ok(Self { path, connection })
     }
 
     /// Open an existing archive without migrations or archive-record writes.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let connection = store::open_read_only(&path)?;
-        Ok(Self {
-            path,
-            connection,
-            redactor: Redactor::new(&[])?,
-        })
+        Ok(Self { path, connection })
     }
 
     /// Open an existing archive read-only with its configured tokenizer loaded.
@@ -81,11 +67,7 @@ impl TraceDb {
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let connection = store::open_read_only_configured(&path, tokenizer, tokenizer_extension)?;
-        Ok(Self {
-            path,
-            connection,
-            redactor: Redactor::new(&[])?,
-        })
+        Ok(Self { path, connection })
     }
 
     /// Plan an ingest against an existing or not-yet-created archive without writing it.
@@ -133,7 +115,6 @@ impl TraceDb {
                     Ok(Some(mut session)) => {
                         parsed += 1;
                         session.session.fingerprint = candidate.fingerprint;
-                        self.redactor.redact_session(&mut session);
                         match store::upsert(&mut self.connection, session, request.mode) {
                             Ok(()) => ingested += 1,
                             Err(error) => failures.push(IngestIssue::from_error(
@@ -224,7 +205,7 @@ impl TraceDb {
         }
         Ok(IngestDryRunReport {
             dry_run: true,
-            mode: request.mode,
+            mode: IngestMode::Full,
             agents: reports,
         })
     }
@@ -391,7 +372,7 @@ impl TraceDb {
         &self,
         agent: Agent,
         root: &Path,
-        mode: IngestMode,
+        _mode: IngestMode,
         since_ms: Option<i64>,
         exclusions: &ExcludeMatcher,
     ) -> AgentScan {
@@ -448,9 +429,7 @@ impl TraceDb {
                 continue;
             }
             if states.get(&candidate.locator).is_some_and(|state| {
-                state.fingerprint == candidate.fingerprint
-                    && (matches!(mode, IngestMode::Partial)
-                        || matches!(state.mode, IngestMode::Full))
+                state.fingerprint == candidate.fingerprint && matches!(state.mode, IngestMode::Full)
             }) {
                 unchanged += 1;
                 continue;
@@ -469,8 +448,6 @@ impl TraceDb {
 
     /// Insert one already-parsed session through the same transactional path.
     pub fn ingest_session(&mut self, session: ParsedSession, mode: IngestMode) -> Result<()> {
-        let mut session = session;
-        self.redactor.redact_session(&mut session);
         store::upsert(&mut self.connection, session, mode)
     }
 
@@ -1217,7 +1194,7 @@ impl Default for IngestRequest {
     fn default() -> Self {
         Self {
             agents: Vec::new(),
-            mode: IngestMode::Partial,
+            mode: IngestMode::Full,
             root: None,
             since_ms: None,
             exclude: Vec::new(),

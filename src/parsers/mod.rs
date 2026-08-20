@@ -7,10 +7,11 @@ pub mod pi;
 use crate::model::{Agent, ParsedSession};
 use anyhow::{Context, Result};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
     fs::Metadata,
-    io::{BufRead, BufReader},
+    fs::{self, File},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -57,14 +58,17 @@ pub struct SessionCandidate {
 }
 
 impl SessionCandidate {
-    /// Build a metadata fingerprint for a file-backed native source.
+    /// Build a content fingerprint for a file-backed native source. Metadata
+    /// alone can miss same-size rewrites or coarse-timestamp updates.
     pub fn file(path: PathBuf) -> Result<Self> {
         let metadata = path.metadata()?;
-        let mtime_ns = modified_ns(&metadata);
+        let mtime_ns = modified_ns_public(&metadata);
+        let digest = sha256_file(&path)?;
         Ok(Self {
             locator: path.display().to_string(),
             fingerprint: format!(
-                "file-v1:{}:{}",
+                "file-v2:{}:{}:{}",
+                digest,
                 metadata.len(),
                 mtime_ns.unwrap_or_default()
             ),
@@ -83,12 +87,30 @@ impl SessionCandidate {
     pub fn include_file(&mut self, path: &Path) -> Result<()> {
         let metadata = path.metadata()?;
         self.fingerprint.push_str(&format!(
-            ":{}:{}",
+            ":{}:{}:{}",
+            sha256_file(path)?,
             metadata.len(),
-            modified_ns(&metadata).unwrap_or_default()
+            modified_ns_public(&metadata).unwrap_or_default()
         ));
         Ok(())
     }
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to fingerprint native source {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to fingerprint native source {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(unix)]
@@ -102,12 +124,16 @@ fn file_mode(_metadata: &Metadata) -> Option<u32> {
     None
 }
 
-fn modified_ns(metadata: &Metadata) -> Option<i64> {
+pub(crate) fn modified_ns_public(metadata: &Metadata) -> Option<i64> {
     metadata
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
+}
+
+pub(crate) fn file_mode_public(metadata: &Metadata) -> Option<u32> {
+    file_mode(metadata)
 }
 
 pub trait Parser {

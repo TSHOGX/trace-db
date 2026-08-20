@@ -188,7 +188,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Status::invalid_argument)?;
         let mode = if request.mode.is_empty() {
-            IngestMode::Partial
+            IngestMode::Full
         } else {
             request
                 .mode

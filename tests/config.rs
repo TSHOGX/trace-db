@@ -1,9 +1,9 @@
 use serde_json::Value;
 use std::{path::Path, process::Command};
 use tempfile::tempdir;
-use tracedb::{ConfigOverrides, TraceDb, TraceDbConfig};
+use tracedb::TraceDb;
 
-const TRACEDB_ENV: [&str; 10] = [
+const TRACEDB_ENV: [&str; 9] = [
     "TRACEDB_CONFIG",
     "TRACEDB_PATH",
     "TRACEDB_AGENTS",
@@ -12,7 +12,6 @@ const TRACEDB_ENV: [&str; 10] = [
     "TRACEDB_TOKENIZER",
     "TRACEDB_JIEBA_EXT",
     "TRACEDB_OUTPUT_FORMAT",
-    "TRACEDB_REDACT_PATTERNS",
     "TRACEDB_WATCH_INTERVAL",
 ];
 
@@ -121,7 +120,7 @@ watch_debounce_ms = 250
         layered["defaultAgents"],
         serde_json::json!(["gemini", "pi"])
     );
-    assert_eq!(layered["captureMode"], "partial");
+    assert_eq!(layered["captureMode"], "full");
     assert_eq!(layered["exclude"], serde_json::json!(["**/from-env/**"]));
     assert_eq!(layered["tokenizer"], "unicode61");
     assert!(layered["tokenizerExtension"].is_null());
@@ -300,44 +299,6 @@ fn tokenizer_extension_implies_jieba_and_unicode_override_clears_it() {
 }
 
 #[test]
-fn redact_patterns_support_file_environment_and_cli_precedence() {
-    let dir = tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
-    std::fs::write(&config_path, "redact_patterns = [\"file-secret\"]\n").unwrap();
-
-    let from_file = TraceDbConfig::load(ConfigOverrides {
-        config_path: Some(config_path.clone()),
-        ..ConfigOverrides::default()
-    })
-    .unwrap();
-    assert_eq!(from_file.redact_patterns, vec!["file-secret"]);
-
-    let from_environment = command(dir.path())
-        .args([
-            "--config",
-            config_path.to_str().unwrap(),
-            "config",
-            "--json",
-        ])
-        .env("TRACEDB_REDACT_PATTERNS", "env-secret;env-path")
-        .output()
-        .unwrap();
-    let environment_config: Value = serde_json::from_slice(&from_environment.stdout).unwrap();
-    assert_eq!(
-        environment_config["redactPatterns"],
-        serde_json::json!(["env-secret", "env-path"])
-    );
-
-    let from_cli = TraceDbConfig::load(ConfigOverrides {
-        config_path: Some(config_path),
-        redact_patterns: Some(vec!["cli-secret".into()]),
-        ..ConfigOverrides::default()
-    })
-    .unwrap();
-    assert_eq!(from_cli.redact_patterns, vec!["cli-secret"]);
-}
-
-#[test]
 fn config_is_strict_and_missing_default_file_is_normal() {
     let dir = tempdir().unwrap();
     let default_config = dir.path().join("xdg-config/trace-db/config.toml");
@@ -353,10 +314,7 @@ fn config_is_strict_and_missing_default_file_is_normal() {
         ("default_agents = []\n", "at least one agent"),
         ("default_agents = [\"future\"]\n", "unknown variant"),
         ("exclude = [\"[unterminated\"]\n", "invalid exclude pattern"),
-        (
-            "redact_patterns = [\"[unterminated\"]\n",
-            "invalid redact pattern",
-        ),
+        ("redact_patterns = [\"secret\"]\n", "unknown field"),
         ("tokenizer = \"jieba\"\n", "requires tokenizer_extension"),
         ("watch_interval_seconds = 0\n", "greater than zero"),
         ("watch_debounce_ms = 0\n", "greater than zero"),

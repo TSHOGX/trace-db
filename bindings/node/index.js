@@ -49,12 +49,12 @@ class TraceDb {
     );
   }
 
-  ingestJson(agents, mode = "partial", root, sinceMs) {
+  ingestJson(agents, mode = "full", root, sinceMs) {
     return this._native.ingestJson(agents, mode, root, sinceMs);
   }
 
   ingest(options = {}) {
-    const { agents, mode = "partial", root, sinceMs } = options;
+    const { agents, mode = "full", root, sinceMs } = options;
     return JSON.parse(this.ingestJson(agents, mode, root, sinceMs));
   }
 

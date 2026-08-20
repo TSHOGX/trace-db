@@ -10,19 +10,15 @@ while retaining native provenance and session lineage.
 
 ## Capture modes
 
-In `partial` mode (the default), TraceDB stores the full normalized event text,
-metadata, lineage, and pointers to native sources. This is the fast,
-rebuildable index mode.
-
-In `full` mode, TraceDB additionally stores compressed, content-addressed native
-snapshots. Full capture is sticky: a later partial ingest never removes an
-existing snapshot. `trace-db reconstruct` restores those snapshots into a safe
-output directory. Partial databases can be rebuilt from native stores; full
-databases are archives and should be backed up.
+TraceDB always stores the complete normalized projection and a compressed,
+content-addressed byte-for-byte snapshot of every discovered native source.
+`full` is the canonical mode. `partial` remains accepted as a compatibility
+spelling, but is canonicalized to `full` and never creates a lossy record.
+`trace-db reconstruct` restores snapshots into a safe output directory.
 
 Ingestion first discovers lightweight candidates from file metadata or native
-session rows. It compares their fingerprints with archived source locators and
-only parses changed sessions or sessions that need a partial-to-full upgrade.
+session rows. It compares content-aware fingerprints with archived source
+locators and only parses changed sessions.
 The CLI and APIs report discovered, parsed, ingested, unchanged, skipped,
 failed, warning, and time-filtered counts separately. Best-effort ingest
 continues past malformed or unreadable candidates and reports structured
@@ -100,11 +96,10 @@ the selected file.
 ```toml
 database_path = "data/trace.db"
 default_agents = ["claude", "codex", "gemini"]
-capture_mode = "partial"
+capture_mode = "full"
 exclude = ["**/private/**", "**/scratch-*"]
 tokenizer = "unicode61"
 output_format = "text"
-redact_patterns = ["customer@example\\.com", "(?i)internal-project-[0-9]+"]
 watch_interval_seconds = 300
 watch_debounce_ms = 1000
 ```
@@ -117,12 +112,11 @@ candidates are reported as skipped and are never parsed or archived.
 Configuration precedence is CLI > environment > TOML file > built-in default.
 The environment variables are `TRACEDB_PATH`, `TRACEDB_AGENTS`,
 `TRACEDB_CAPTURE_MODE`, `TRACEDB_EXCLUDE`, `TRACEDB_TOKENIZER`,
-`TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_REDACT_PATTERNS`,
-`TRACEDB_WATCH_INTERVAL`, and `TRACEDB_WATCH_DEBOUNCE`; agent and exclusion
-lists are comma-separated, while redact patterns are semicolon-separated. The
+`TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_WATCH_INTERVAL`, and
+`TRACEDB_WATCH_DEBOUNCE`; agent and exclusion lists are comma-separated. The
 built-in database path is the platform data directory at
 `trace-db/trace.db`, agents default to all five supported agents, capture mode
-defaults to `partial`, output defaults to `text`, and watch timing defaults to
+defaults to `full`, output defaults to `text`, and watch timing defaults to
 300 seconds with a 1000 ms debounce.
 
 ## CLI
@@ -210,13 +204,10 @@ are defined.
 source locator, SHA-256 object hash, byte count, mode, and timestamp. The
 manifest destination must not already exist.
 
-Privacy boundaries are explicit. Built-in credential patterns and configured
-`redact_patterns` apply when normalized sessions/events are stored; the raw
-full-capture object remains byte-identical for exact reconstruction. Search
-snippets also apply presentation redaction. Set `TRACEDB_REDACT_PATTERNS` to a
-semicolon-separated list, or pass repeatable global `--redact-pattern` flags;
-CLI values override environment and config-file values. Invalid expressions
-are rejected before an ingest starts.
+Privacy is not applied implicitly. Ingest, normalized storage, search snippets,
+exports, and reconstruction preserve the supplied values. If a caller needs
+privacy filtering, it must be an explicit, separate presentation/export step
+whose output is never written back to the archive.
 
 Generate shell completions directly from the installed CLI, for example
 `trace-db completions zsh > _trace-db` or
@@ -303,17 +294,15 @@ archive lag relative to the newest discovered native candidate.
 
 Doctor also probes archive and native-root permissions, verifies configured
 watch timings and filesystem-notification readiness, and reports when periodic
-fallback will be used. Backup guidance distinguishes empty archives,
-rebuildable partial archives, and archives containing full native snapshots;
-full captures receive the strongest recommendation because the archive may be
-the only exact reconstruction source. A failed most-recent ingest makes doctor
+fallback will be used. Backup guidance distinguishes empty archives from
+lossless archives containing full native snapshots. A failed most-recent ingest makes doctor
 unhealthy while preserving all detailed counts in its JSON report.
 
 ## Deterministic benchmarks
 
 `trace-db-bench` generates isolated, deterministic Codex JSONL datasets and
-runs the canonical Rust facade through first partial ingest, unchanged ingest,
-a deterministic 1% changed ingest, full-capture upgrade, search, list, show,
+runs the canonical Rust facade through first lossless ingest, unchanged ingest,
+a deterministic 1% changed ingest, search, list, show,
 stats, reindex, verify, and reconstruction. The standard suite covers 1,000,
 10,000, and 100,000 sessions; smaller custom counts are useful while developing:
 
@@ -369,10 +358,11 @@ The SQLite schema records its version, archive contract, and selected tokenizer
 in `schema_meta`. Full native snapshots live in a content-addressed `objects`
 table and are referenced by `raw_sources`.
 
-OpenCode full capture restores two artifacts: a native-importable
-`<session>.db` cloned from the source schema and migration journal, containing
-only the selected project/workspace/session/message/part rows, plus a portable
-`<session>.json` fallback envelope. The native bundle is tagged
+OpenCode full capture restores the original `opencode.db` bytes (and durable
+WAL sidecar when present), plus a native-importable `<session>.db` cloned from the
+source schema and migration journal, containing the selected project/workspace/
+session rows, and a portable `<session>.json` fallback envelope. The native
+bundle is tagged
 `opencode-native-session-v1` and should be checked with
 `scripts/verify-opencode-compat.py` against the OpenCode release that will read
 it; compatibility with future migrations is not implied.

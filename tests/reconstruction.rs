@@ -296,10 +296,18 @@ fn opencode_full_capture_restores_deterministic_session_bundle() {
     let (archive_dir, db) = ingest_one(&db_path, Agent::OpenCode);
     let output = archive_dir.path().join("restore");
     let restored = db.reconstruct("opencode:s1", &output).unwrap();
-    assert_eq!(restored.len(), 2);
+    assert_eq!(restored.len(), 3);
+    let exact = restored
+        .iter()
+        .find(|path| path.ends_with("s1/opencode.db"))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(exact).unwrap(),
+        std::fs::read(&db_path).unwrap()
+    );
     let native = restored
         .iter()
-        .find(|path| path.extension().is_some_and(|extension| extension == "db"))
+        .find(|path| path.file_name().is_some_and(|name| name == "s1.db"))
         .unwrap();
     let portable = restored
         .iter()

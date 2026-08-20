@@ -101,7 +101,7 @@ impl PyTraceDb {
     }
 
     /// Ingest native sessions and return the typed report as a JSON object string.
-    #[pyo3(signature = (agents=None, mode="partial", root=None, since_ms=None))]
+    #[pyo3(signature = (agents=None, mode="full", root=None, since_ms=None))]
     fn ingest_json(
         &mut self,
         agents: Option<Vec<String>>,

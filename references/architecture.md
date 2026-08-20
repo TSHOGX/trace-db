@@ -26,7 +26,6 @@ src/
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance
-  privacy.rs      normalized credential and user-regex redaction policy
   store.rs        SQLite schema, upsert, FTS, search, reconstruction
   parsers/
     mod.rs        parser trait and registry
@@ -41,13 +40,14 @@ proto/tracedb/v1/   stable cross-language Protobuf contract
 
 ## Rebuildability and full capture
 
-Normalized tables are deterministic and can be rebuilt from native stores.
-Partial mode stores source pointers only. Full mode stores a compressed object
-for each source, addressed by SHA-256. Objects are deduplicated across sessions
-and are restored only through validated relative paths.
+Normalized tables are deterministic projections and can be rebuilt from native
+stores. Every ingest also stores a compressed object for each source, addressed
+by SHA-256; objects are deduplicated across sessions and restored only through
+validated relative paths. The archive never treats the normalized projection as
+the source of truth.
 
-The `mode` column is monotonic: once a session has been captured in full mode,
-subsequent partial ingests retain full mode and recapture the source object.
+The `mode` column is monotonic: new writes are always stored as `full`, while
+legacy `partial` rows remain identifiable for migration and verification.
 
 `TraceDb::backup` uses SQLite's consistent `VACUUM INTO` snapshot mechanism in
 a sibling staging directory, refuses existing destinations, atomically publishes
@@ -57,17 +57,16 @@ the completed file, and verifies the published archive before returning.
 current lifecycle contract is deliberately dry-run-only: object deletion is not
 performed until recovery, retention, and crash-safety semantics are specified.
 
-Privacy is applied at the normalized ingest boundary. Built-in credential
-patterns and configured regular expressions redact session metadata, event
-fields, and structured event data before SQLite upsert; full-capture bytes are
-stored separately and remain exact. Search snippets have an additional
-presentation-only redaction pass.
+No privacy transformation is applied at ingest or retrieval. Any redaction must
+be an explicit caller-owned presentation/export operation and must not be
+persisted back into the archive.
 
 Reconstruction can additionally emit a versioned restore manifest containing
 the output paths, source locators, object hashes, sizes, and preserved metadata
 for every atomically written file.
 
-OpenCode full capture stores both a native SQLite session bundle
+OpenCode full capture stores the original database file (and durable WAL
+sidecar when present), plus both a native SQLite session bundle
 (`opencode-native-session-v1`) and a portable JSON fallback. The native bundle
 clones the source database schema and migration journal, then copies only the
 selected project/session/message/part rows plus compatibility metadata. This
@@ -93,7 +92,7 @@ Successful ingest calls persist compact last-run telemetry and a cumulative
 failure count in `schema_meta`. Doctor reads this metadata without migrating
 the archive, compares the newest native candidate with the last ingest time,
 probes watcher and permission readiness, and derives backup guidance from the
-number of partial and full sessions.
+number of legacy partial and lossless full sessions.
 
 The gRPC adapter keeps one serialized writer for ingest, reindex, and
 reconstruction, plus a bounded pool of read-only SQLite connections for search,

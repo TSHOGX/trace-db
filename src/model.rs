@@ -63,20 +63,17 @@ impl FromStr for Agent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IngestMode {
-    #[default]
     Partial,
+    #[default]
     Full,
 }
 
 impl IngestMode {
-    /// A full snapshot is sticky: a later default/partial ingest must never
-    /// silently throw away the only copy of a native source.
-    pub fn retain_full(self, existing: Option<IngestMode>) -> IngestMode {
-        if matches!(self, IngestMode::Full) || matches!(existing, Some(IngestMode::Full)) {
-            IngestMode::Full
-        } else {
-            IngestMode::Partial
-        }
+    /// Every new write is lossless. `partial` remains readable and accepted as
+    /// a compatibility spelling for callers and archives created before the
+    /// lossless contract, but it can no longer create a partial record.
+    pub fn retain_full(self, _existing: Option<IngestMode>) -> IngestMode {
+        IngestMode::Full
     }
 }
 

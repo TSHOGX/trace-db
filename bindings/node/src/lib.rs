@@ -117,7 +117,7 @@ impl NodeTraceDb {
             .collect::<Result<Vec<_>>>()?;
         let mode = mode
             .as_deref()
-            .unwrap_or("partial")
+            .unwrap_or("full")
             .parse::<IngestMode>()
             .map_err(native_error)?;
         json(

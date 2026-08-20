@@ -131,17 +131,38 @@ fn parse_session(
     let native_bytes = build_native_bundle(connection, &sid)?;
     let native_source = NativeSource {
         locator: format!("{}#{id}", db.display()),
-        kind: "sqlite-session".into(),
-        restore_path: format!("{sid}.db"),
+        kind: "sqlite".into(),
+        restore_path: format!("{sid}/opencode.db"),
         role: None,
         bytes: candidate.bytes,
         mtime_ns: candidate.mtime_ns,
         mode: candidate.mode,
-        capture: Some(Capture::Bytes {
-            label: sid.clone(),
-            bytes: native_bytes,
+        capture: Some(Capture::File {
+            path: db.display().to_string(),
         }),
     };
+    let mut sources = vec![native_source];
+    // `-shm` is a transient SQLite coordination file and changes whenever a
+    // reader is active; it is not durable source content. Capture the durable
+    // database and WAL, but never make the volatile SHM file a session source.
+    for suffix in ["-wal"] {
+        let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
+        if sidecar.exists() {
+            let metadata = fs::metadata(&sidecar)?;
+            sources.push(NativeSource {
+                locator: format!("{}#{id}:sidecar{suffix}", db.display()),
+                kind: "sqlite-sidecar".into(),
+                restore_path: format!("{sid}/opencode.db{suffix}"),
+                role: Some(format!("source-sidecar{suffix}")),
+                bytes: Some(metadata.len() as i64),
+                mtime_ns: crate::parsers::modified_ns_public(&metadata),
+                mode: crate::parsers::file_mode_public(&metadata),
+                capture: Some(Capture::File {
+                    path: sidecar.display().to_string(),
+                }),
+            });
+        }
+    }
     let portable_source = NativeSource {
         locator: format!("{}#{id}:portable", db.display()),
         kind: "portable-json".into(),
@@ -153,6 +174,19 @@ fn parse_session(
         capture: Some(Capture::Bytes {
             label: format!("{sid}-portable"),
             bytes: portable_bytes,
+        }),
+    };
+    let bundle_source = NativeSource {
+        locator: format!("{}#{id}:bundle", db.display()),
+        kind: "sqlite-session".into(),
+        restore_path: format!("{sid}.db"),
+        role: Some("derived-session-bundle".into()),
+        bytes: Some(native_bytes.len() as i64),
+        mtime_ns: candidate.mtime_ns,
+        mode: candidate.mode,
+        capture: Some(Capture::Bytes {
+            label: sid.clone(),
+            bytes: native_bytes,
         }),
     };
     Ok(ParsedSession {
@@ -169,8 +203,17 @@ fn parse_session(
             parent_session_id: parent.map(|p| format!("opencode:{p}")),
             forked_from: None,
             meta: json!({"agent":agent}),
-            fingerprint: format!("{}:{}", evs.len(), updated.unwrap_or_default()),
-            sources: vec![native_source, portable_source],
+            fingerprint: format!(
+                "{}:{}:{}",
+                candidate.fingerprint,
+                evs.len(),
+                updated.unwrap_or_default()
+            ),
+            sources: {
+                sources.push(bundle_source);
+                sources.push(portable_source);
+                sources
+            },
         },
         events: evs,
     })
@@ -231,20 +274,18 @@ fn build_native_bundle(source: &Connection, id: &str) -> Result<Vec<u8>> {
         Some("id=?1"),
         &[SqlValue::Text(id.into())],
     )?;
-    copy_rows(
-        source,
-        &connection,
-        "message",
-        Some("session_id=?1"),
-        &[SqlValue::Text(id.into())],
-    )?;
-    copy_rows(
-        source,
-        &connection,
-        "part",
-        Some("session_id=?1"),
-        &[SqlValue::Text(id.into())],
-    )?;
+    // Preserve every source table scoped by `session_id`, including tables
+    // introduced by newer OpenCode versions. A fixed message/part allow-list
+    // silently discarded agent-specific session data.
+    for table in session_scoped_tables(source)? {
+        copy_rows(
+            source,
+            &connection,
+            &table,
+            Some(&format!("{}=?1", quote_identifier("session_id"))),
+            &[SqlValue::Text(id.into())],
+        )?;
+    }
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
          INSERT OR REPLACE INTO schema_meta(key,value) VALUES('format','opencode-native-session-v1'),('version','1');",
@@ -337,6 +378,26 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(columns.iter().any(|value| value == column))
 }
+
+fn session_scoped_tables(connection: &Connection) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )?;
+    let tables = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tables
+        .into_iter()
+        .filter(|table| table != "session")
+        .filter_map(
+            |table| match table_has_column(connection, &table, "session_id") {
+                Ok(true) => Some(Ok(table)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            },
+        )
+        .collect()
+}
 impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
@@ -347,6 +408,13 @@ impl Parser for OpenCodeParser {
         };
         let metadata = fs::metadata(&db)?;
         let file_candidate = SessionCandidate::file(db.clone())?;
+        let mut file_candidate = file_candidate;
+        for suffix in ["-wal"] {
+            let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
+            if sidecar.exists() {
+                file_candidate.include_file(&sidecar)?;
+            }
+        }
         let c = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut st =
             c.prepare("SELECT id,time_updated,time_created FROM session ORDER BY time_updated")?;
@@ -365,7 +433,11 @@ impl Parser for OpenCodeParser {
                 path: db.clone(),
                 locator: format!("{}#{id}", db.display()),
                 native_id: Some(id),
-                fingerprint: format!("opencode-v1:{}", updated.or(created).unwrap_or_default()),
+                fingerprint: format!(
+                    "{}:{}",
+                    file_candidate.fingerprint,
+                    updated.or(created).unwrap_or_default()
+                ),
                 updated_at_ms: updated.or(created),
                 bytes: Some(metadata.len() as i64),
                 mtime_ns: file_candidate.mtime_ns,

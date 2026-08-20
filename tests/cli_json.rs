@@ -51,8 +51,8 @@ fn stats_json_serializes_the_complete_archive_stats() {
     assert_eq!(stats["path"], path.display().to_string());
     assert_eq!(stats["totalSessions"], 1);
     assert_eq!(stats["totalEvents"], 2);
-    assert_eq!(stats["totalFullSessions"], 0);
-    assert_eq!(stats["agents"][0]["fullSessions"], 0);
+    assert_eq!(stats["totalFullSessions"], 1);
+    assert_eq!(stats["agents"][0]["fullSessions"], 1);
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn show_json_serializes_the_complete_session_trace() {
     let trace: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(trace["session"]["id"], "codex:json-contract");
     assert_eq!(trace["session"]["model"], "gpt-test");
-    assert_eq!(trace["mode"], "partial");
+    assert_eq!(trace["mode"], "full");
     assert_eq!(trace["events"].as_array().unwrap().len(), 2);
     assert_eq!(trace["events"][1]["kind"], "tool_call");
     assert_eq!(trace["events"][1]["name"], "read_file");

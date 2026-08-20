@@ -45,17 +45,17 @@ Reconstruction is disabled unless the server starts with
 `--reconstruct-root PATH`. Clients then provide only a safe relative
 `out_dir`; absolute paths and parent traversal are rejected.
 
-Normalized privacy redaction happens before archive writes and therefore applies
-equally to CLI, gRPC, and language bindings. Raw full-capture objects are not
-redacted and are only exposed through explicit reconstruction. Search snippets
-may redact again for presentation.
+The service performs no implicit privacy redaction. CLI, gRPC, and language
+bindings receive the stored values unchanged. Callers that need redaction must
+apply it to their presentation/export copy and must not write that copy back.
 
 The Rust facade exposes `RestoreManifest` with schema version
 `tracedb-restore-manifest-v1`; the CLI can write this artifact with
 `reconstruct --manifest PATH`. Existing reconstruction APIs continue returning
 the written paths for compatibility.
 
-OpenCode full captures include a native SQLite bundle tagged
+OpenCode full captures include the original SQLite database bytes (and durable
+WAL sidecar when present), plus a native SQLite bundle tagged
 `opencode-native-session-v1` and a portable JSON fallback. The native bundle
 copies the source schema and migration journal for the selected OpenCode
 database, so it is version-matched to that source. Verify it against the

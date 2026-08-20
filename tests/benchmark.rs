@@ -18,15 +18,14 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
     let run = &report.runs[0];
     assert_eq!(run.sessions, 8);
     assert_eq!(run.changed_sessions, 1);
-    assert_eq!(run.operations.len(), 12);
+    assert_eq!(run.operations.len(), 11);
     assert_eq!(
         run.operations.iter().map(|o| o.name).collect::<Vec<_>>(),
         [
             BenchmarkOperationName::Generate,
-            BenchmarkOperationName::FirstPartialIngest,
-            BenchmarkOperationName::UnchangedPartialIngest,
-            BenchmarkOperationName::ChangedPartialIngest,
-            BenchmarkOperationName::FullIngest,
+            BenchmarkOperationName::FirstIngest,
+            BenchmarkOperationName::UnchangedIngest,
+            BenchmarkOperationName::ChangedIngest,
             BenchmarkOperationName::Search,
             BenchmarkOperationName::List,
             BenchmarkOperationName::Show,
@@ -37,7 +36,7 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
         ]
     );
     assert!(matches!(
-        run.operations[4].result,
+        run.operations[1].result,
         BenchmarkResult::Ingested {
             mode: tracedb::IngestMode::Full,
             ingested: 8,
@@ -46,7 +45,7 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
         }
     ));
     assert!(matches!(
-        run.operations[10].result,
+        run.operations[9].result,
         BenchmarkResult::Verified {
             passed: true,
             failures: 0,
@@ -82,7 +81,7 @@ fn benchmark_binary_emits_the_versioned_json_contract() {
     assert_eq!(report["runs"][0]["sessions"], 4);
     assert_eq!(report["runs"][0]["operations"][0]["name"], "generate");
     assert_eq!(
-        report["runs"][0]["operations"][4]["result"]["type"],
+        report["runs"][0]["operations"][3]["result"]["type"],
         "ingested"
     );
 }

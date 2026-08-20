@@ -263,7 +263,7 @@ fn load_candidates(
             event_idx: idx,
             kind: kind.parse().map_err(anyhow::Error::msg)?,
             bm25,
-            snippet: redact(&snippet),
+            snippet,
         })
     })
     .collect()
@@ -582,44 +582,11 @@ fn kind_bonus(kind: EventKind) -> f64 {
 }
 
 fn preview(text: &str, limit: usize) -> String {
-    let compact = redact(text);
-    if compact.chars().count() <= limit {
-        compact
+    if text.chars().count() <= limit {
+        text.to_owned()
     } else {
-        compact.chars().take(limit).collect::<String>() + "…"
+        text.chars().take(limit).collect::<String>() + "…"
     }
-}
-
-fn redact(text: &str) -> String {
-    let mut redact_next = false;
-    text.split_whitespace()
-        .map(|word| {
-            let lower = word.to_ascii_lowercase();
-            if redact_next {
-                redact_next = false;
-                return "[REDACTED]".to_owned();
-            }
-            if lower == "bearer" {
-                redact_next = true;
-                return word.to_owned();
-            }
-            if looks_secret(&lower) {
-                "[REDACTED]".to_owned()
-            } else {
-                word.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn looks_secret(word: &str) -> bool {
-    ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-", "akia"]
-        .iter()
-        .any(|prefix| word.starts_with(prefix))
-        || ["api_key=", "apikey=", "token=", "password=", "secret="]
-            .iter()
-            .any(|marker| word.contains(marker))
 }
 
 #[cfg(test)]
@@ -639,10 +606,10 @@ mod tests {
     }
 
     #[test]
-    fn previews_redact_common_credentials() {
+    fn previews_preserve_credentials_and_whitespace() {
         assert_eq!(
-            preview("Authorization: Bearer sk-example token=abc", 500),
-            "Authorization: Bearer [REDACTED] [REDACTED]"
+            preview("Authorization:\nBearer sk-example token=abc", 500),
+            "Authorization:\nBearer sk-example token=abc"
         );
     }
 

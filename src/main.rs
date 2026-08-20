@@ -44,16 +44,13 @@ struct Cli {
     /// Load the jieba tokenizer from this extension path.
     #[arg(long, global = true)]
     tokenizer_extension: Option<PathBuf>,
-    /// Add a regular-expression rule for normalized metadata and event redaction.
-    #[arg(long = "redact-pattern", global = true, action = clap::ArgAction::Append)]
-    redact_patterns: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Discover and ingest native sessions. The default is loss-minimizing partial mode.
+    /// Discover and losslessly ingest native sessions.
     Ingest {
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         agent: Option<Vec<Agent>>,
@@ -265,7 +262,6 @@ fn main() -> anyhow::Result<()> {
         exclude,
         tokenizer: cli.tokenizer,
         tokenizer_extension: cli.tokenizer_extension.clone(),
-        redact_patterns: (!cli.redact_patterns.is_empty()).then_some(cli.redact_patterns.clone()),
         output_format: cli.format,
         watch_interval_seconds,
         watch_debounce_ms,

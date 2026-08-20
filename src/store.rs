@@ -16,7 +16,7 @@ use std::{
 };
 
 pub const SCHEMA_VERSION: i64 = 1;
-pub const ARCHIVE_CONTRACT: &str = "partial-v1/full-v1";
+pub const ARCHIVE_CONTRACT: &str = "lossless-v1";
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
 
@@ -223,6 +223,7 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
     )?;
     let result = (|| -> Result<crate::ImportReport> {
         connection.execute_batch("BEGIN IMMEDIATE")?;
+        validate_import_compatibility(connection)?;
         let imported_sessions = connection.execute(
             "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
              SELECT id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms
@@ -261,9 +262,11 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
                 row.get::<_, u64>(0)
             })?;
         connection.execute(
-            "INSERT OR IGNORE INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash)
+            "INSERT INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash)
              SELECT session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash
-             FROM import_source.raw_sources",
+             FROM import_source.raw_sources WHERE true
+             ON CONFLICT(session_id,locator) DO UPDATE SET
+               object_hash=COALESCE(raw_sources.object_hash,excluded.object_hash)",
             [],
         )?;
         connection.execute_batch("COMMIT")?;
@@ -285,6 +288,81 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(anyhow::Error::from(error)),
     }
+}
+
+fn validate_import_compatibility(connection: &Connection) -> Result<()> {
+    let conflicting_session: Option<String> = connection
+        .query_row(
+            "SELECT source.id
+             FROM import_source.sessions source
+             JOIN sessions destination ON destination.id=source.id
+             WHERE NOT (
+               destination.agent IS source.agent AND destination.cwd IS source.cwd AND
+               destination.started_at_ms IS source.started_at_ms AND destination.ended_at_ms IS source.ended_at_ms AND
+               destination.title IS source.title AND destination.model IS source.model AND
+               destination.provider IS source.provider AND destination.git_branch IS source.git_branch AND
+               destination.parent_session_id IS source.parent_session_id AND destination.forked_from IS source.forked_from AND
+               destination.fingerprint IS source.fingerprint AND destination.meta_json IS source.meta_json
+             )
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = conflicting_session {
+        anyhow::bail!("import conflicts with existing session {id}");
+    }
+
+    let conflicting_event_session: Option<String> = connection
+        .query_row(
+            "SELECT session_id FROM (
+               SELECT * FROM (
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 FROM import_source.events WHERE session_id IN (SELECT id FROM sessions)
+                 EXCEPT
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 FROM events
+               )
+               UNION ALL
+               SELECT * FROM (
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 FROM events WHERE session_id IN (SELECT id FROM import_source.sessions)
+                 EXCEPT
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 FROM import_source.events
+               )
+             ) LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = conflicting_event_session {
+        anyhow::bail!("import has divergent events for existing session {id}");
+    }
+
+    let conflicting_source: Option<(String, String)> = connection
+        .query_row(
+            "SELECT source.session_id,source.locator
+             FROM import_source.raw_sources source
+             JOIN raw_sources destination
+               ON destination.session_id=source.session_id AND destination.locator=source.locator
+             WHERE NOT (
+               destination.kind IS source.kind AND destination.restore_path IS source.restore_path AND
+               destination.role IS source.role AND destination.bytes IS source.bytes AND
+               destination.mtime_ns IS source.mtime_ns AND destination.mode IS source.mode
+             ) OR (
+               destination.object_hash IS NOT NULL AND source.object_hash IS NOT NULL AND
+               destination.object_hash <> source.object_hash
+             )
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((session_id, locator)) = conflicting_source {
+        anyhow::bail!("import has divergent native source {locator} for session {session_id}");
+    }
+    Ok(())
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -393,7 +471,7 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, started_at_ms INTEGER,
         ended_at_ms INTEGER, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
-        parent_session_id TEXT, forked_from TEXT, mode TEXT NOT NULL DEFAULT 'partial',
+        parent_session_id TEXT, forked_from TEXT, mode TEXT NOT NULL DEFAULT 'full',
         fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS sessions_agent_idx ON sessions(agent);
@@ -685,6 +763,19 @@ fn verify_contract(connection: &Connection) -> Result<Vec<crate::VerificationFai
             message: format!("unsupported tokenizer contract {tokenizer:?}"),
         });
     }
+    let legacy_partial: i64 = connection.query_row(
+        "SELECT count(*) FROM sessions WHERE mode='partial'",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_partial != 0 {
+        failures.push(crate::VerificationFailure {
+            locator: "sessions.mode".into(),
+            message: format!(
+                "archive contains {legacy_partial} legacy partial session(s) without guaranteed native snapshots"
+            ),
+        });
+    }
     Ok(failures)
 }
 
@@ -809,20 +900,103 @@ fn write_session(
 }
 
 fn capture_source(tx: &Transaction<'_>, src: &NativeSource) -> Result<Option<String>> {
-    let path = match &src.capture {
-        Some(crate::model::Capture::File { path }) => PathBuf::from(path),
-        Some(crate::model::Capture::Bytes { bytes, .. }) => return store_object(tx, bytes),
-        None => return Ok(None),
-    };
-    let bytes =
-        fs::read(&path).with_context(|| format!("read native source {}", path.display()))?;
-    store_object(tx, &bytes)
+    match &src.capture {
+        Some(crate::model::Capture::File { path }) => {
+            let path = PathBuf::from(path);
+            let before = fs::metadata(&path)
+                .with_context(|| format!("inspect native source {}", path.display()))?;
+            validate_source_metadata(src, &path, &before)?;
+            let bytes = fs::read(&path)
+                .with_context(|| format!("read native source {}", path.display()))?;
+            let after = fs::metadata(&path)
+                .with_context(|| format!("reinspect native source {}", path.display()))?;
+            validate_source_metadata(src, &path, &after)?;
+            if before.len() != after.len() || modified_ns(&before) != modified_ns(&after) {
+                anyhow::bail!(
+                    "native source changed while it was being captured: {}",
+                    path.display()
+                );
+            }
+            store_object(tx, &bytes)
+        }
+        Some(crate::model::Capture::Bytes { bytes, .. }) => {
+            if src
+                .bytes
+                .is_some_and(|expected| expected != bytes.len() as i64)
+            {
+                anyhow::bail!(
+                    "native source {} length mismatch: metadata says {:?}, capture has {} bytes",
+                    src.locator,
+                    src.bytes,
+                    bytes.len()
+                );
+            }
+            store_object(tx, bytes)
+        }
+        None => anyhow::bail!(
+            "lossless ingest requires capture bytes for native source {}",
+            src.locator
+        ),
+    }
+}
+
+fn validate_source_metadata(
+    src: &NativeSource,
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<()> {
+    if src
+        .bytes
+        .is_some_and(|expected| expected != metadata.len() as i64)
+    {
+        anyhow::bail!(
+            "native source {} length changed before capture: expected {:?}, found {}",
+            path.display(),
+            src.bytes,
+            metadata.len()
+        );
+    }
+    if src
+        .mtime_ns
+        .is_some_and(|expected| Some(expected) != modified_ns(metadata))
+    {
+        anyhow::bail!(
+            "native source {} modification time changed before capture",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    if src.mode.is_some_and(|expected| {
+        use std::os::unix::fs::PermissionsExt;
+        expected != metadata.permissions().mode()
+    }) {
+        anyhow::bail!(
+            "native source {} permissions changed before capture",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn modified_ns(metadata: &fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
 }
 
 fn store_object(tx: &Transaction<'_>, bytes: &[u8]) -> Result<Option<String>> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let hash = hex::encode(hasher.finalize());
+    if tx
+        .query_row("SELECT 1 FROM objects WHERE hash=?1", [&hash], |_| Ok(()))
+        .optional()?
+        .is_some()
+    {
+        return Ok(Some(hash));
+    }
     let compressed = zstd::encode_all(bytes, 3)?;
     tx.execute("INSERT OR IGNORE INTO objects(hash,compression,bytes,payload,created_at_ms) VALUES(?1,'zstd',?2,?3,?4)", params![hash,bytes.len() as i64,compressed,now_ms()])?;
     Ok(Some(hash))
@@ -1028,6 +1202,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
          FROM sessions s WHERE 1=1",
     );
     let mut values = Vec::<rusqlite::types::Value>::new();
+    let mode_filter = request.mode;
     let mut bind = |fragment: &str, value: rusqlite::types::Value| {
         sql.push_str(fragment);
         values.push(value);
@@ -1044,14 +1219,18 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
             since_ms.into(),
         );
     }
-    if let Some(mode) = request.mode {
-        bind(" AND s.mode=?", mode.to_string().into());
-    }
     if let Some(model) = &request.model {
         bind(" AND s.model=?", model.clone().into());
     }
     if let Some(provider) = &request.provider {
         bind(" AND s.provider=?", provider.clone().into());
+    }
+    if let Some(mode) = mode_filter {
+        if matches!(mode, IngestMode::Partial) {
+            sql.push_str(" AND s.mode IN ('partial','full')");
+        } else {
+            bind(" AND s.mode=?", mode.to_string().into());
+        }
     }
     if let Some((sort_time, id)) = cursor {
         sql.push_str(

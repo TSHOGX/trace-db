@@ -107,7 +107,7 @@ fn dry_run_reports_all_outcomes_without_mutating_the_archive() {
     assert_eq!(std::fs::read(&database).unwrap(), before);
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["dryRun"], true);
-    assert_eq!(report["mode"], "partial");
+    assert_eq!(report["mode"], "full");
     assert_eq!(report["agents"][0]["discovered"], 4);
     assert_eq!(report["agents"][0]["changed"], 1);
     assert_eq!(report["agents"][0]["unchanged"], 1);

@@ -1,9 +1,8 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Capture, ConfigOverrides, Event, EventKind, IngestErrorCategory, IngestMode,
-    IngestRequest, IngestStage, NativeSource, ParsedSession, SearchRequest, Session, ShowRequest,
-    TraceDb, TraceDbConfig,
+    Agent, Capture, Event, EventKind, IngestErrorCategory, IngestMode, IngestRequest, IngestStage,
+    NativeSource, ParsedSession, SearchRequest, Session, ShowRequest, TraceDb,
 };
 
 #[test]
@@ -384,15 +383,9 @@ fn gc_dry_run_reports_orphan_objects_without_mutation() {
 }
 
 #[test]
-fn privacy_redacts_normalized_values_but_preserves_full_capture_bytes() {
+fn ingest_preserves_credentials_in_normalized_values_and_native_bytes() {
     let dir = tempdir().unwrap();
-    let config = TraceDbConfig::load(ConfigOverrides {
-        database_path: Some(dir.path().join("privacy.db")),
-        redact_patterns: Some(vec![r"alice@example\.com".into()]),
-        ..ConfigOverrides::default()
-    })
-    .unwrap();
-    let mut database = TraceDb::open_configured(&config).unwrap();
+    let mut database = TraceDb::open(dir.path().join("lossless.db")).unwrap();
     let raw = b"Authorization: Bearer raw-secret\n".to_vec();
     database
         .ingest_session(
@@ -425,17 +418,32 @@ fn privacy_redacts_normalized_values_but_preserves_full_capture_bytes() {
                         }),
                     }],
                 },
-                events: vec![Event::new(
-                    EventKind::User,
-                    "contact alice@example.com token=normalized-secret",
-                )],
+                events: vec![{
+                    let mut event = Event::new(
+                        EventKind::User,
+                        "contact alice@example.com token=normalized-secret",
+                    );
+                    event.data_json = Some(json!({"authorization":"Bearer structured-secret"}));
+                    event
+                }],
             },
             IngestMode::Full,
         )
         .unwrap();
     let trace = database.show("codex:privacy").unwrap().unwrap();
-    assert_eq!(trace.session.title.as_deref(), Some("[REDACTED] incident"));
-    assert_eq!(trace.events[0].text, "contact [REDACTED] [REDACTED]");
+    assert_eq!(
+        trace.session.title.as_deref(),
+        Some("alice@example.com incident")
+    );
+    assert_eq!(trace.session.meta["contact"], "alice@example.com");
+    assert_eq!(
+        trace.events[0].text,
+        "contact alice@example.com token=normalized-secret"
+    );
+    assert_eq!(
+        trace.events[0].data_json.as_ref().unwrap()["authorization"],
+        "Bearer structured-secret"
+    );
     let output = dir.path().join("restore");
     database.reconstruct("codex:privacy", &output).unwrap();
     assert_eq!(std::fs::read(output.join("privacy.raw")).unwrap(), raw);
@@ -480,17 +488,17 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
 
     let full_plan = db.ingest_dry_run(request(IngestMode::Full, None)).unwrap();
     assert_eq!(full_plan.total_discovered(), 1);
-    assert_eq!(full_plan.total_changed(), 1);
-    assert_eq!(full_plan.total_unchanged(), 0);
-    assert!(full_plan.total_estimated_full_capture_bytes() > 0);
+    assert_eq!(full_plan.total_changed(), 0);
+    assert_eq!(full_plan.total_unchanged(), 1);
+    assert_eq!(full_plan.total_estimated_full_capture_bytes(), 0);
     assert_eq!(
         db.show("gemini:incremental").unwrap().unwrap().mode,
-        IngestMode::Partial
+        IngestMode::Full
     );
 
     let upgraded = db.ingest(request(IngestMode::Full, None)).unwrap();
-    assert_eq!(upgraded.total_parsed(), 1);
-    assert_eq!(upgraded.total_ingested(), 1);
+    assert_eq!(upgraded.total_parsed(), 0);
+    assert_eq!(upgraded.total_ingested(), 0);
     assert_eq!(
         db.show("gemini:incremental").unwrap().unwrap().mode,
         IngestMode::Full
