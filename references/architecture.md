@@ -67,11 +67,14 @@ Reconstruction can additionally emit a versioned restore manifest containing
 the output paths, source locators, object hashes, sizes, and preserved metadata
 for every atomically written file.
 
-OpenCode full capture stores both a minimal native SQLite session bundle
+OpenCode full capture stores both a native SQLite session bundle
 (`opencode-native-session-v1`) and a portable JSON fallback. The native bundle
-contains schema/version metadata plus session, message, and part records; it is
-an importable compatibility target, not a claim of universal parity with every
-future OpenCode schema.
+clones the source database schema and migration journal, then copies only the
+selected project/session/message/part rows plus compatibility metadata. This
+preserves the exact schema of the source OpenCode installation instead of
+assuming a fixed four-table shape. `scripts/verify-opencode-compat.py` validates
+the restored bundle with an installed OpenCode CLI; future OpenCode releases
+must be rechecked because their migration schema can change.
 
 ## Runtime configuration
 

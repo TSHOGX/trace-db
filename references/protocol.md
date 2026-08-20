@@ -56,9 +56,12 @@ The Rust facade exposes `RestoreManifest` with schema version
 the written paths for compatibility.
 
 OpenCode full captures include a native SQLite bundle tagged
-`opencode-native-session-v1` and a portable JSON fallback. Consumers should
-inspect the bundle's `schema_meta` version before importing it into a particular
-OpenCode release.
+`opencode-native-session-v1` and a portable JSON fallback. The native bundle
+copies the source schema and migration journal for the selected OpenCode
+database, so it is version-matched to that source. Verify it against the
+OpenCode release you intend to use with
+`scripts/verify-opencode-compat.py`; compatibility with future migrations is
+not implied.
 
 ## Methods
 

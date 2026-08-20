@@ -3,7 +3,7 @@ use crate::model::{
     compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -128,18 +128,7 @@ fn parse_session(
     }
     let envelope = json!({"format":"trace-db/opencode-session-v1","session":{"id":sid,"parent_id":parent,"directory":directory,"title":title,"agent":agent,"model":model,"time_created":created,"time_updated":updated},"message":messages,"part":parts});
     let portable_bytes = serde_json::to_vec(&envelope)?;
-    let native_bytes = build_native_bundle(
-        &sid,
-        parent.as_deref(),
-        directory.as_deref(),
-        title.as_deref(),
-        agent.as_deref(),
-        model.as_deref(),
-        created,
-        updated,
-        &messages,
-        &parts,
-    )?;
+    let native_bytes = build_native_bundle(connection, &sid)?;
     let native_source = NativeSource {
         locator: format!("{}#{id}", db.display()),
         kind: "sqlite-session".into(),
@@ -187,65 +176,166 @@ fn parse_session(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_native_bundle(
-    id: &str,
-    parent_id: Option<&str>,
-    directory: Option<&str>,
-    title: Option<&str>,
-    agent: Option<&str>,
-    model: Option<&str>,
-    time_created: Option<i64>,
-    time_updated: Option<i64>,
-    messages: &[Value],
-    parts: &[Value],
-) -> Result<Vec<u8>> {
+fn build_native_bundle(source: &Connection, id: &str) -> Result<Vec<u8>> {
     let temporary_directory = tempfile::tempdir()?;
     let path = temporary_directory.path().join("opencode.db");
     let connection = Connection::open(&path)?;
+    let user_version: i64 = source.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    connection.pragma_update(None, "user_version", user_version)?;
+    clone_schema(source, &connection)?;
+    connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    copy_rows(source, &connection, "migration", None, &[])?;
+    let project_id: Option<String> = if table_has_column(source, "session", "project_id")? {
+        source
+            .query_row("SELECT project_id FROM session WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?
+    } else {
+        None
+    };
+    if let Some(project_id) = project_id.as_deref() {
+        copy_rows(
+            source,
+            &connection,
+            "project",
+            Some("id=?1"),
+            &[SqlValue::Text(project_id.into())],
+        )?;
+    }
+    let workspace_id: Option<String> = if table_has_column(source, "session", "workspace_id")? {
+        source
+            .query_row(
+                "SELECT workspace_id FROM session WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten()
+    } else {
+        None
+    };
+    if let Some(workspace_id) = workspace_id.as_deref() {
+        copy_rows(
+            source,
+            &connection,
+            "workspace",
+            Some("id=?1"),
+            &[SqlValue::Text(workspace_id.into())],
+        )?;
+    }
+    copy_rows(
+        source,
+        &connection,
+        "session",
+        Some("id=?1"),
+        &[SqlValue::Text(id.into())],
+    )?;
+    copy_rows(
+        source,
+        &connection,
+        "message",
+        Some("session_id=?1"),
+        &[SqlValue::Text(id.into())],
+    )?;
+    copy_rows(
+        source,
+        &connection,
+        "part",
+        Some("session_id=?1"),
+        &[SqlValue::Text(id.into())],
+    )?;
     connection.execute_batch(
-        "PRAGMA user_version=1;
-         CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-         CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, agent TEXT, model TEXT, time_created INTEGER, time_updated INTEGER);
-         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
-         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT OR REPLACE INTO schema_meta(key,value) VALUES('format','opencode-native-session-v1'),('version','1');",
     )?;
-    connection.execute(
-        "INSERT INTO schema_meta(key,value) VALUES('format','opencode-native-session-v1'),('version','1')",
-        [],
-    )?;
-    connection.execute(
-        "INSERT INTO session(id,parent_id,directory,title,agent,model,time_created,time_updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        rusqlite::params![id, parent_id, directory, title, agent, model, time_created, time_updated],
-    )?;
-    for message in messages {
-        connection.execute(
-            "INSERT INTO message(id,session_id,time_created,time_updated,data) VALUES(?1,?2,?3,?4,?5)",
-            rusqlite::params![
-                message["id"].as_str().unwrap_or_default(),
-                id,
-                message["time_created"].as_i64().unwrap_or_default(),
-                message["time_updated"].as_i64().unwrap_or_default(),
-                message["data"].to_string(),
-            ],
-        )?;
-    }
-    for part in parts {
-        connection.execute(
-            "INSERT INTO part(id,message_id,session_id,time_created,time_updated,data) VALUES(?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![
-                part["id"].as_str().unwrap_or_default(),
-                part["message_id"].as_str().unwrap_or_default(),
-                id,
-                part["time_created"].as_i64().unwrap_or_default(),
-                part["time_updated"].as_i64().unwrap_or_default(),
-                part["data"].to_string(),
-            ],
-        )?;
-    }
+    connection.execute_batch("PRAGMA foreign_keys=ON;")?;
     connection.execute_batch("VACUUM")?;
     drop(connection);
     Ok(fs::read(path)?)
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn clone_schema(source: &Connection, destination: &Connection) -> Result<()> {
+    let mut tables = source.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )?;
+    let table_sql = tables
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for sql in table_sql {
+        destination.execute_batch(&sql)?;
+    }
+    let mut objects = source.prepare(
+        "SELECT sql FROM sqlite_master WHERE type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name",
+    )?;
+    let object_sql = objects
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for sql in object_sql {
+        destination.execute_batch(&sql)?;
+    }
+    Ok(())
+}
+
+fn copy_rows(
+    source: &Connection,
+    destination: &Connection,
+    table: &str,
+    predicate: Option<&str>,
+    values: &[SqlValue],
+) -> Result<()> {
+    let exists: Option<String> = source
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Ok(());
+    }
+    let table_sql = quote_identifier(table);
+    let mut columns = source.prepare(&format!("PRAGMA table_info({table_sql})"))?;
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let quoted_columns = columns
+        .iter()
+        .map(|column| quote_identifier(column))
+        .collect::<Vec<_>>()
+        .join(",");
+    let predicate = predicate
+        .map(|value| format!(" WHERE {value}"))
+        .unwrap_or_default();
+    let select_sql = format!("SELECT {quoted_columns} FROM {table_sql}{predicate}");
+    let mut statement = source.prepare(&select_sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+        (0..columns.len())
+            .map(|index| row.get(index))
+            .collect::<rusqlite::Result<Vec<SqlValue>>>()
+    })?;
+    let placeholders = (1..=columns.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let insert_sql = format!("INSERT INTO {table_sql} ({quoted_columns}) VALUES ({placeholders})");
+    for row in rows {
+        destination.execute(&insert_sql, rusqlite::params_from_iter(row?))?;
+    }
+    Ok(())
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let table_sql = quote_identifier(table);
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_sql})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.iter().any(|value| value == column))
 }
 impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {

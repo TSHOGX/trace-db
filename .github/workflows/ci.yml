@@ -26,7 +26,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: python scripts/verify-release-version.py
-      - run: python -m py_compile scripts/verify-release-version.py scripts/verify-release-package.py scripts/verify-sha256sums.py
+      - run: python -m py_compile scripts/verify-release-version.py scripts/verify-release-package.py scripts/verify-sha256sums.py scripts/verify-opencode-compat.py
       - run: python tests/release_artifacts.py
       - run: python scripts/generate-sbom.py --output target/tracedb-sbom.json
       - run: bash -n scripts/install-release.sh scripts/package-release.sh
