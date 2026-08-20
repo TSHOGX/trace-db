@@ -128,7 +128,7 @@ defaults to `partial`, output defaults to `text`, and watch timing defaults to
 ## CLI
 
 ```text
-trace-db [--config PATH] [--db PATH] [--format text|json] [--tokenizer unicode61|jieba] [--tokenizer-extension PATH] COMMAND
+trace-db [--config PATH] [--db PATH] [--format text|json|jsonl|markdown] [--quiet] [--progress] [--tokenizer unicode61|jieba] [--tokenizer-extension PATH] COMMAND
 trace-db ingest [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
@@ -147,6 +147,16 @@ trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PATH]
 trace-db completions bash|elvish|fish|powershell|zsh
 ```
+
+The global `--format` flag accepts `text`, `json`, `jsonl`, or `markdown` and
+overrides the configured `output_format`. The legacy command-level `--json`
+flags remain supported and always select pretty JSON. `jsonl` emits one JSON
+value per line (one result per search hit, or one report object for aggregate
+commands); `markdown` wraps the same stable JSON value in a readable Markdown
+document. `--quiet` suppresses default text output while preserving explicitly
+selected non-text formats, machine-readable results, and errors.
+`--progress` writes operation start and elapsed-time diagnostics to stderr for
+archive-changing and verification commands; it never contaminates stdout.
 
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
 response per line. Supported operations are `stats`, `search`, `list`, `show`,
@@ -277,8 +287,9 @@ closes, periodic scans continue. Press Ctrl-C for a clean shutdown.
 Human output is written as concise run summaries, with watcher and ingest
 issues on stderr. `--json` (or `output_format = "json"`) writes one JSON event
 per line followed by a final summary object, with no progress text mixed into
-stdout. `--once` runs only the startup ingest and exits, which is useful for
-launch probes and automation tests.
+stdout. `--format jsonl` uses the same line-oriented contract; `markdown`
+renders each event as a Markdown JSON document. `--once` runs only the startup
+ingest and exits, which is useful for launch probes and automation tests.
 
 For service-manager examples covering launchd, systemd user services, and
 Windows Task Scheduler, see [`references/watch.md`](references/watch.md).

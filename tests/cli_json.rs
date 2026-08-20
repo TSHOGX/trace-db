@@ -56,6 +56,104 @@ fn stats_json_serializes_the_complete_archive_stats() {
 }
 
 #[test]
+fn jsonl_search_emits_one_json_value_per_result() {
+    let (_dir, path) = archive();
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "--format",
+            "jsonl",
+            "search",
+            "inspect",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let lines = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["id"], "codex:json-contract");
+}
+
+#[test]
+fn markdown_and_quiet_formats_are_stable() {
+    let (_dir, path) = archive();
+    let markdown = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "stats",
+        ])
+        .output()
+        .unwrap();
+    assert!(markdown.status.success());
+    let markdown_stdout = String::from_utf8(markdown.stdout).unwrap();
+    assert!(markdown_stdout.starts_with("## TraceDB result"));
+    assert!(markdown_stdout.contains("```json"));
+
+    let quiet = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args(["--db", path.to_str().unwrap(), "--quiet", "stats"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty());
+
+    let quiet_json = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "--quiet",
+            "--format",
+            "jsonl",
+            "stats",
+        ])
+        .output()
+        .unwrap();
+    assert!(quiet_json.status.success());
+    assert_eq!(
+        String::from_utf8(quiet_json.stdout)
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn progress_goes_to_stderr_without_changing_json_stdout() {
+    let (_dir, path) = archive();
+    let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args(["--db", path.to_str().unwrap(), "--progress", "reindex"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("events_fts rebuilt"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reindex: starting"));
+
+    let json = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            path.to_str().unwrap(),
+            "--progress",
+            "--format",
+            "json",
+            "verify",
+        ])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    assert!(serde_json::from_slice::<Value>(&json.stdout).is_ok());
+    assert!(String::from_utf8_lossy(&json.stderr).contains("verify: starting"));
+}
+
+#[test]
 fn completions_generate_without_opening_an_archive() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("not-created.db");

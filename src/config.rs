@@ -82,6 +82,8 @@ pub enum OutputFormat {
     #[default]
     Text,
     Json,
+    Jsonl,
+    Markdown,
 }
 
 impl fmt::Display for OutputFormat {
@@ -89,6 +91,8 @@ impl fmt::Display for OutputFormat {
         formatter.write_str(match self {
             Self::Text => "text",
             Self::Json => "json",
+            Self::Jsonl => "jsonl",
+            Self::Markdown => "markdown",
         })
     }
 }
@@ -100,6 +104,8 @@ impl FromStr for OutputFormat {
         match value {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
+            "jsonl" => Ok(Self::Jsonl),
+            "markdown" | "md" => Ok(Self::Markdown),
             _ => Err(format!("unknown output format: {value}")),
         }
     }

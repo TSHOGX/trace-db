@@ -1,9 +1,13 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
-use std::io::{self, BufRead};
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::{
+    io::{self, BufRead},
+    time::Instant,
+};
 use tracedb::{
     doctor_configured,
     service::{serve_configured, ServiceEndpoint},
@@ -25,9 +29,15 @@ struct Cli {
     /// Override the configured archive path.
     #[arg(long, global = true)]
     db: Option<PathBuf>,
-    /// Override the configured text or JSON output default.
+    /// Override the configured text, JSON, JSONL, or Markdown output default.
     #[arg(long, global = true)]
     format: Option<OutputFormat>,
+    /// Suppress human-readable result and progress output.
+    #[arg(long, global = true)]
+    quiet: bool,
+    /// Print operation start and elapsed-time diagnostics to stderr.
+    #[arg(long, global = true)]
+    progress: bool,
     /// Override the configured tokenizer.
     #[arg(long, global = true)]
     tokenizer: Option<TokenizerKind>,
@@ -260,11 +270,14 @@ fn main() -> anyhow::Result<()> {
         watch_interval_seconds,
         watch_debounce_ms,
     })?;
+    let quiet = cli.quiet;
+    let progress = cli.progress && !quiet;
     let db_path = &config.database_path;
     if let Command::Config { json } = &cli.command {
-        if *json || matches!(config.output_format, OutputFormat::Json) {
-            println!("{}", serde_json::to_string_pretty(&config)?);
-        } else {
+        let format = selected_format(&config, *json);
+        if is_formatted(format) {
+            emit_formatted(&config, format)?;
+        } else if !quiet {
             println!("config: {}", config.config_path.display());
             println!("config exists: {}", config.config_file_exists);
             println!("db: {}", config.database_path.display());
@@ -294,10 +307,15 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Command::Verify { json } = &cli.command {
+        let format = selected_format(&config, *json);
+        if progress {
+            eprintln!("verify: starting");
+        }
+        let started = Instant::now();
         let report = verify_archive(db_path)?;
-        if *json || matches!(config.output_format, OutputFormat::Json) {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
+        if is_formatted(format) {
+            emit_formatted(&report, format)?;
+        } else if !quiet {
             println!("db: {}", report.path.display());
             for check in &report.checks {
                 println!(
@@ -311,6 +329,15 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("{}: {}", failure.locator, failure.message);
                 }
             }
+        } else {
+            for check in &report.checks {
+                for failure in &check.failures {
+                    eprintln!("{}: {}", failure.locator, failure.message);
+                }
+            }
+        }
+        if progress {
+            eprintln!("verify: completed in {}ms", started.elapsed().as_millis());
         }
         if !report.passed {
             anyhow::bail!(
@@ -321,10 +348,11 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Command::Doctor { json } = &cli.command {
+        let format = selected_format(&config, *json);
         let report = doctor_configured(&config);
-        if *json || matches!(config.output_format, OutputFormat::Json) {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
+        if is_formatted(format) {
+            emit_formatted(&report, format)?;
+        } else if !quiet {
             println!("db: {}", report.database.path.display());
             println!(
                 "database\t{}\t{}",
@@ -419,6 +447,7 @@ fn main() -> anyhow::Result<()> {
         root, once, json, ..
     } = &cli.command
     {
+        let format = selected_format(&config, *json);
         let mut db = TraceDb::open_configured(&config)?;
         let stop = Arc::new(AtomicBool::new(false));
         if !once {
@@ -440,13 +469,16 @@ fn main() -> anyhow::Result<()> {
             debounce_ms: config.watch_debounce_ms,
             once: *once,
         };
-        let machine = *json || matches!(config.output_format, OutputFormat::Json);
         let mut observer = |event: WatchEvent| -> anyhow::Result<()> {
-            if machine {
-                println!("{}", serde_json::to_string(&event)?);
+            if is_formatted(format) {
+                if matches!(format, OutputFormat::Json) {
+                    println!("{}", serde_json::to_string(&event)?);
+                } else {
+                    emit_formatted(&event, format)?;
+                }
             } else {
                 match event {
-                    WatchEvent::Run(run) => println!(
+                    WatchEvent::Run(run) if !quiet => println!(
                         "watch {}: ingested {}, unchanged {}, skipped {}, failed {} ({} ms)",
                         run.trigger,
                         run.report.total_ingested(),
@@ -455,6 +487,7 @@ fn main() -> anyhow::Result<()> {
                         run.report.total_failed(),
                         run.elapsed_ms
                     ),
+                    WatchEvent::Run(_) => {}
                     WatchEvent::Issue(issue) => {
                         eprintln!("watch {}: {}", issue.stage, issue.message)
                     }
@@ -463,9 +496,13 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         };
         let summary = db.watch(request, &stop, &mut observer)?;
-        if machine {
-            println!("{}", serde_json::to_string(&summary)?);
-        } else {
+        if is_formatted(format) {
+            if matches!(format, OutputFormat::Json) {
+                println!("{}", serde_json::to_string(&summary)?);
+            } else {
+                emit_formatted(&summary, format)?;
+            }
+        } else if !quiet {
             println!(
                 "watch stopped: {} run(s), filesystem watcher {}",
                 summary.runs,
@@ -487,6 +524,11 @@ fn main() -> anyhow::Result<()> {
         ..
     } = &cli.command
     {
+        let format = selected_format(&config, *json);
+        if progress {
+            eprintln!("ingest dry-run: starting");
+        }
+        let started = Instant::now();
         let report = TraceDb::ingest_dry_run_at(
             db_path,
             IngestRequest {
@@ -497,9 +539,9 @@ fn main() -> anyhow::Result<()> {
                 exclude: config.exclude.clone(),
             },
         )?;
-        if *json || matches!(config.output_format, OutputFormat::Json) {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
+        if is_formatted(format) {
+            emit_formatted(&report, format)?;
+        } else if !quiet {
             for row in &report.agents {
                 println!(
                     "{}: discovered {}, changed {}, unchanged {}, skipped {}, failed {}, estimated full capture {} bytes",
@@ -511,6 +553,8 @@ fn main() -> anyhow::Result<()> {
                     row.failed,
                     row.estimated_full_capture_bytes
                 );
+            }
+            for row in &report.agents {
                 for issue in row.warnings.iter().chain(&row.failures) {
                     eprintln!(
                         "{} {} [{}]: {}",
@@ -522,6 +566,21 @@ fn main() -> anyhow::Result<()> {
             println!(
                 "estimated full capture: {} bytes",
                 report.total_estimated_full_capture_bytes()
+            );
+        } else {
+            for row in &report.agents {
+                for issue in row.warnings.iter().chain(&row.failures) {
+                    eprintln!(
+                        "{} {} [{}]: {}",
+                        issue.stage, issue.locator, issue.category, issue.message
+                    );
+                }
+            }
+        }
+        if progress {
+            eprintln!(
+                "ingest dry-run: completed in {}ms",
+                started.elapsed().as_millis()
             );
         }
         if *strict && report.total_failed() > 0 {
@@ -541,6 +600,11 @@ fn main() -> anyhow::Result<()> {
             json,
             ..
         } => {
+            let format = selected_format(&config, json);
+            if progress {
+                eprintln!("ingest: starting");
+            }
+            let started = Instant::now();
             let report = db.ingest(IngestRequest {
                 agents: config.default_agents.clone(),
                 mode: config.capture_mode,
@@ -548,9 +612,9 @@ fn main() -> anyhow::Result<()> {
                 since_ms: since.as_deref().map(parse_since).transpose()?,
                 exclude: config.exclude.clone(),
             })?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&report, format)?;
+            } else if !quiet {
                 for row in &report.agents {
                     println!(
                         "{}: discovered {}, parsed {}, ingested {}, unchanged {}, skipped {}, failed {}, warnings {}",
@@ -563,6 +627,8 @@ fn main() -> anyhow::Result<()> {
                         row.failed,
                         row.warnings.len()
                     );
+                }
+                for row in &report.agents {
                     for issue in row.warnings.iter().chain(&row.failures) {
                         eprintln!(
                             "{} {} [{}]: {}",
@@ -571,6 +637,18 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 println!("total sessions: {}", report.total_ingested());
+            } else {
+                for row in &report.agents {
+                    for issue in row.warnings.iter().chain(&row.failures) {
+                        eprintln!(
+                            "{} {} [{}]: {}",
+                            issue.stage, issue.locator, issue.category, issue.message
+                        );
+                    }
+                }
+            }
+            if progress {
+                eprintln!("ingest: completed in {}ms", started.elapsed().as_millis());
             }
             if strict && report.total_failed() > 0 {
                 anyhow::bail!(
@@ -588,6 +666,7 @@ fn main() -> anyhow::Result<()> {
             since,
             json,
         } => {
+            let format = selected_format(&config, json);
             let rows = db.search(SearchRequest {
                 query,
                 limit,
@@ -595,9 +674,9 @@ fn main() -> anyhow::Result<()> {
                 cwd,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
             })?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&rows, format)?;
+            } else if !quiet {
                 for row in rows {
                     println!(
                         "{}\t{}\t{:.4}\t{} hits\t{}",
@@ -634,6 +713,7 @@ fn main() -> anyhow::Result<()> {
             provider,
             json,
         } => {
+            let format = selected_format(&config, json);
             let page = db.list(ListRequest {
                 limit,
                 cursor,
@@ -644,9 +724,9 @@ fn main() -> anyhow::Result<()> {
                 model,
                 provider,
             })?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&page)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&page, format)?;
+            } else if !quiet {
                 for session in &page.sessions {
                     println!(
                         "{}\t{}\t{}\t{}\t{}",
@@ -673,6 +753,7 @@ fn main() -> anyhow::Result<()> {
             include_tools,
             json,
         } => {
+            let format = selected_format(&config, json);
             let has_kind_filter = !kind.is_empty();
             let trace = db
                 .show_with_options(ShowRequest {
@@ -682,9 +763,9 @@ fn main() -> anyhow::Result<()> {
                     kinds: kind,
                 })?
                 .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&trace)?)
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&trace, format)?;
+            } else if !quiet {
                 for event in trace.events {
                     if include_tools
                         || has_kind_filter
@@ -699,14 +780,33 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Reindex => {
+            if progress {
+                eprintln!("reindex: starting");
+            }
+            let started = Instant::now();
             db.reindex()?;
-            println!("events_fts rebuilt");
+            match config.output_format {
+                OutputFormat::Text if !quiet => println!("events_fts rebuilt"),
+                OutputFormat::Text => {}
+                format => emit_formatted(
+                    &serde_json::json!({"ok": true, "operation": "reindex"}),
+                    format,
+                )?,
+            }
+            if progress {
+                eprintln!("reindex: completed in {}ms", started.elapsed().as_millis());
+            }
         }
         Command::Backup { out, json } => {
+            let format = selected_format(&config, json);
+            if progress {
+                eprintln!("backup: starting");
+            }
+            let started = Instant::now();
             let report = db.backup(out)?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&report, format)?;
+            } else if !quiet {
                 println!(
                     "backup: {} ({} bytes, {} sessions, {} events, verified {})",
                     report.path.display(),
@@ -716,12 +816,20 @@ fn main() -> anyhow::Result<()> {
                     report.verified
                 );
             }
+            if progress {
+                eprintln!("backup: completed in {}ms", started.elapsed().as_millis());
+            }
         }
         Command::Import { source, json } => {
+            let format = selected_format(&config, json);
+            if progress {
+                eprintln!("import: starting");
+            }
+            let started = Instant::now();
             let report = db.import_archive(source)?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&report, format)?;
+            } else if !quiet {
                 println!(
                     "import: {} ({} session(s), {} event(s), {} object(s); skipped {} session(s), {} event(s))",
                     report.source.display(),
@@ -732,16 +840,27 @@ fn main() -> anyhow::Result<()> {
                     report.skipped_events
                 );
             }
+            if progress {
+                eprintln!("import: completed in {}ms", started.elapsed().as_millis());
+            }
         }
         Command::Gc { dry_run, json } => {
+            let format = selected_format(&config, json);
+            if progress {
+                eprintln!("gc: starting");
+            }
+            let started = Instant::now();
             let report = db.gc(dry_run)?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&report, format)?;
+            } else if !quiet {
                 println!(
                     "gc dry-run: {} orphan object(s), {} reclaimable bytes",
                     report.orphan_objects, report.orphan_bytes
                 );
+            }
+            if progress {
+                eprintln!("gc: completed in {}ms", started.elapsed().as_millis());
             }
         }
         Command::Reconstruct {
@@ -750,6 +869,11 @@ fn main() -> anyhow::Result<()> {
             manifest,
             overwrite,
         } => {
+            let format = config.output_format;
+            if progress {
+                eprintln!("reconstruct: starting");
+            }
+            let started = Instant::now();
             let restore_manifest =
                 db.reconstruct_manifest(&id, &out, tracedb::ReconstructionOptions { overwrite })?;
             if let Some(manifest_path) = manifest {
@@ -766,21 +890,32 @@ fn main() -> anyhow::Result<()> {
                     &manifest_path,
                     serde_json::to_vec_pretty(&restore_manifest)?,
                 )?;
-                println!("{}", manifest_path.display());
-            } else {
+                if !is_formatted(format) && !quiet {
+                    println!("{}", manifest_path.display());
+                }
+            } else if !is_formatted(format) && !quiet {
                 for file in &restore_manifest.files {
                     println!("{}", file.path.display());
                 }
             }
-            if restore_manifest.files.is_empty() {
+            if is_formatted(format) {
+                emit_formatted(&restore_manifest, format)?;
+            } else if !quiet && restore_manifest.files.is_empty() {
                 println!("no full native objects for {id}");
+            }
+            if progress {
+                eprintln!(
+                    "reconstruct: completed in {}ms",
+                    started.elapsed().as_millis()
+                );
             }
         }
         Command::Stats { json } => {
+            let format = selected_format(&config, json);
             let stats = db.stats()?;
-            if json || matches!(config.output_format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&stats)?);
-            } else {
+            if is_formatted(format) {
+                emit_formatted(&stats, format)?;
+            } else if !quiet {
                 println!("db: {}", stats.path.display());
                 for row in stats.agents {
                     println!(
@@ -837,6 +972,43 @@ fn display_endpoint(endpoint: &ServiceEndpoint) -> String {
         ServiceEndpoint::Tcp(address) => format!("http://{address}"),
         ServiceEndpoint::Unix(path) => path.display().to_string(),
     }
+}
+
+fn selected_format(config: &TraceDbConfig, json_flag: bool) -> OutputFormat {
+    if json_flag {
+        OutputFormat::Json
+    } else {
+        config.output_format
+    }
+}
+
+fn emit_formatted<T: Serialize>(value: &T, format: OutputFormat) -> anyhow::Result<()> {
+    let value = serde_json::to_value(value)?;
+    match format {
+        OutputFormat::Text => anyhow::bail!("formatted output requires a non-text format"),
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&value)?),
+        OutputFormat::Jsonl => {
+            if let Some(rows) = value.as_array() {
+                for row in rows {
+                    println!("{}", serde_json::to_string(row)?);
+                }
+            } else {
+                println!("{}", serde_json::to_string(&value)?);
+            }
+        }
+        OutputFormat::Markdown => {
+            let fence = "```";
+            println!(
+                "## TraceDB result\n\n{fence}json\n{}\n{fence}",
+                serde_json::to_string_pretty(&value)?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_formatted(format: OutputFormat) -> bool {
+    !matches!(format, OutputFormat::Text)
 }
 
 fn parse_since(value: &str) -> anyhow::Result<i64> {

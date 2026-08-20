@@ -232,6 +232,49 @@ fn configured_output_format_applies_without_json_flag() {
 }
 
 #[test]
+fn configured_jsonl_output_and_cli_markdown_override_are_supported() {
+    let dir = tempdir().unwrap();
+    let database = dir.path().join("trace.db");
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "database_path = {:?}\noutput_format = \"jsonl\"\n",
+            database.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let configured = command(dir.path())
+        .args(["--config", config_path.to_str().unwrap(), "stats"])
+        .output()
+        .unwrap();
+    assert!(configured.status.success());
+    assert_eq!(
+        String::from_utf8(configured.stdout)
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+
+    let markdown = command(dir.path())
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--format",
+            "markdown",
+            "stats",
+        ])
+        .output()
+        .unwrap();
+    assert!(markdown.status.success());
+    assert!(String::from_utf8(markdown.stdout)
+        .unwrap()
+        .starts_with("## TraceDB result"));
+}
+
+#[test]
 fn tokenizer_extension_implies_jieba_and_unicode_override_clears_it() {
     let dir = tempdir().unwrap();
     let extension = dir.path().join("jieba.so");
