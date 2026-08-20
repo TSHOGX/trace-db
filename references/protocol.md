@@ -13,6 +13,10 @@ in-process Rust callers share storage and retrieval semantics.
 - New coding agents and event kinds are represented as lowercase strings so an
   older generated client can carry values introduced by a newer server.
 - A breaking contract requires a new Protobuf package such as `tracedb.v2`.
+- Request validation failures use `INVALID_ARGUMENT`; disabled reconstruction
+  uses `PERMISSION_DENIED`; archive and worker failures use `INTERNAL`.
+  Clients should branch on the gRPC status code and treat the message as
+  diagnostic text rather than a stable identifier.
 
 The generated Rust modules are exported as `tracedb::proto`. Python, Node.js,
 Go, and other clients should generate their native bindings directly from the
@@ -62,6 +66,7 @@ OpenCode release.
 |---|---|
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures. |
 | `Search` | Returns lineage-collapsed session hits. |
+| `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, and provider filters. |
 | `Show` | Returns session metadata, sources, and normalized events. |
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |

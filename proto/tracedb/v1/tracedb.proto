@@ -8,7 +8,9 @@ service TraceDbService {
   rpc Ingest(IngestRequest) returns (IngestResponse);
   // Search normalized events and return lineage-collapsed sessions.
   rpc Search(SearchRequest) returns (SearchResponse);
-  // Read one session and its complete normalized event stream.
+  // List archived sessions with stable cursor pagination and metadata filters.
+  rpc List(ListRequest) returns (ListResponse);
+  // Read one session and an optional normalized event range/kind subset.
   rpc Show(ShowRequest) returns (ShowResponse);
   // Read archive-wide and per-agent counts.
   rpc Stats(StatsRequest) returns (StatsResponse);
@@ -106,6 +108,9 @@ message SearchMatch {
 
 message ShowRequest {
   string id = 1;
+  optional int64 from_idx = 2;
+  optional int64 to_idx = 3;
+  repeated string kinds = 4;
 }
 
 message ShowResponse {
@@ -160,6 +165,36 @@ message Event {
 }
 
 message StatsRequest {}
+
+message ListRequest {
+  uint32 limit = 1;
+  optional string cursor = 2;
+  optional string agent = 3;
+  optional string cwd = 4;
+  optional int64 since_ms = 5;
+  optional string mode = 6;
+  optional string model = 7;
+  optional string provider = 8;
+}
+
+message ListResponse {
+  repeated SessionSummary sessions = 1;
+  optional string next_cursor = 2;
+}
+
+message SessionSummary {
+  string id = 1;
+  string agent = 2;
+  optional string cwd = 3;
+  optional int64 started_at_ms = 4;
+  optional int64 ended_at_ms = 5;
+  optional string title = 6;
+  optional string model = 7;
+  optional string provider = 8;
+  string mode = 9;
+  int64 events = 10;
+  int64 ingested_at_ms = 11;
+}
 
 message StatsResponse {
   string path = 1;

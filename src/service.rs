@@ -5,8 +5,9 @@
 //! blocking workers instead of tonic runtime threads.
 
 use crate::{
-    proto as pb, Agent, ArchiveStats, Event, IngestMode, IngestRequest, NativeSource,
-    ReconstructionOptions, SearchRequest, Session, SessionTrace, TokenizerKind, TraceDb,
+    proto as pb, Agent, ArchiveStats, Event, EventKind, IngestMode, IngestRequest, ListRequest,
+    NativeSource, ReconstructionOptions, SearchRequest, Session, SessionTrace, ShowRequest,
+    TokenizerKind, TraceDb,
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -296,16 +297,103 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         Ok(Response::new(pb::SearchResponse { results }))
     }
 
+    async fn list(
+        &self,
+        request: Request<pb::ListRequest>,
+    ) -> Result<Response<pb::ListResponse>, Status> {
+        let request = request.into_inner();
+        let agent = request
+            .agent
+            .map(|agent| agent.parse::<Agent>())
+            .transpose()
+            .map_err(Status::invalid_argument)?;
+        let mode = request
+            .mode
+            .filter(|mode| !mode.is_empty())
+            .map(|mode| mode.parse::<IngestMode>())
+            .transpose()
+            .map_err(Status::invalid_argument)?;
+        let list = ListRequest {
+            limit: if request.limit == 0 {
+                50
+            } else {
+                request.limit as usize
+            },
+            cursor: request.cursor,
+            agent,
+            cwd: request.cwd,
+            since_ms: request.since_ms,
+            mode,
+            model: request.model,
+            provider: request.provider,
+        };
+        let page = self
+            .read(move |database| database.list(list))
+            .await
+            .map_err(internal)?;
+        Ok(Response::new(pb::ListResponse {
+            sessions: page
+                .sessions
+                .into_iter()
+                .map(|row| pb::SessionSummary {
+                    id: row.id,
+                    agent: row.agent.to_string(),
+                    cwd: row.cwd,
+                    started_at_ms: row.started_at_ms,
+                    ended_at_ms: row.ended_at_ms,
+                    title: row.title,
+                    model: row.model,
+                    provider: row.provider,
+                    mode: row.mode.to_string(),
+                    events: row.events,
+                    ingested_at_ms: row.ingested_at_ms,
+                })
+                .collect(),
+            next_cursor: page.next_cursor,
+        }))
+    }
+
     async fn show(
         &self,
         request: Request<pb::ShowRequest>,
     ) -> Result<Response<pb::ShowResponse>, Status> {
-        let id = request.into_inner().id;
+        let request = request.into_inner();
+        let id = request.id;
         if id.is_empty() {
             return Err(Status::invalid_argument("id must not be empty"));
         }
+        if request.from_idx.is_some_and(|value| value < 0)
+            || request.to_idx.is_some_and(|value| value < 0)
+        {
+            return Err(Status::invalid_argument(
+                "show event indexes must not be negative",
+            ));
+        }
+        if request
+            .from_idx
+            .zip(request.to_idx)
+            .is_some_and(|(from, to)| from > to)
+        {
+            return Err(Status::invalid_argument(
+                "show from_idx must not be greater than to_idx",
+            ));
+        }
+        let mut kinds = Vec::with_capacity(request.kinds.len());
+        for kind in request.kinds {
+            kinds.push(
+                kind.parse::<EventKind>()
+                    .map_err(Status::invalid_argument)?,
+            );
+        }
         let response = self
-            .read(move |database| database.show(&id))
+            .read(move |database| {
+                database.show_with_options(ShowRequest {
+                    session_id: id,
+                    from_idx: request.from_idx,
+                    to_idx: request.to_idx,
+                    kinds,
+                })
+            })
             .await
             .map_err(internal)?
             .map(trace_to_proto)

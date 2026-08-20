@@ -6,8 +6,8 @@ use tonic::{transport::Server, Code};
 use tracedb::service::TraceDbGrpc;
 use tracedb::{
     proto::{
-        trace_db_service_client::TraceDbServiceClient, ReconstructRequest,
-        SearchRequest as ProtoSearchRequest, ShowRequest, StatsRequest,
+        trace_db_service_client::TraceDbServiceClient, ListRequest as ProtoListRequest,
+        ReconstructRequest, SearchRequest as ProtoSearchRequest, ShowRequest, StatsRequest,
     },
     Agent, Event, EventKind, IngestMode, ParsedSession, Session, TraceDb,
 };
@@ -35,7 +35,34 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
                     fingerprint: "grpc-v1".into(),
                     sources: Vec::new(),
                 },
-                events: vec![Event::new(EventKind::User, "deploy over grpc")],
+                events: vec![
+                    Event::new(EventKind::User, "deploy over grpc"),
+                    Event::new(EventKind::Assistant, "grpc deployment complete"),
+                ],
+            },
+            IngestMode::Partial,
+        )
+        .unwrap();
+    database
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:grpc-second".into(),
+                    agent: Agent::Codex,
+                    cwd: Some("/workspace/grpc".into()),
+                    started_at_ms: Some(1),
+                    ended_at_ms: Some(2),
+                    title: Some("second gRPC contract".into()),
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: json!({}),
+                    fingerprint: "grpc-second-v1".into(),
+                    sources: Vec::new(),
+                },
+                events: vec![Event::new(EventKind::User, "second grpc event")],
             },
             IngestMode::Partial,
         )
@@ -57,8 +84,45 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
         .await
         .unwrap();
     let stats = client.stats(StatsRequest {}).await.unwrap().into_inner();
-    assert_eq!(stats.total_sessions, 1);
-    assert_eq!(stats.total_events, 1);
+    assert_eq!(stats.total_sessions, 2);
+    assert_eq!(stats.total_events, 3);
+
+    let list = client
+        .list(ProtoListRequest {
+            limit: 1,
+            cursor: None,
+            agent: Some("codex".into()),
+            cwd: Some("/workspace".into()),
+            since_ms: None,
+            mode: Some("partial".into()),
+            model: None,
+            provider: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(list.sessions.len(), 1);
+    assert_eq!(list.sessions[0].id, "codex:grpc");
+    assert_eq!(list.sessions[0].events, 2);
+    let cursor = list
+        .next_cursor
+        .clone()
+        .expect("list should provide a cursor");
+    let next_page = client
+        .list(ProtoListRequest {
+            limit: 1,
+            cursor: Some(cursor),
+            agent: Some("codex".into()),
+            cwd: Some("/workspace".into()),
+            since_ms: None,
+            mode: Some("partial".into()),
+            model: None,
+            provider: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(next_page.sessions[0].id, "codex:grpc-second");
 
     let search = client
         .search(ProtoSearchRequest {
@@ -79,6 +143,9 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
     let show = client
         .show(ShowRequest {
             id: "codex:grpc".into(),
+            from_idx: Some(1),
+            to_idx: Some(1),
+            kinds: vec!["assistant".into()],
         })
         .await
         .unwrap()
@@ -87,7 +154,29 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
         show.session.unwrap().title.as_deref(),
         Some("gRPC contract")
     );
-    assert_eq!(show.events[0].text, "deploy over grpc");
+    assert_eq!(show.events[0].text, "grpc deployment complete");
+
+    let invalid_range = client
+        .show(ShowRequest {
+            id: "codex:grpc".into(),
+            from_idx: Some(2),
+            to_idx: Some(1),
+            kinds: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(invalid_range.code(), Code::InvalidArgument);
+
+    let invalid_kind = client
+        .show(ShowRequest {
+            id: "codex:grpc".into(),
+            from_idx: None,
+            to_idx: None,
+            kinds: vec!["future_kind".into()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(invalid_kind.code(), Code::InvalidArgument);
 
     let error = client
         .search(ProtoSearchRequest::default())
