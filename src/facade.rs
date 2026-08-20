@@ -527,6 +527,11 @@ impl TraceDb {
         store::backup(&self.connection, destination.as_ref())
     }
 
+    /// Report content-addressed objects that are no longer referenced.
+    pub fn gc(&self, dry_run: bool) -> Result<GcReport> {
+        store::gc_report(&self.connection, dry_run)
+    }
+
     /// Verify SQLite, index, contract, reference, and archived-object integrity.
     pub fn verify(&self) -> Result<VerifyReport> {
         store::verify(&self.connection, &self.path)
@@ -1674,6 +1679,16 @@ pub struct BackupReport {
     pub sessions: u64,
     pub events: u64,
     pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcReport {
+    pub dry_run: bool,
+    pub total_objects: u64,
+    pub referenced_objects: u64,
+    pub orphan_objects: u64,
+    pub orphan_bytes: u64,
 }
 
 /// Resolve the default native store root for one supported agent.

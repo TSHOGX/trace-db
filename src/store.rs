@@ -165,6 +165,36 @@ pub fn backup(connection: &Connection, destination: &Path) -> Result<crate::Back
     })
 }
 
+pub fn gc_report(connection: &Connection, dry_run: bool) -> Result<crate::GcReport> {
+    if !dry_run {
+        anyhow::bail!("gc is non-destructive by default; pass --dry-run");
+    }
+    let total_objects = connection.query_row("SELECT count(*) FROM objects", [], |row| {
+        row.get::<_, u64>(0)
+    })?;
+    let referenced_objects = connection.query_row(
+        "SELECT count(DISTINCT object_hash) FROM raw_sources WHERE object_hash IS NOT NULL",
+        [],
+        |row| row.get::<_, u64>(0),
+    )?;
+    let (orphan_objects, orphan_bytes) = connection.query_row(
+        "SELECT count(*), COALESCE(sum(length(o.payload)), 0)
+         FROM objects o
+         LEFT JOIN (SELECT DISTINCT object_hash FROM raw_sources WHERE object_hash IS NOT NULL) r
+           ON r.object_hash=o.hash
+         WHERE r.object_hash IS NULL",
+        [],
+        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    Ok(crate::GcReport {
+        dry_run: true,
+        total_objects,
+        referenced_objects,
+        orphan_objects,
+        orphan_bytes,
+    })
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
 }

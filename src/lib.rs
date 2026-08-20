@@ -25,7 +25,7 @@ pub use facade::{
     doctor_archive, doctor_configured, native_root, verify_archive, AgentIngestDryRunReport,
     AgentIngestReport, AgentStats, ArchiveStats, BackupReport, DoctorAgent, DoctorBackup,
     DoctorDatabase, DoctorFailure, DoctorIngestStatus, DoctorPermissions, DoctorReport,
-    DoctorRuntime, DoctorTokenizer, DoctorWatch, IngestDryRunReport, IngestErrorCategory,
+    DoctorRuntime, DoctorTokenizer, DoctorWatch, GcReport, IngestDryRunReport, IngestErrorCategory,
     IngestIssue, IngestReport, IngestRequest, IngestStage, ListPage, ListRequest,
     ReconstructionOptions, SessionSummary, SessionTrace, ShowRequest, TraceDb, VerificationFailure,
     VerifyCheck, VerifyReport, WatchEvent, WatchIssue, WatchIssueStage, WatchRequest, WatchRun,

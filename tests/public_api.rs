@@ -254,6 +254,33 @@ fn backup_publishes_verified_snapshot_without_overwriting() {
 }
 
 #[test]
+fn gc_dry_run_reports_orphan_objects_without_mutation() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("gc.db");
+    let database = TraceDb::open(&path).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO objects(hash,compression,bytes,payload,created_at_ms) VALUES(?1,'zstd',2,?2,0)",
+            rusqlite::params!["orphan", vec![1_u8, 2_u8]],
+        )
+        .unwrap();
+    let report = database.gc(true).unwrap();
+    assert_eq!(report.total_objects, 1);
+    assert_eq!(report.referenced_objects, 0);
+    assert_eq!(report.orphan_objects, 1);
+    assert_eq!(report.orphan_bytes, 2);
+    assert!(database.gc(false).is_err());
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM objects", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn native_ingest_skips_unchanged_sessions_before_parsing() {
     let dir = tempdir().unwrap();
     let native = dir.path().join("native");

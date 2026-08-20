@@ -147,6 +147,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Report reclaimable unreferenced full-capture objects without deleting.
+    Gc {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Reconstruct native traces captured by a full ingest.
     Reconstruct {
         id: String,
@@ -683,6 +690,17 @@ fn main() -> anyhow::Result<()> {
                     report.sessions,
                     report.events,
                     report.verified
+                );
+            }
+        }
+        Command::Gc { dry_run, json } => {
+            let report = db.gc(dry_run)?;
+            if json || matches!(config.output_format, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "gc dry-run: {} orphan object(s), {} reclaimable bytes",
+                    report.orphan_objects, report.orphan_bytes
                 );
             }
         }

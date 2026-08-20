@@ -51,6 +51,7 @@ Reconstruction is disabled unless the server starts with
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |
 | `Backup` | Exposed by the CLI and Rust facade; creates a verified archive snapshot. |
+| `Gc` | Exposed by the CLI and Rust facade as a non-destructive orphan-object dry run. |
 | `Reconstruct` | Writes full-capture native sources below a server-local output directory. |
 
 Messages are capped at 64 MiB by the bundled server. Generated clients may

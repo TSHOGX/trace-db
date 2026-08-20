@@ -115,6 +115,7 @@ trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,K
 trace-db reconstruct SESSION_ID --out DIRECTORY [--overwrite]
 trace-db reindex
 trace-db backup PATH [--json]
+trace-db gc --dry-run [--json]
 trace-db stats [--json]
 trace-db verify [--json]
 trace-db doctor [--json]
@@ -161,6 +162,11 @@ directory and verifies the snapshot before returning. The destination must not
 already exist; this avoids accidental replacement and includes WAL state,
 normalized rows, the FTS index, provenance, and full-capture objects in one
 portable archive file.
+
+`trace-db gc --dry-run` reports unreferenced content-addressed full-capture
+objects and their stored payload bytes. It never deletes objects; omitting
+`--dry-run` is rejected until an explicit deletion policy and recovery workflow
+are defined.
 
 For a versioned cross-language boundary, `trace-db serve` exposes the
 `tracedb.v1` gRPC service over loopback TCP or a Unix domain socket. The

@@ -52,6 +52,10 @@ subsequent partial ingests retain full mode and recapture the source object.
 a sibling staging directory, refuses existing destinations, atomically publishes
 the completed file, and verifies the published archive before returning.
 
+`TraceDb::gc(true)` reports unreferenced content-addressed object payloads. The
+current lifecycle contract is deliberately dry-run-only: object deletion is not
+performed until recovery, retention, and crash-safety semantics are specified.
+
 ## Runtime configuration
 
 `TraceDbConfig` is the canonical resolved runtime configuration shared by the
