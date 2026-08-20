@@ -51,6 +51,11 @@ The Rust facade exposes `RestoreManifest` with schema version
 `reconstruct --manifest PATH`. Existing reconstruction APIs continue returning
 the written paths for compatibility.
 
+OpenCode full captures include a native SQLite bundle tagged
+`opencode-native-session-v1` and a portable JSON fallback. Consumers should
+inspect the bundle's `schema_meta` version before importing it into a particular
+OpenCode release.
+
 ## Methods
 
 | Method | Behavior |

@@ -262,10 +262,39 @@ fn opencode_full_capture_restores_deterministic_session_bundle() {
     let (archive_dir, db) = ingest_one(&db_path, Agent::OpenCode);
     let output = archive_dir.path().join("restore");
     let restored = db.reconstruct("opencode:s1", &output).unwrap();
-    assert_eq!(restored.len(), 1);
-    let bundle: Value = serde_json::from_slice(&std::fs::read(&restored[0]).unwrap()).unwrap();
+    assert_eq!(restored.len(), 2);
+    let native = restored
+        .iter()
+        .find(|path| path.extension().is_some_and(|extension| extension == "db"))
+        .unwrap();
+    let portable = restored
+        .iter()
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let bundle: Value = serde_json::from_slice(&std::fs::read(portable).unwrap()).unwrap();
     assert_eq!(bundle["format"], "trace-db/opencode-session-v1");
     assert_eq!(bundle["session"]["id"], "s1");
     assert_eq!(bundle["message"][0]["data"]["role"], "user");
     assert_eq!(bundle["part"][0]["data"]["text"], "hello");
+    let native_connection = rusqlite::Connection::open(native).unwrap();
+    assert_eq!(
+        native_connection
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='format'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "opencode-native-session-v1"
+    );
+    assert_eq!(
+        native_connection
+            .query_row("SELECT count(*) FROM session", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }

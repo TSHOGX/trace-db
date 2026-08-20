@@ -67,6 +67,12 @@ Reconstruction can additionally emit a versioned restore manifest containing
 the output paths, source locators, object hashes, sizes, and preserved metadata
 for every atomically written file.
 
+OpenCode full capture stores both a minimal native SQLite session bundle
+(`opencode-native-session-v1`) and a portable JSON fallback. The native bundle
+contains schema/version metadata plus session, message, and part records; it is
+an importable compatibility target, not a claim of universal parity with every
+future OpenCode schema.
+
 ## Runtime configuration
 
 `TraceDbConfig` is the canonical resolved runtime configuration shared by the

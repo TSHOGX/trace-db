@@ -328,6 +328,12 @@ The SQLite schema records its version, archive contract, and selected tokenizer
 in `schema_meta`. Full native snapshots live in a content-addressed `objects`
 table and are referenced by `raw_sources`.
 
+OpenCode full capture restores two artifacts: a minimal native-importable
+`<session>.db` containing `schema_meta`, `session`, `message`, and `part` rows,
+plus a portable `<session>.json` fallback envelope. The native bundle is
+versioned as `opencode-native-session-v1`; compatibility with a specific future
+OpenCode release still requires verification against that release's schema.
+
 ## Search
 
 Search is bounded and session-oriented. It combines phrase and term recall,

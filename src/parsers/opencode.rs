@@ -127,18 +127,43 @@ fn parse_session(
         parts.push(json!({"id":part_id,"message_id":r.get::<_,String>(1)?,"session_id":r.get::<_,String>(2)?,"time_created":r.get::<_,i64>(3)?,"time_updated":r.get::<_,i64>(4)?,"data":data}));
     }
     let envelope = json!({"format":"trace-db/opencode-session-v1","session":{"id":sid,"parent_id":parent,"directory":directory,"title":title,"agent":agent,"model":model,"time_created":created,"time_updated":updated},"message":messages,"part":parts});
-    let bytes = serde_json::to_vec(&envelope)?;
-    let src = NativeSource {
+    let portable_bytes = serde_json::to_vec(&envelope)?;
+    let native_bytes = build_native_bundle(
+        &sid,
+        parent.as_deref(),
+        directory.as_deref(),
+        title.as_deref(),
+        agent.as_deref(),
+        model.as_deref(),
+        created,
+        updated,
+        &messages,
+        &parts,
+    )?;
+    let native_source = NativeSource {
         locator: format!("{}#{id}", db.display()),
         kind: "sqlite-session".into(),
-        restore_path: format!("{sid}.json"),
+        restore_path: format!("{sid}.db"),
         role: None,
         bytes: candidate.bytes,
         mtime_ns: candidate.mtime_ns,
         mode: candidate.mode,
         capture: Some(Capture::Bytes {
             label: sid.clone(),
-            bytes,
+            bytes: native_bytes,
+        }),
+    };
+    let portable_source = NativeSource {
+        locator: format!("{}#{id}:portable", db.display()),
+        kind: "portable-json".into(),
+        restore_path: format!("{sid}.json"),
+        role: Some("portable-fallback".into()),
+        bytes: Some(portable_bytes.len() as i64),
+        mtime_ns: candidate.mtime_ns,
+        mode: candidate.mode,
+        capture: Some(Capture::Bytes {
+            label: format!("{sid}-portable"),
+            bytes: portable_bytes,
         }),
     };
     Ok(ParsedSession {
@@ -156,10 +181,71 @@ fn parse_session(
             forked_from: None,
             meta: json!({"agent":agent}),
             fingerprint: format!("{}:{}", evs.len(), updated.unwrap_or_default()),
-            sources: vec![src],
+            sources: vec![native_source, portable_source],
         },
         events: evs,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_native_bundle(
+    id: &str,
+    parent_id: Option<&str>,
+    directory: Option<&str>,
+    title: Option<&str>,
+    agent: Option<&str>,
+    model: Option<&str>,
+    time_created: Option<i64>,
+    time_updated: Option<i64>,
+    messages: &[Value],
+    parts: &[Value],
+) -> Result<Vec<u8>> {
+    let temporary_directory = tempfile::tempdir()?;
+    let path = temporary_directory.path().join("opencode.db");
+    let connection = Connection::open(&path)?;
+    connection.execute_batch(
+        "PRAGMA user_version=1;
+         CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, agent TEXT, model TEXT, time_created INTEGER, time_updated INTEGER);
+         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+    )?;
+    connection.execute(
+        "INSERT INTO schema_meta(key,value) VALUES('format','opencode-native-session-v1'),('version','1')",
+        [],
+    )?;
+    connection.execute(
+        "INSERT INTO session(id,parent_id,directory,title,agent,model,time_created,time_updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![id, parent_id, directory, title, agent, model, time_created, time_updated],
+    )?;
+    for message in messages {
+        connection.execute(
+            "INSERT INTO message(id,session_id,time_created,time_updated,data) VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![
+                message["id"].as_str().unwrap_or_default(),
+                id,
+                message["time_created"].as_i64().unwrap_or_default(),
+                message["time_updated"].as_i64().unwrap_or_default(),
+                message["data"].to_string(),
+            ],
+        )?;
+    }
+    for part in parts {
+        connection.execute(
+            "INSERT INTO part(id,message_id,session_id,time_created,time_updated,data) VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                part["id"].as_str().unwrap_or_default(),
+                part["message_id"].as_str().unwrap_or_default(),
+                id,
+                part["time_created"].as_i64().unwrap_or_default(),
+                part["time_updated"].as_i64().unwrap_or_default(),
+                part["data"].to_string(),
+            ],
+        )?;
+    }
+    connection.execute_batch("VACUUM")?;
+    drop(connection);
+    Ok(fs::read(path)?)
 }
 impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
