@@ -411,6 +411,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 python3 scripts/verify-release-package.py ARTIFACT --version 0.1.0
 python3 scripts/verify-sha256sums.py RELEASE_DIRECTORY
+python3 scripts/generate-sbom.py --output target/tracedb-sbom.json
+cargo audit --deny warnings
 python3 scripts/smoke-python-wheel.py WHEEL
 node scripts/smoke-node-package.js PACKAGE_TGZ
 cargo test -p trace-db --test parser_robustness

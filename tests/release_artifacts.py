@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import platform
 import subprocess
@@ -18,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VERIFY = ROOT / "scripts/verify-release-package.py"
 VERIFY_SUMS = ROOT / "scripts/verify-sha256sums.py"
+GENERATE_SBOM = ROOT / "scripts/generate-sbom.py"
 INSTALL = ROOT / "scripts/install-release.sh"
 VERSION = "9.8.7"
 
@@ -40,6 +42,29 @@ def add_tar_file(archive: tarfile.TarFile, name: str, data: bytes, mode: int = 0
 
 
 class ReleaseArtifactTests(unittest.TestCase):
+    def test_sbom_generation_is_deterministic_and_lists_workspace_dependencies(self) -> None:
+        first = subprocess.run(
+            ["python3", str(GENERATE_SBOM)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        second = subprocess.run(
+            ["python3", str(GENERATE_SBOM)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(first.stdout, second.stdout)
+        document = json.loads(first.stdout)
+        self.assertEqual(document["bomFormat"], "CycloneDX")
+        self.assertEqual(document["specVersion"], "1.5")
+        names = {component["name"] for component in document["components"]}
+        self.assertIn("trace-db", names)
+        self.assertIn("serde", names)
+
     def test_sha256_manifest_covers_and_verifies_every_asset(self) -> None:
         with tempfile.TemporaryDirectory(prefix="tracedb-checksums-") as directory:
             root = Path(directory)

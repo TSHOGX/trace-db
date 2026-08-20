@@ -135,6 +135,8 @@ jobs:
           pattern: trace-db-*
           path: dist
           merge-multiple: true
+      - name: Generate SBOM
+        run: python scripts/generate-sbom.py --output dist/tracedb-sbom.json
       - name: Generate checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS

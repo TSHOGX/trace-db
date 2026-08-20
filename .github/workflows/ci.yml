@@ -28,6 +28,7 @@ jobs:
       - run: python scripts/verify-release-version.py
       - run: python -m py_compile scripts/verify-release-version.py scripts/verify-release-package.py scripts/verify-sha256sums.py
       - run: python tests/release_artifacts.py
+      - run: python scripts/generate-sbom.py --output target/tracedb-sbom.json
       - run: bash -n scripts/install-release.sh scripts/package-release.sh
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
@@ -44,6 +45,18 @@ jobs:
         with:
           key: msrv
       - run: cargo check --locked --workspace --all-targets
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: security
+      - run: cargo install cargo-audit --locked --version 0.21.2
+      - run: cargo audit --deny warnings
+      - run: python scripts/generate-sbom.py --output target/tracedb-sbom.json
 
   python:
     runs-on: ubuntu-latest
