@@ -105,6 +105,27 @@ pub fn open_read_only(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+pub fn open_read_only_configured(
+    path: &Path,
+    tokenizer: TokenizerKind,
+    tokenizer_extension: Option<&Path>,
+) -> Result<Connection> {
+    let connection = open_read_only(path)?;
+    if matches!(tokenizer, TokenizerKind::Jieba) {
+        let extension =
+            tokenizer_extension.context("jieba tokenizer requires a configured extension path")?;
+        unsafe {
+            connection.load_extension_enable()?;
+            let load_result = connection.load_extension(extension, Some("sqlite3_fts5jieba_init"));
+            connection.load_extension_disable()?;
+            load_result.with_context(|| {
+                format!("load jieba tokenizer extension {}", extension.display())
+            })?;
+        }
+    }
+    Ok(connection)
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
 }
@@ -1208,6 +1229,17 @@ mod tests {
         .unwrap();
         let error = migrate(&conn).unwrap_err().to_string();
         assert!(error.contains("newer than supported version"));
+    }
+
+    #[test]
+    fn configured_read_only_open_requires_the_jieba_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("trace.db");
+        open(&path).unwrap();
+        let error = open_read_only_configured(&path, TokenizerKind::Jieba, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("jieba tokenizer requires a configured extension path"));
     }
 
     #[test]

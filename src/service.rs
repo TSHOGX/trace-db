@@ -1,15 +1,21 @@
 //! Versioned gRPC service backed by the same [`crate::TraceDb`] facade as the CLI.
+//!
+//! Read-only calls use a bounded pool of read-only SQLite connections. Mutating
+//! calls share one writer, and both paths dispatch synchronous SQLite work to
+//! blocking workers instead of tonic runtime threads.
 
 use crate::{
     proto as pb, Agent, ArchiveStats, Event, IngestMode, IngestRequest, NativeSource,
-    ReconstructionOptions, SearchRequest, Session, SessionTrace, TraceDb,
+    ReconstructionOptions, SearchRequest, Session, SessionTrace, TokenizerKind, TraceDb,
 };
 use anyhow::{bail, Context, Result};
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
+    thread,
 };
+use tokio::sync::Semaphore;
 use tonic::{transport::Server, Request, Response, Status};
 
 pub const GRPC_MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -23,28 +29,141 @@ pub enum ServiceEndpoint {
 #[derive(Clone)]
 pub struct TraceDbGrpc {
     database: Arc<Mutex<TraceDb>>,
+    database_path: Arc<PathBuf>,
+    read_pool: ReadPool,
     reconstruct_root: Option<Arc<PathBuf>>,
+}
+
+const MAX_READ_CONNECTIONS: usize = 8;
+
+#[derive(Clone)]
+struct ReadPool {
+    path: Arc<PathBuf>,
+    tokenizer: TokenizerKind,
+    tokenizer_extension: Option<Arc<PathBuf>>,
+    idle: Arc<Mutex<Vec<TraceDb>>>,
+    permits: Arc<Semaphore>,
+}
+
+impl ReadPool {
+    fn new(
+        path: Arc<PathBuf>,
+        tokenizer: TokenizerKind,
+        tokenizer_extension: Option<Arc<PathBuf>>,
+    ) -> Self {
+        let permits = thread::available_parallelism()
+            .map(|parallelism| parallelism.get().clamp(2, MAX_READ_CONNECTIONS))
+            .unwrap_or(2);
+        Self {
+            path,
+            tokenizer,
+            tokenizer_extension,
+            idle: Arc::new(Mutex::new(Vec::new())),
+            permits: Arc::new(Semaphore::new(permits)),
+        }
+    }
+
+    async fn run<T, F>(&self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&TraceDb) -> Result<T> + Send + 'static,
+    {
+        let permit = self
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .context("acquire TraceDB read connection")?;
+        let path = self.path.clone();
+        let tokenizer = self.tokenizer;
+        let tokenizer_extension = self.tokenizer_extension.clone();
+        let idle = self.idle.clone();
+        tokio::task::spawn_blocking(move || {
+            let database = idle
+                .lock()
+                .map_err(|_| anyhow::anyhow!("TraceDB read pool lock is poisoned"))?
+                .pop()
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    TraceDb::open_read_only_configured(
+                        &*path,
+                        tokenizer,
+                        tokenizer_extension.as_deref().map(|path| path.as_path()),
+                    )
+                });
+            let database = database?;
+            let result = operation(&database);
+            if let Ok(mut idle) = idle.lock() {
+                if idle.len() < MAX_READ_CONNECTIONS {
+                    idle.push(database);
+                }
+            }
+            drop(permit);
+            result
+        })
+        .await
+        .context("TraceDB read worker failed")?
+    }
 }
 
 impl TraceDbGrpc {
     pub fn new(database: TraceDb) -> Self {
+        Self::configured(database, TokenizerKind::Unicode61, None, None)
+    }
+
+    pub fn configured(
+        database: TraceDb,
+        tokenizer: TokenizerKind,
+        tokenizer_extension: Option<PathBuf>,
+        reconstruct_root: Option<PathBuf>,
+    ) -> Self {
+        let database_path = Arc::new(database.path().to_path_buf());
+        let tokenizer_extension = tokenizer_extension.map(Arc::new);
         Self {
             database: Arc::new(Mutex::new(database)),
-            reconstruct_root: None,
+            read_pool: ReadPool::new(database_path.clone(), tokenizer, tokenizer_extension),
+            database_path,
+            reconstruct_root: reconstruct_root.map(Arc::new),
         }
     }
 
     pub fn with_reconstruct_root(database: TraceDb, root: PathBuf) -> Self {
-        Self {
-            database: Arc::new(Mutex::new(database)),
-            reconstruct_root: Some(Arc::new(root)),
-        }
+        Self::configured(database, TokenizerKind::Unicode61, None, Some(root))
     }
 
-    fn database(&self) -> Result<MutexGuard<'_, TraceDb>> {
-        self.database
-            .lock()
-            .map_err(|_| anyhow::anyhow!("TraceDB connection lock is poisoned"))
+    async fn read<T, F>(&self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&TraceDb) -> Result<T> + Send + 'static,
+    {
+        if self.database_path.as_os_str() == ":memory:" {
+            let database = self.database.clone();
+            return tokio::task::spawn_blocking(move || {
+                let database = database
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("TraceDB connection lock is poisoned"))?;
+                operation(&database)
+            })
+            .await
+            .context("TraceDB in-memory read worker failed")?;
+        }
+        self.read_pool.run(operation).await
+    }
+
+    async fn write<T, F>(&self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut TraceDb) -> Result<T> + Send + 'static,
+    {
+        let database = self.database.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut database = database
+                .lock()
+                .map_err(|_| anyhow::anyhow!("TraceDB connection lock is poisoned"))?;
+            operation(&mut database)
+        })
+        .await
+        .context("TraceDB write worker failed")?
     }
 
     pub fn into_server(self) -> pb::trace_db_service_server::TraceDbServiceServer<Self> {
@@ -75,16 +194,16 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                 .parse::<IngestMode>()
                 .map_err(Status::invalid_argument)?
         };
+        let ingest = IngestRequest {
+            agents,
+            mode,
+            root: request.root.map(PathBuf::from),
+            since_ms: request.since_ms,
+            exclude: Vec::new(),
+        };
         let report = self
-            .database()
-            .map_err(internal)?
-            .ingest(IngestRequest {
-                agents,
-                mode,
-                root: request.root.map(PathBuf::from),
-                since_ms: request.since_ms,
-                exclude: Vec::new(),
-            })
+            .write(move |database| database.ingest(ingest))
+            .await
             .map_err(internal)?;
         Ok(Response::new(pb::IngestResponse {
             total_discovered: report.total_discovered() as u64,
@@ -128,20 +247,20 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .map(|agent| agent.parse::<Agent>())
             .transpose()
             .map_err(Status::invalid_argument)?;
+        let search = SearchRequest {
+            query: request.query,
+            limit: if request.limit == 0 {
+                20
+            } else {
+                request.limit as usize
+            },
+            agent,
+            cwd: request.cwd,
+            since_ms: request.since_ms,
+        };
         let results = self
-            .database()
-            .map_err(internal)?
-            .search(SearchRequest {
-                query: request.query,
-                limit: if request.limit == 0 {
-                    20
-                } else {
-                    request.limit as usize
-                },
-                agent,
-                cwd: request.cwd,
-                since_ms: request.since_ms,
-            })
+            .read(move |database| database.search(search))
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|row| pb::SearchResult {
@@ -186,9 +305,8 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             return Err(Status::invalid_argument("id must not be empty"));
         }
         let response = self
-            .database()
-            .map_err(internal)?
-            .show(&id)
+            .read(move |database| database.show(&id))
+            .await
             .map_err(internal)?
             .map(trace_to_proto)
             .transpose()
@@ -202,9 +320,8 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         _request: Request<pb::StatsRequest>,
     ) -> Result<Response<pb::StatsResponse>, Status> {
         let stats = self
-            .database()
-            .map_err(internal)?
-            .stats()
+            .read(|database| database.stats())
+            .await
             .map_err(internal)?;
         Ok(Response::new(stats_to_proto(stats)))
     }
@@ -213,9 +330,8 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         &self,
         _request: Request<pb::ReindexRequest>,
     ) -> Result<Response<pb::ReindexResponse>, Status> {
-        self.database()
-            .map_err(internal)?
-            .reindex()
+        self.write(|database| database.reindex())
+            .await
             .map_err(internal)?;
         Ok(Response::new(pb::ReindexResponse {}))
     }
@@ -245,16 +361,13 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
         }
         let out_dir = resolve_reconstruct_out(root, relative)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let id = request.id;
+        let overwrite = request.overwrite;
         let paths = self
-            .database()
-            .map_err(internal)?
-            .reconstruct_with_options(
-                &request.id,
-                out_dir,
-                ReconstructionOptions {
-                    overwrite: request.overwrite,
-                },
-            )
+            .write(move |database| {
+                database.reconstruct_with_options(&id, out_dir, ReconstructionOptions { overwrite })
+            })
+            .await
             .map_err(internal)?
             .into_iter()
             .map(|path| path.display().to_string())
@@ -294,14 +407,27 @@ pub fn serve(
     endpoint: ServiceEndpoint,
     reconstruct_root: Option<PathBuf>,
 ) -> Result<()> {
+    serve_configured(
+        database,
+        endpoint,
+        TokenizerKind::Unicode61,
+        None,
+        reconstruct_root,
+    )
+}
+
+pub fn serve_configured(
+    database: TraceDb,
+    endpoint: ServiceEndpoint,
+    tokenizer: TokenizerKind,
+    tokenizer_extension: Option<PathBuf>,
+    reconstruct_root: Option<PathBuf>,
+) -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(serve_async(
-            match reconstruct_root {
-                Some(root) => TraceDbGrpc::with_reconstruct_root(database, root),
-                None => TraceDbGrpc::new(database),
-            },
+            TraceDbGrpc::configured(database, tokenizer, tokenizer_extension, reconstruct_root),
             endpoint,
         ))
 }
@@ -457,5 +583,92 @@ fn stats_to_proto(stats: ArchiveStats) -> pb::StatsResponse {
                 full_sessions: row.full_sessions,
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Agent, Event, EventKind, IngestMode, ParsedSession, Session};
+    use serde_json::json;
+    use std::sync::{Arc, Barrier};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn read_requests_use_independent_connections() {
+        let directory = tempdir().unwrap();
+        let mut database = TraceDb::open(directory.path().join("trace.db")).unwrap();
+        database
+            .ingest_session(
+                ParsedSession {
+                    session: Session {
+                        id: "codex:parallel".into(),
+                        agent: Agent::Codex,
+                        cwd: Some("/workspace/parallel".into()),
+                        started_at_ms: Some(1),
+                        ended_at_ms: Some(2),
+                        title: Some("parallel reads".into()),
+                        model: None,
+                        provider: None,
+                        git_branch: None,
+                        parent_session_id: None,
+                        forked_from: None,
+                        meta: json!({}),
+                        fingerprint: "parallel-v1".into(),
+                        sources: Vec::new(),
+                    },
+                    events: vec![Event::new(EventKind::User, "parallel read")],
+                },
+                IngestMode::Partial,
+            )
+            .unwrap();
+        let service = TraceDbGrpc::new(database);
+        let barrier = Arc::new(Barrier::new(2));
+        let first_barrier = barrier.clone();
+        let second_barrier = barrier;
+        let first = service.read(move |database| {
+            first_barrier.wait();
+            database.stats()
+        });
+        let second = service.read(move |database| {
+            second_barrier.wait();
+            database.search(SearchRequest::new("parallel"))
+        });
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("read requests must not serialize behind one connection");
+        assert_eq!(first.unwrap().total_sessions, 1);
+        assert_eq!(second.unwrap()[0].id, "codex:parallel");
+    }
+
+    #[tokio::test]
+    async fn read_request_does_not_wait_for_the_writer() {
+        let directory = tempdir().unwrap();
+        let database = TraceDb::open(directory.path().join("trace.db")).unwrap();
+        let service = TraceDbGrpc::new(database);
+        let writer = service.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let write = tokio::spawn(async move {
+            writer
+                .write(move |_| {
+                    let _ = started_tx.send(());
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    Ok(())
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+
+        let stats = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            service.read(|database| database.stats()),
+        )
+        .await
+        .expect("read request must not wait for the serialized writer")
+        .unwrap();
+        assert_eq!(stats.total_sessions, 0);
+        write.await.unwrap().unwrap();
     }
 }

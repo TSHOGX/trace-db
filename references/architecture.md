@@ -67,6 +67,13 @@ the archive, compares the newest native candidate with the last ingest time,
 probes watcher and permission readiness, and derives backup guidance from the
 number of partial and full sessions.
 
+The gRPC adapter keeps one serialized writer for ingest, reindex, and
+reconstruction, plus a bounded pool of read-only SQLite connections for search,
+show, and stats. Each operation runs on a blocking worker so synchronous
+SQLite calls do not occupy asynchronous runtime threads; in-memory test
+archives intentionally use the writer connection for reads because SQLite
+`:memory:` databases are connection-local.
+
 ## Lineage
 
 There are two independent trees:

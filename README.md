@@ -160,6 +160,11 @@ checked-in Protobuf contract supports ingest, search, show, stats, reindex, and
 reconstruction; see [`references/protocol.md`](references/protocol.md) for
 compatibility and security details.
 
+The gRPC adapter uses a bounded pool of read-only SQLite connections for
+search, show, and stats calls. Mutating calls share one writer and all SQLite
+work runs on blocking workers, so concurrent reads do not queue behind ingest
+or behind one another while write ordering remains explicit.
+
 The optional Python package in `bindings/python` is a thin PyO3 wrapper around
 the same `TraceDb` facade. It uses the stable Python 3.10 ABI and exposes
 native Python dictionaries and lists while retaining raw JSON methods for

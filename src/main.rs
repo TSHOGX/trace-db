@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
 use tracedb::{
     doctor_configured,
-    service::{serve, ServiceEndpoint},
+    service::{serve_configured, ServiceEndpoint},
     verify_archive, Agent, ConfigOverrides, EventKind, IngestMode, IngestRequest, ListRequest,
     OutputFormat, SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig, WatchEvent,
     WatchRequest,
@@ -718,7 +718,13 @@ fn main() -> anyhow::Result<()> {
                 )
             }
             eprintln!("serving tracedb.v1 on {}", display_endpoint(&endpoint));
-            serve(db, endpoint, reconstruct_root)?;
+            serve_configured(
+                db,
+                endpoint,
+                config.tokenizer,
+                config.tokenizer_extension.clone(),
+                reconstruct_root,
+            )?;
         }
     }
     Ok(())

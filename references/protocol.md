@@ -54,3 +54,13 @@ Reconstruction is disabled unless the server starts with
 
 Messages are capped at 64 MiB by the bundled server. Generated clients may
 need their receive limit raised to the same value when reading large sessions.
+
+## Concurrency semantics
+
+`Search`, `Show`, and `Stats` use a bounded pool of read-only WAL connections
+and may execute concurrently with each other and with a write. `Ingest`,
+`Reindex`, and `Reconstruct` use one serialized writer, so mutating calls never
+execute concurrently on the canonical facade connection.
+All SQLite work is dispatched to blocking workers rather than running on tonic
+runtime threads. SQLite busy handling remains bounded by the archive's
+five-second busy timeout.

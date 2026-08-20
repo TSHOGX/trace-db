@@ -59,6 +59,17 @@ impl TraceDb {
         Ok(Self { path, connection })
     }
 
+    /// Open an existing archive read-only with its configured tokenizer loaded.
+    pub fn open_read_only_configured(
+        path: impl AsRef<Path>,
+        tokenizer: TokenizerKind,
+        tokenizer_extension: Option<&Path>,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = store::open_read_only_configured(&path, tokenizer, tokenizer_extension)?;
+        Ok(Self { path, connection })
+    }
+
     /// Plan an ingest against an existing or not-yet-created archive without writing it.
     pub fn ingest_dry_run_at(
         path: impl AsRef<Path>,
