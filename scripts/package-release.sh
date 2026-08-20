@@ -23,6 +23,7 @@ esac
 mkdir -p "$stage/$package/proto/tracedb/v1" "$output_dir"
 cp "$root/target/$target/release/trace-db" "$stage/$package/trace-db"
 cp "$root/target/$target/release/trace-db-bench" "$stage/$package/trace-db-bench"
+cp "$root/target/$target/release/trace-db-relevance" "$stage/$package/trace-db-relevance"
 cp "$root/target/$target/release/libfts5jieba.$extension" "$stage/$package/"
 cp "$root/README.md" "$root/LICENSE" "$stage/$package/"
 cp "$root/proto/tracedb/v1/tracedb.proto" "$stage/$package/proto/tracedb/v1/"

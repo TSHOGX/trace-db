@@ -10,6 +10,7 @@ pub mod benchmark;
 pub mod config;
 pub mod model;
 pub mod parsers;
+pub mod relevance;
 pub mod search;
 pub mod store;
 

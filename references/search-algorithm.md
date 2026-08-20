@@ -88,9 +88,10 @@ and colocated English Porter stems. The selected tokenizer is recorded in
 `schema_meta` when the database is created.
 
 Changing the tokenizer requires recreating `events_fts` and rebuilding it from
-the gated event table. The `reindex` command deliberately uses `delete-all`
-followed by a filtered insert; the FTS5 `rebuild` command would bypass the event
-kind gating and index noisy tool-result and usage rows.
+the gated event table. The `reindex` command recreates the external-content FTS5
+table transactionally and inserts only searchable event kinds; the generic FTS5
+`rebuild` command would bypass the event-kind gate and index noisy tool-result
+and usage rows.
 
 ## Performance invariants
 

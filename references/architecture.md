@@ -22,6 +22,7 @@ src/
   benchmark.rs    deterministic native fixtures, lifecycle runner, and metrics
   bin/
     trace-db-bench.rs  standalone text/JSON benchmark interface
+    trace-db-relevance.rs  standalone labeled search evaluator
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance

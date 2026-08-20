@@ -52,6 +52,7 @@ trace-db stats --json
 trace-db verify --json
 trace-db doctor --json
 trace-db-bench --sessions 1k,10k,100k --json
+trace-db-relevance --json
 ```
 
 Tagged releases publish archives for x86-64 and ARM64 Linux, x86-64 and ARM64
@@ -254,6 +255,25 @@ that ingest phase. It is `null` for unchanged/read-only operations and hosts
 without a physical-write counter. The JSON contract is versioned as
 `tracedb-benchmark-v1`; CPU/write values are process deltas while peak RSS is a
 process-lifetime high-water mark.
+
+## Relevance evaluation
+
+`trace-db-relevance` runs a deterministic labeled-query suite against normalized
+fixtures through the same `TraceDb::search` facade used by the CLI and bindings.
+The suite includes multilingual and multi-term queries, title ranking, cwd
+filtering, tool/error event signals, model/provider metadata preservation,
+old-but-important history, parent/subagent and fork lineage, and distant-context
+answerability. It reports Recall@5, Recall@10, MRR,
+nDCG@10, lineage-collapse accuracy, context answerability, and per-tag slices.
+
+```bash
+cargo run --release --bin trace-db-relevance -- --json > relevance.json
+```
+
+The machine-readable report is versioned as `tracedb-relevance-v1`. Labels use
+graded relevance from 0 (not relevant) through 3 (highly relevant); nDCG uses
+the graded gain `2^grade - 1`, while Recall counts relevant lineage results
+once after collapse.
 
 ## Native stores and data model
 
