@@ -216,6 +216,21 @@ launch probes and automation tests.
 For service-manager examples covering launchd, systemd user services, and
 Windows Task Scheduler, see [`references/watch.md`](references/watch.md).
 
+## Health diagnostics
+
+Every mutating ingest stores compact operational telemetry in archive metadata:
+completion time, discovered/ingested/skipped/failed counts, and the cumulative
+failure count. `trace-db doctor --json` reports that last status together with
+archive lag relative to the newest discovered native candidate.
+
+Doctor also probes archive and native-root permissions, verifies configured
+watch timings and filesystem-notification readiness, and reports when periodic
+fallback will be used. Backup guidance distinguishes empty archives,
+rebuildable partial archives, and archives containing full native snapshots;
+full captures receive the strongest recommendation because the archive may be
+the only exact reconstruction source. A failed most-recent ingest makes doctor
+unhealthy while preserving all detailed counts in its JSON report.
+
 ## Native stores and data model
 
 | Agent | Native store |

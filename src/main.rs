@@ -330,6 +330,48 @@ fn main() -> anyhow::Result<()> {
                 },
                 report.tokenizer.tokenizer
             );
+            if let Some(status) = &report.database.last_ingest {
+                println!(
+                    "last ingest\t{}\t{} discovered\t{} ingested\t{} skipped\t{} failed\t{} cumulative failures",
+                    if status.successful { "ok" } else { "failed" },
+                    status.discovered,
+                    status.ingested,
+                    status.skipped,
+                    status.failed,
+                    status.cumulative_failed
+                );
+            } else {
+                println!("last ingest\tnever");
+            }
+            println!(
+                "archive lag\t{}",
+                report
+                    .database
+                    .archive_lag_ms
+                    .map_or_else(|| "unknown".into(), |lag| format!("{}ms", lag))
+            );
+            println!(
+                "backup\t{}\t{}",
+                if report.database.backup.recommended {
+                    "recommended"
+                } else {
+                    "not needed"
+                },
+                report.database.backup.reason
+            );
+            println!(
+                "watch\t{}\t{}",
+                if report.watch.ready {
+                    "ready"
+                } else {
+                    "failed"
+                },
+                if report.watch.watcher_available {
+                    "filesystem notifications"
+                } else {
+                    "periodic fallback"
+                }
+            );
         }
         if !report.healthy {
             anyhow::bail!("doctor found one or more unhealthy checks");

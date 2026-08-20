@@ -1,7 +1,7 @@
 use crate::{
     config::TokenizerKind,
     model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
-    ListPage, ListRequest, ReconstructionOptions, SessionSummary, SessionTrace,
+    IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionSummary, SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -24,6 +24,16 @@ pub const JIEBA_TOKENIZER: &str = "jieba";
 pub struct CandidateState {
     pub fingerprint: String,
     pub mode: IngestMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredIngestStatus {
+    pub completed_at_ms: i64,
+    pub discovered: usize,
+    pub ingested: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub cumulative_failed: usize,
 }
 
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
@@ -97,6 +107,75 @@ pub fn open_read_only(path: &Path) -> Result<Connection> {
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
+}
+
+/// Persist the latest ingest outcome and a cumulative failure counter in the
+/// archive metadata table used by doctor and future background services.
+pub fn record_ingest_status(conn: &Connection, report: &IngestReport) -> Result<()> {
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='ingest.last_status'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let cumulative_failed = previous
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .context("invalid persisted ingest status in schema_meta")?
+        .as_ref()
+        .and_then(|status| status.get("cumulativeFailed"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default()
+        + report.total_failed() as i64;
+    let status = serde_json::json!({
+        "completedAtMs": now_ms(),
+        "discovered": report.total_discovered(),
+        "ingested": report.total_ingested(),
+        "skipped": report.total_skipped(),
+        "failed": report.total_failed(),
+        "cumulativeFailed": cumulative_failed,
+    });
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('ingest.last_status',?1)",
+        [status.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Read persisted ingest telemetry without mutating the archive.
+pub fn ingest_status(conn: &Connection) -> Result<Option<StoredIngestStatus>> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='ingest.last_status'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let status: serde_json::Value = serde_json::from_str(&value)
+        .with_context(|| "invalid persisted ingest status in schema_meta")?;
+    let get_usize = |key: &str| -> Result<usize> {
+        status
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .with_context(|| format!("ingest status field {key} is missing or invalid"))
+    };
+    Ok(Some(StoredIngestStatus {
+        completed_at_ms: status
+            .get("completedAtMs")
+            .and_then(serde_json::Value::as_i64)
+            .context("ingest status field completedAtMs is missing or invalid")?,
+        discovered: get_usize("discovered")?,
+        ingested: get_usize("ingested")?,
+        skipped: get_usize("skipped")?,
+        failed: get_usize("failed")?,
+        cumulative_failed: get_usize("cumulativeFailed")?,
+    }))
 }
 
 fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {

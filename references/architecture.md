@@ -57,6 +57,12 @@ Configuration-file paths are anchored to the file directory before later
 layers are applied. Native-source exclusions compile once per ingest request
 and run against normalized candidate locators and paths before parsing.
 
+Successful ingest calls persist compact last-run telemetry and a cumulative
+failure count in `schema_meta`. Doctor reads this metadata without migrating
+the archive, compares the newest native candidate with the last ingest time,
+probes watcher and permission readiness, and derives backup guidance from the
+number of partial and full sessions.
+
 ## Lineage
 
 There are two independent trees:

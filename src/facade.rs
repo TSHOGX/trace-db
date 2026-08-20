@@ -1,5 +1,5 @@
 use crate::{
-    config::ExcludeMatcher,
+    config::{ExcludeMatcher, DEFAULT_WATCH_DEBOUNCE_MS, DEFAULT_WATCH_INTERVAL_SECONDS},
     model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
     parsers::{parser, SessionCandidate},
     search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
@@ -138,7 +138,9 @@ impl TraceDb {
                 failures,
             });
         }
-        Ok(IngestReport { agents: reports })
+        let report = IngestReport { agents: reports };
+        store::record_ingest_status(&self.connection, &report)?;
+        Ok(report)
     }
 
     /// Discover and parse sessions without mutating the selected archive.
@@ -831,7 +833,14 @@ pub fn doctor_archive(path: impl AsRef<Path>) -> DoctorReport {
     } else {
         TokenizerKind::Unicode61
     };
-    doctor_with_roots(path.as_ref(), roots, tokenizer, extension)
+    doctor_with_roots(
+        path.as_ref(),
+        roots,
+        tokenizer,
+        extension,
+        DEFAULT_WATCH_INTERVAL_SECONDS,
+        DEFAULT_WATCH_DEBOUNCE_MS,
+    )
 }
 
 /// Inspect readiness using the database, agents, and tokenizer in a resolved config.
@@ -847,6 +856,8 @@ pub fn doctor_configured(config: &TraceDbConfig) -> DoctorReport {
         roots,
         config.tokenizer,
         config.tokenizer_extension.clone(),
+        config.watch_interval_seconds,
+        config.watch_debounce_ms,
     )
 }
 
@@ -855,26 +866,37 @@ fn doctor_with_roots(
     roots: Vec<(Agent, PathBuf)>,
     tokenizer_kind: TokenizerKind,
     tokenizer_extension: Option<PathBuf>,
+    watch_interval_seconds: u64,
+    watch_debounce_ms: u64,
 ) -> DoctorReport {
-    let database = doctor_database(path);
+    let mut latest_native_updated_at_ms = None;
     let mut agents = Vec::with_capacity(roots.len());
     for (agent, root) in roots {
         let parser = parser(agent);
-        let (discovered, failures) = if root.exists() {
+        let (discovered, latest_updated_at_ms, failures) = if root.exists() {
             match parser.discover(&root) {
-                Ok(discovery) => (
-                    discovery.candidates.len(),
-                    discovery
-                        .failures
-                        .into_iter()
-                        .map(|failure| DoctorFailure {
-                            locator: failure.locator,
-                            message: format!("{:#}", failure.error),
-                        })
-                        .collect(),
-                ),
+                Ok(discovery) => {
+                    let latest = discovery
+                        .candidates
+                        .iter()
+                        .filter_map(|candidate| candidate.updated_at_ms)
+                        .max();
+                    (
+                        discovery.candidates.len(),
+                        latest,
+                        discovery
+                            .failures
+                            .into_iter()
+                            .map(|failure| DoctorFailure {
+                                locator: failure.locator,
+                                message: format!("{:#}", failure.error),
+                            })
+                            .collect(),
+                    )
+                }
                 Err(error) => (
                     0,
+                    None,
                     vec![DoctorFailure {
                         locator: root.display().to_string(),
                         message: format!("{error:#}"),
@@ -882,8 +904,9 @@ fn doctor_with_roots(
                 ),
             }
         } else {
-            (0, Vec::new())
+            (0, None, Vec::new())
         };
+        latest_native_updated_at_ms = latest_native_updated_at_ms.max(latest_updated_at_ms);
         agents.push(DoctorAgent {
             agent,
             root: root.clone(),
@@ -894,9 +917,13 @@ fn doctor_with_roots(
                 root.read_dir().is_ok()
             },
             discovered,
+            latest_updated_at_ms,
             failures,
         });
     }
+    let database = doctor_database(path, latest_native_updated_at_ms);
+    let watch = doctor_watch(&agents, watch_interval_seconds, watch_debounce_ms);
+    let permissions = doctor_permissions(&database, &agents);
     let tokenizer = match (tokenizer_kind, tokenizer_extension) {
         (TokenizerKind::Jieba, Some(extension)) => match store::probe_jieba_extension(&extension) {
             Ok(()) => DoctorTokenizer {
@@ -932,12 +959,20 @@ fn doctor_with_roots(
             .is_none_or(|report| report.passed)
         && database.writable
         && tokenizer.available
-        && agents.iter().all(|agent| agent.failures.is_empty());
+        && agents.iter().all(|agent| agent.failures.is_empty())
+        && database
+            .last_ingest
+            .as_ref()
+            .is_none_or(|status| status.failed == 0)
+        && permissions.healthy
+        && watch.ready;
     DoctorReport {
         healthy,
         database,
         agents,
         tokenizer,
+        permissions,
+        watch,
         runtime: DoctorRuntime {
             tracedb_version: env!("CARGO_PKG_VERSION").into(),
             sqlite_version: rusqlite::version().into(),
@@ -947,7 +982,7 @@ fn doctor_with_roots(
     }
 }
 
-fn doctor_database(path: &Path) -> DoctorDatabase {
+fn doctor_database(path: &Path, latest_native_updated_at_ms: Option<i64>) -> DoctorDatabase {
     let exists = path.exists();
     let ancestor = path
         .parent()
@@ -973,15 +1008,33 @@ fn doctor_database(path: &Path) -> DoctorDatabase {
             writable,
             verification: None,
             error: None,
+            last_ingest: None,
+            archive_lag_ms: None,
+            backup: DoctorBackup::not_created(),
         };
     }
     match verify_archive(path) {
-        Ok(verification) => DoctorDatabase {
-            path: path.to_path_buf(),
-            exists,
-            writable,
-            verification: Some(verification),
-            error: None,
+        Ok(verification) => match doctor_database_metrics(path, latest_native_updated_at_ms) {
+            Ok(metrics) => DoctorDatabase {
+                path: path.to_path_buf(),
+                exists,
+                writable,
+                verification: Some(verification),
+                error: None,
+                last_ingest: metrics.last_ingest,
+                archive_lag_ms: metrics.archive_lag_ms,
+                backup: metrics.backup,
+            },
+            Err(error) => DoctorDatabase {
+                path: path.to_path_buf(),
+                exists,
+                writable,
+                verification: Some(verification),
+                error: Some(format!("inspect archive telemetry: {error:#}")),
+                last_ingest: None,
+                archive_lag_ms: None,
+                backup: DoctorBackup::unavailable(),
+            },
         },
         Err(error) => DoctorDatabase {
             path: path.to_path_buf(),
@@ -989,7 +1042,98 @@ fn doctor_database(path: &Path) -> DoctorDatabase {
             writable,
             verification: None,
             error: Some(format!("{error:#}")),
+            last_ingest: None,
+            archive_lag_ms: None,
+            backup: DoctorBackup::unavailable(),
         },
+    }
+}
+
+struct DoctorDatabaseMetrics {
+    last_ingest: Option<DoctorIngestStatus>,
+    archive_lag_ms: Option<i64>,
+    backup: DoctorBackup,
+}
+
+fn doctor_database_metrics(
+    path: &Path,
+    latest_native_updated_at_ms: Option<i64>,
+) -> Result<DoctorDatabaseMetrics> {
+    let connection = store::open_for_verification(path)?;
+    let last_ingest = store::ingest_status(&connection)?.map(DoctorIngestStatus::from);
+    let full_sessions = connection.query_row(
+        "SELECT count(*) FROM sessions WHERE mode='full'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let total_sessions = connection.query_row("SELECT count(*) FROM sessions", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    Ok(DoctorDatabaseMetrics {
+        archive_lag_ms: latest_native_updated_at_ms
+            .zip(last_ingest.as_ref().map(|status| status.completed_at_ms))
+            .map(|(native, completed)| (native - completed).max(0)),
+        last_ingest,
+        backup: DoctorBackup::from_counts(total_sessions, full_sessions),
+    })
+}
+
+fn doctor_permissions(database: &DoctorDatabase, agents: &[DoctorAgent]) -> DoctorPermissions {
+    let mut issues = Vec::new();
+    if !database.writable {
+        issues.push(format!(
+            "archive is not writable: {}",
+            database.path.display()
+        ));
+    }
+    for agent in agents {
+        if agent.exists && !agent.readable {
+            issues.push(format!(
+                "native root is not readable: {}",
+                agent.root.display()
+            ));
+        }
+    }
+    DoctorPermissions {
+        healthy: issues.is_empty(),
+        archive_readable: database.exists && database.error.is_none(),
+        archive_writable: database.writable,
+        native_readable: agents.iter().all(|agent| !agent.exists || agent.readable),
+        issues,
+    }
+}
+
+fn doctor_watch(agents: &[DoctorAgent], interval_seconds: u64, debounce_ms: u64) -> DoctorWatch {
+    let mut issues = Vec::new();
+    if interval_seconds == 0 {
+        issues.push("watch interval must be greater than zero".into());
+    }
+    if debounce_ms == 0 {
+        issues.push("watch debounce must be greater than zero".into());
+    }
+    let watcher = notify::recommended_watcher(|_event: notify::Result<notify::Event>| {});
+    let mut watcher_available = false;
+    match watcher {
+        Ok(mut watcher) => {
+            for agent in agents {
+                if !agent.exists {
+                    continue;
+                }
+                match watcher.watch(&agent.root, notify::RecursiveMode::Recursive) {
+                    Ok(()) => watcher_available = true,
+                    Err(error) => issues.push(format!("watch {}: {}", agent.root.display(), error)),
+                }
+            }
+        }
+        Err(error) => issues.push(format!("create filesystem watcher: {error}")),
+    }
+    DoctorWatch {
+        ready: interval_seconds > 0 && debounce_ms > 0,
+        watcher_available,
+        fallback_only: !watcher_available,
+        interval_seconds,
+        debounce_ms,
+        issues,
     }
 }
 
@@ -1346,6 +1490,9 @@ pub struct DoctorDatabase {
     pub writable: bool,
     pub verification: Option<VerifyReport>,
     pub error: Option<String>,
+    pub last_ingest: Option<DoctorIngestStatus>,
+    pub archive_lag_ms: Option<i64>,
+    pub backup: DoctorBackup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1356,7 +1503,100 @@ pub struct DoctorAgent {
     pub exists: bool,
     pub readable: bool,
     pub discovered: usize,
+    pub latest_updated_at_ms: Option<i64>,
     pub failures: Vec<DoctorFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorIngestStatus {
+    pub successful: bool,
+    pub completed_at_ms: i64,
+    pub discovered: usize,
+    pub ingested: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub cumulative_failed: usize,
+}
+
+impl From<store::StoredIngestStatus> for DoctorIngestStatus {
+    fn from(status: store::StoredIngestStatus) -> Self {
+        Self {
+            successful: status.failed == 0,
+            completed_at_ms: status.completed_at_ms,
+            discovered: status.discovered,
+            ingested: status.ingested,
+            skipped: status.skipped,
+            failed: status.failed,
+            cumulative_failed: status.cumulative_failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorBackup {
+    pub recommended: bool,
+    pub full_capture_sessions: i64,
+    pub total_sessions: i64,
+    pub reason: String,
+}
+
+impl DoctorBackup {
+    fn not_created() -> Self {
+        Self {
+            recommended: false,
+            full_capture_sessions: 0,
+            total_sessions: 0,
+            reason: "archive has not been created".into(),
+        }
+    }
+
+    fn unavailable() -> Self {
+        Self {
+            recommended: true,
+            full_capture_sessions: 0,
+            total_sessions: 0,
+            reason: "archive could not be inspected for backup guidance".into(),
+        }
+    }
+
+    fn from_counts(total_sessions: i64, full_capture_sessions: i64) -> Self {
+        let reason = if full_capture_sessions > 0 {
+            "full native snapshots are present; back up the archive to preserve exact reconstruction"
+        } else if total_sessions > 0 {
+            "archive is rebuildable from native stores, but a backup protects indexed history"
+        } else {
+            "archive contains no sessions yet"
+        };
+        Self {
+            recommended: total_sessions > 0,
+            full_capture_sessions,
+            total_sessions,
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorPermissions {
+    pub healthy: bool,
+    pub archive_readable: bool,
+    pub archive_writable: bool,
+    pub native_readable: bool,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorWatch {
+    pub ready: bool,
+    pub watcher_available: bool,
+    pub fallback_only: bool,
+    pub interval_seconds: u64,
+    pub debounce_ms: u64,
+    pub issues: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1384,6 +1624,8 @@ pub struct DoctorReport {
     pub database: DoctorDatabase,
     pub agents: Vec<DoctorAgent>,
     pub tokenizer: DoctorTokenizer,
+    pub permissions: DoctorPermissions,
+    pub watch: DoctorWatch,
     pub runtime: DoctorRuntime,
 }
 
