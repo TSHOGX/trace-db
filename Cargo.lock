@@ -2182,6 +2182,7 @@ dependencies = [
  "filetime",
  "globset",
  "hex",
+ "libc",
  "notify",
  "prost",
  "protoc-bin-vendored",
@@ -2197,6 +2198,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "walkdir",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 

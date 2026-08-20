@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "trace-db"
 path = "src/main.rs"
 
+[[bin]]
+name = "trace-db-bench"
+path = "src/bin/trace-db-bench.rs"
+
 [workspace]
 members = ["native/fts5-jieba", "bindings/python", "bindings/node"]
 default-members = [".", "native/fts5-jieba"]
@@ -43,6 +47,12 @@ tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.12", features = ["transport"] }
 walkdir = "2.5"
 zstd = "0.13"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

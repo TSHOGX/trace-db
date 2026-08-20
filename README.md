@@ -51,11 +51,13 @@ trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 trace-db verify --json
 trace-db doctor --json
+trace-db-bench --sessions 1k,10k,100k --json
 ```
 
 Tagged releases publish archives for x86-64 and ARM64 Linux, x86-64 and ARM64
-macOS, and x86-64 Windows. Each archive contains the CLI, the optional
-`fts5-jieba` extension, the `tracedb.v1` Protobuf contract, README, and license.
+macOS, and x86-64 Windows. Each archive contains the CLI, deterministic
+benchmark harness, optional `fts5-jieba` extension, the `tracedb.v1` Protobuf
+contract, README, and license.
 The same release also attaches ABI3 Python wheels and target-labeled Node.js
 package tarballs for all five targets. These are GitHub release artifacts, not
 automatic PyPI or npm registry publications. `SHA256SUMS` covers every attached
@@ -230,6 +232,28 @@ rebuildable partial archives, and archives containing full native snapshots;
 full captures receive the strongest recommendation because the archive may be
 the only exact reconstruction source. A failed most-recent ingest makes doctor
 unhealthy while preserving all detailed counts in its JSON report.
+
+## Deterministic benchmarks
+
+`trace-db-bench` generates isolated, deterministic Codex JSONL datasets and
+runs the canonical Rust facade through first partial ingest, unchanged ingest,
+a deterministic 1% changed ingest, full-capture upgrade, search, list, show,
+stats, reindex, verify, and reconstruction. The standard suite covers 1,000,
+10,000, and 100,000 sessions; smaller custom counts are useful while developing:
+
+```bash
+cargo run --release --bin trace-db-bench -- --sessions 1k --out target/bench-1k
+cargo run --release --bin trace-db-bench -- --sessions 1k,10k,100k --json > report.json
+```
+
+Every operation reports wall and CPU time, process peak RSS, database size
+including SQLite WAL/SHM sidecars, physical process write bytes where the host
+exposes them, logical source bytes, and write amplification. Write amplification
+is physical process write bytes divided by source bytes parsed or captured in
+that ingest phase. It is `null` for unchanged/read-only operations and hosts
+without a physical-write counter. The JSON contract is versioned as
+`tracedb-benchmark-v1`; CPU/write values are process deltas while peak RSS is a
+process-lifetime high-water mark.
 
 ## Native stores and data model
 

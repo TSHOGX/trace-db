@@ -14,6 +14,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $Stage "proto/tracedb/v1") -Force | Out-Null
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     Copy-Item (Join-Path $Root "target/$Target/release/trace-db.exe") (Join-Path $Stage "trace-db.exe")
+    Copy-Item (Join-Path $Root "target/$Target/release/trace-db-bench.exe") (Join-Path $Stage "trace-db-bench.exe")
     Copy-Item (Join-Path $Root "target/$Target/release/fts5jieba.dll") $Stage
     Copy-Item (Join-Path $Root "README.md") $Stage
     Copy-Item (Join-Path $Root "LICENSE") $Stage

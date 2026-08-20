@@ -19,6 +19,9 @@ src/
   lib.rs          crate exports and database path resolution
   facade.rs       typed TraceDb lifecycle and request/result API
                   watch loop with notification and periodic fallback
+  benchmark.rs    deterministic native fixtures, lifecycle runner, and metrics
+  bin/
+    trace-db-bench.rs  standalone text/JSON benchmark interface
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance

@@ -6,6 +6,7 @@
 mod facade;
 pub mod service;
 
+pub mod benchmark;
 pub mod config;
 pub mod model;
 pub mod parsers;

@@ -336,8 +336,11 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     let contract_failures = verify_contract(connection)?;
     checks.push(VerifyCheck::new("archive_contract", 3, contract_failures));
 
-    let fts_failures = match connection.execute(
-        "INSERT INTO events_fts(events_fts,rank) VALUES('integrity-check',1)",
+    // Rank 0 checks the FTS shadow tables without comparing every row in the
+    // external content table. TraceDB intentionally indexes only searchable
+    // event kinds, so the rank-1 full-content comparison is not applicable.
+    let mut fts_failures = match connection.execute(
+        "INSERT INTO events_fts(events_fts,rank) VALUES('integrity-check',0)",
         [],
     ) {
         Ok(_) => Vec::new(),
@@ -351,6 +354,31 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
         [],
         |row| row.get::<_, usize>(0),
     )?;
+    let indexed_events =
+        connection.query_row("SELECT count(*) FROM events_fts_docsize", [], |row| {
+            row.get::<_, usize>(0)
+        })?;
+    if indexed_events != searchable_events {
+        fts_failures.push(VerificationFailure {
+            locator: "events_fts".into(),
+            message: format!(
+                "indexed document count mismatch: expected {searchable_events}, found {indexed_events}"
+            ),
+        });
+    }
+    let excluded_events = connection.query_row(
+        "SELECT count(*) FROM events_fts_docsize f
+         JOIN events e ON e.id=f.id
+         WHERE e.kind IN ('tool_result','usage')",
+        [],
+        |row| row.get::<_, usize>(0),
+    )?;
+    if excluded_events != 0 {
+        fts_failures.push(VerificationFailure {
+            locator: "events_fts".into(),
+            message: format!("index contains {excluded_events} excluded event(s)"),
+        });
+    }
     checks.push(VerifyCheck::new(
         "fts_consistency",
         searchable_events,
@@ -614,7 +642,30 @@ fn store_object(tx: &Transaction<'_>, bytes: &[u8]) -> Result<Option<String>> {
 }
 
 pub fn rebuild_fts(conn: &Connection) -> Result<()> {
-    conn.execute_batch("INSERT INTO events_fts(events_fts) VALUES('delete-all'); INSERT INTO events_fts(rowid,text) SELECT id,text FROM events WHERE kind NOT IN ('tool_result','usage');")?;
+    let tokenizer: String = conn.query_row(
+        "SELECT value FROM schema_meta WHERE key='tokenizer'",
+        [],
+        |row| row.get(0),
+    )?;
+    if tokenizer != PORTABLE_TOKENIZER && tokenizer != JIEBA_TOKENIZER {
+        anyhow::bail!("unsupported stored tokenizer: {tokenizer}");
+    }
+    // Recreate the virtual table transactionally because external-content
+    // FTS5's generic rebuild command would index tool-result and usage rows.
+    let rebuild = conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         DROP TABLE events_fts;
+         CREATE VIRTUAL TABLE events_fts USING fts5(
+           text, content='events', content_rowid='id', tokenize='{tokenizer}'
+         );
+         INSERT INTO events_fts(rowid,text)
+         SELECT id,text FROM events WHERE kind NOT IN ('tool_result','usage');
+         COMMIT;"
+    ));
+    if let Err(error) = rebuild {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -695,14 +746,14 @@ pub fn reconstruct(
         }
     }
     let mut written = Vec::with_capacity(planned.len());
-    for (target, bytes, mtime_ns, source_mode) in planned {
+    for (target, bytes, mtime_ns, _source_mode) in planned {
         let parent = target.parent().unwrap_or(out_dir);
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .with_context(|| format!("create temporary restore file in {}", parent.display()))?;
         temporary.write_all(&bytes)?;
         temporary.as_file_mut().sync_all()?;
         #[cfg(unix)]
-        if let Some(source_mode) = source_mode {
+        if let Some(source_mode) = _source_mode {
             use std::os::unix::fs::PermissionsExt;
             temporary
                 .as_file()
@@ -1097,6 +1148,22 @@ mod tests {
             .unwrap(),
             0
         );
+        rebuild_fts(&conn).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM events_fts WHERE events_fts MATCH 'secret'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        conn.execute(
+            "INSERT INTO events_fts(events_fts,rank) VALUES('integrity-check',0)",
+            [],
+        )
+        .unwrap();
+        assert!(verify(&conn, &db_path).unwrap().passed);
     }
 
     #[test]
