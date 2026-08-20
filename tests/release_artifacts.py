@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERIFY = ROOT / "scripts/verify-release-package.py"
+VERIFY_SUMS = ROOT / "scripts/verify-sha256sums.py"
 INSTALL = ROOT / "scripts/install-release.sh"
 VERSION = "9.8.7"
 
@@ -39,6 +40,39 @@ def add_tar_file(archive: tarfile.TarFile, name: str, data: bytes, mode: int = 0
 
 
 class ReleaseArtifactTests(unittest.TestCase):
+    def test_sha256_manifest_covers_and_verifies_every_asset(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tracedb-checksums-") as directory:
+            root = Path(directory)
+            assets = {"trace-db-9.8.7.tar.gz": b"archive", "tracedb-9.8.7.whl": b"wheel"}
+            for name, data in assets.items():
+                (root / name).write_bytes(data)
+            (root / "SHA256SUMS").write_text(
+                "".join(
+                    f"{hashlib.sha256(data).hexdigest()}  {name}\n"
+                    for name, data in assets.items()
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["python3", str(VERIFY_SUMS), str(root)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            (root / "tracedb-9.8.7.whl").write_bytes(b"tampered")
+            result = subprocess.run(
+                ["python3", str(VERIFY_SUMS), str(root)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("digest mismatch", result.stderr)
+
     def test_native_wheel_and_node_shapes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="tracedb-artifacts-") as directory:
             root = Path(directory)

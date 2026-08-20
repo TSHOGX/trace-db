@@ -138,6 +138,8 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS
+      - name: Verify checksums
+        run: python scripts/verify-sha256sums.py dist
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/*
