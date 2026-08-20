@@ -1,8 +1,9 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Event, EventKind, IngestErrorCategory, IngestMode, IngestRequest, IngestStage,
-    ParsedSession, SearchRequest, Session, ShowRequest, TraceDb,
+    Agent, Capture, ConfigOverrides, Event, EventKind, IngestErrorCategory, IngestMode,
+    IngestRequest, IngestStage, NativeSource, ParsedSession, SearchRequest, Session, ShowRequest,
+    TraceDb, TraceDbConfig,
 };
 
 #[test]
@@ -278,6 +279,64 @@ fn gc_dry_run_reports_orphan_objects_without_mutation() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn privacy_redacts_normalized_values_but_preserves_full_capture_bytes() {
+    let dir = tempdir().unwrap();
+    let config = TraceDbConfig::load(ConfigOverrides {
+        database_path: Some(dir.path().join("privacy.db")),
+        redact_patterns: Some(vec![r"alice@example\.com".into()]),
+        ..ConfigOverrides::default()
+    })
+    .unwrap();
+    let mut database = TraceDb::open_configured(&config).unwrap();
+    let raw = b"Authorization: Bearer raw-secret\n".to_vec();
+    database
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:privacy".into(),
+                    agent: Agent::Codex,
+                    cwd: Some("/workspace".into()),
+                    started_at_ms: Some(1),
+                    ended_at_ms: Some(2),
+                    title: Some("alice@example.com incident".into()),
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: serde_json::json!({"contact":"alice@example.com"}),
+                    fingerprint: "privacy-v1".into(),
+                    sources: vec![NativeSource {
+                        locator: "privacy.raw".into(),
+                        kind: "jsonl".into(),
+                        restore_path: "privacy.raw".into(),
+                        role: None,
+                        bytes: Some(raw.len() as i64),
+                        mtime_ns: None,
+                        mode: None,
+                        capture: Some(Capture::Bytes {
+                            label: "privacy".into(),
+                            bytes: raw.clone(),
+                        }),
+                    }],
+                },
+                events: vec![Event::new(
+                    EventKind::User,
+                    "contact alice@example.com token=normalized-secret",
+                )],
+            },
+            IngestMode::Full,
+        )
+        .unwrap();
+    let trace = database.show("codex:privacy").unwrap().unwrap();
+    assert_eq!(trace.session.title.as_deref(), Some("[REDACTED] incident"));
+    assert_eq!(trace.events[0].text, "contact [REDACTED] [REDACTED]");
+    let output = dir.path().join("restore");
+    database.reconstruct("codex:privacy", &output).unwrap();
+    assert_eq!(std::fs::read(output.join("privacy.raw")).unwrap(), raw);
 }
 
 #[test]

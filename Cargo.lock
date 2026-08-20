@@ -2186,6 +2186,7 @@ dependencies = [
  "notify",
  "prost",
  "protoc-bin-vendored",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

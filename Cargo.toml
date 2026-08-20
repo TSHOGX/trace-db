@@ -39,6 +39,7 @@ globset = "0.4"
 hex = "0.4"
 prost = "0.13"
 rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

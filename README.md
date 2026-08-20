@@ -85,6 +85,7 @@ capture_mode = "partial"
 exclude = ["**/private/**", "**/scratch-*"]
 tokenizer = "unicode61"
 output_format = "text"
+redact_patterns = ["customer@example\\.com", "(?i)internal-project-[0-9]+"]
 watch_interval_seconds = 300
 watch_debounce_ms = 1000
 ```
@@ -97,8 +98,9 @@ candidates are reported as skipped and are never parsed or archived.
 Configuration precedence is CLI > environment > TOML file > built-in default.
 The environment variables are `TRACEDB_PATH`, `TRACEDB_AGENTS`,
 `TRACEDB_CAPTURE_MODE`, `TRACEDB_EXCLUDE`, `TRACEDB_TOKENIZER`,
-`TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_WATCH_INTERVAL`, and
-`TRACEDB_WATCH_DEBOUNCE`; agent and exclusion lists are comma-separated. The
+`TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_REDACT_PATTERNS`,
+`TRACEDB_WATCH_INTERVAL`, and `TRACEDB_WATCH_DEBOUNCE`; agent and exclusion
+lists are comma-separated, while redact patterns are semicolon-separated. The
 built-in database path is the platform data directory at
 `trace-db/trace.db`, agents default to all five supported agents, capture mode
 defaults to `partial`, output defaults to `text`, and watch timing defaults to
@@ -167,6 +169,14 @@ portable archive file.
 objects and their stored payload bytes. It never deletes objects; omitting
 `--dry-run` is rejected until an explicit deletion policy and recovery workflow
 are defined.
+
+Privacy boundaries are explicit. Built-in credential patterns and configured
+`redact_patterns` apply when normalized sessions/events are stored; the raw
+full-capture object remains byte-identical for exact reconstruction. Search
+snippets also apply presentation redaction. Set `TRACEDB_REDACT_PATTERNS` to a
+semicolon-separated list, or pass repeatable global `--redact-pattern` flags;
+CLI values override environment and config-file values. Invalid expressions
+are rejected before an ingest starts.
 
 For a versioned cross-language boundary, `trace-db serve` exposes the
 `tracedb.v1` gRPC service over loopback TCP or a Unix domain socket. The

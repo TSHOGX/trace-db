@@ -1,6 +1,7 @@
 use crate::model::{Agent, IngestMode};
 use anyhow::{bail, Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -22,6 +23,7 @@ pub struct TraceDbConfig {
     pub default_agents: Vec<Agent>,
     pub capture_mode: IngestMode,
     pub exclude: Vec<String>,
+    pub redact_patterns: Vec<String>,
     pub tokenizer: TokenizerKind,
     pub tokenizer_extension: Option<PathBuf>,
     pub output_format: OutputFormat,
@@ -37,6 +39,7 @@ pub struct ConfigOverrides {
     pub default_agents: Option<Vec<Agent>>,
     pub capture_mode: Option<IngestMode>,
     pub exclude: Option<Vec<String>>,
+    pub redact_patterns: Option<Vec<String>>,
     pub tokenizer: Option<TokenizerKind>,
     pub tokenizer_extension: Option<PathBuf>,
     pub output_format: Option<OutputFormat>,
@@ -109,6 +112,7 @@ struct ConfigFile {
     default_agents: Option<Vec<Agent>>,
     capture_mode: Option<IngestMode>,
     exclude: Option<Vec<String>>,
+    redact_patterns: Option<Vec<String>>,
     tokenizer: Option<TokenizerKind>,
     tokenizer_extension: Option<PathBuf>,
     output_format: Option<OutputFormat>,
@@ -154,6 +158,7 @@ impl TraceDbConfig {
             default_agents: Agent::ALL.to_vec(),
             capture_mode: IngestMode::Partial,
             exclude: Vec::new(),
+            redact_patterns: Vec::new(),
             tokenizer: TokenizerKind::Unicode61,
             tokenizer_extension: None,
             output_format: OutputFormat::Text,
@@ -179,6 +184,9 @@ impl TraceDbConfig {
         }
         if let Some(exclude) = file.exclude {
             self.exclude = exclude;
+        }
+        if let Some(patterns) = file.redact_patterns {
+            self.redact_patterns = patterns;
         }
         apply_tokenizer_layer(
             &mut self.tokenizer,
@@ -210,6 +218,14 @@ impl TraceDbConfig {
         }
         if let Some(value) = env_string("TRACEDB_EXCLUDE")? {
             self.exclude = split_csv(&value);
+        }
+        if let Some(value) = env_string("TRACEDB_REDACT_PATTERNS")? {
+            self.redact_patterns = value
+                .split(';')
+                .map(str::trim)
+                .filter(|pattern| !pattern.is_empty())
+                .map(str::to_owned)
+                .collect();
         }
         let tokenizer = env_string("TRACEDB_TOKENIZER")?
             .map(|value| value.parse().map_err(anyhow::Error::msg))
@@ -246,6 +262,9 @@ impl TraceDbConfig {
         if let Some(exclude) = overrides.exclude {
             self.exclude = exclude;
         }
+        if let Some(patterns) = overrides.redact_patterns {
+            self.redact_patterns = patterns;
+        }
         apply_tokenizer_layer(
             &mut self.tokenizer,
             &mut self.tokenizer_extension,
@@ -270,6 +289,9 @@ impl TraceDbConfig {
         let mut seen = HashSet::new();
         self.default_agents.retain(|agent| seen.insert(*agent));
         ExcludeMatcher::new(&self.exclude)?;
+        for pattern in &self.redact_patterns {
+            Regex::new(pattern).with_context(|| format!("invalid redact pattern {pattern:?}"))?;
+        }
         match self.tokenizer {
             TokenizerKind::Unicode61 if self.tokenizer_extension.is_some() => {
                 bail!("tokenizer_extension requires tokenizer = \"jieba\"")

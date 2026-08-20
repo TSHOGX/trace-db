@@ -26,6 +26,7 @@ src/
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance
+  privacy.rs      normalized credential and user-regex redaction policy
   store.rs        SQLite schema, upsert, FTS, search, reconstruction
   parsers/
     mod.rs        parser trait and registry
@@ -55,6 +56,12 @@ the completed file, and verifies the published archive before returning.
 `TraceDb::gc(true)` reports unreferenced content-addressed object payloads. The
 current lifecycle contract is deliberately dry-run-only: object deletion is not
 performed until recovery, retention, and crash-safety semantics are specified.
+
+Privacy is applied at the normalized ingest boundary. Built-in credential
+patterns and configured regular expressions redact session metadata, event
+fields, and structured event data before SQLite upsert; full-capture bytes are
+stored separately and remain exact. Search snippets have an additional
+presentation-only redaction pass.
 
 ## Runtime configuration
 

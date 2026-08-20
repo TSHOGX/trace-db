@@ -41,6 +41,11 @@ Reconstruction is disabled unless the server starts with
 `--reconstruct-root PATH`. Clients then provide only a safe relative
 `out_dir`; absolute paths and parent traversal are rejected.
 
+Normalized privacy redaction happens before archive writes and therefore applies
+equally to CLI, gRPC, and language bindings. Raw full-capture objects are not
+redacted and are only exposed through explicit reconstruction. Search snippets
+may redact again for presentation.
+
 ## Methods
 
 | Method | Behavior |
