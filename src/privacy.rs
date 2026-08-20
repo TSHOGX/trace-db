@@ -21,16 +21,11 @@ pub(crate) struct Redactor {
 
 impl Redactor {
     pub(crate) fn new(user_patterns: &[String]) -> anyhow::Result<Self> {
-        let mut patterns = BUILTIN_PATTERNS
+        let patterns = BUILTIN_PATTERNS
             .iter()
-            .map(|pattern| Regex::new(pattern).expect("built-in privacy pattern must compile"))
-            .collect::<Vec<_>>();
-        patterns.extend(
-            user_patterns
-                .iter()
-                .map(|pattern| Regex::new(pattern))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+            .map(|pattern| Regex::new(pattern))
+            .chain(user_patterns.iter().map(|pattern| Regex::new(pattern)))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { patterns })
     }
 

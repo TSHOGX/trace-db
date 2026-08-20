@@ -1234,7 +1234,7 @@ fn execute_api_request(
             let kinds = match request.get("kind") {
                 Some(value) if value.is_array() => value
                     .as_array()
-                    .expect("checked array")
+                    .ok_or_else(|| ApiFailure::invalid("show kind must be an array"))?
                     .iter()
                     .map(|value| {
                         value
@@ -1246,7 +1246,7 @@ fn execute_api_request(
                     .collect::<Result<Vec<_>, _>>()?,
                 Some(value) if value.is_string() => value
                     .as_str()
-                    .expect("checked string")
+                    .ok_or_else(|| ApiFailure::invalid("show kind must be a string"))?
                     .split(',')
                     .filter(|kind| !kind.trim().is_empty())
                     .map(|kind| {
