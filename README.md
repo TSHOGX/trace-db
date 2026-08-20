@@ -369,11 +369,13 @@ The SQLite schema records its version, archive contract, and selected tokenizer
 in `schema_meta`. Full native snapshots live in a content-addressed `objects`
 table and are referenced by `raw_sources`.
 
-OpenCode full capture restores two artifacts: a minimal native-importable
-`<session>.db` containing `schema_meta`, `session`, `message`, and `part` rows,
-plus a portable `<session>.json` fallback envelope. The native bundle is
-versioned as `opencode-native-session-v1`; compatibility with a specific future
-OpenCode release still requires verification against that release's schema.
+OpenCode full capture restores two artifacts: a native-importable
+`<session>.db` cloned from the source schema and migration journal, containing
+only the selected project/workspace/session/message/part rows, plus a portable
+`<session>.json` fallback envelope. The native bundle is tagged
+`opencode-native-session-v1` and should be checked with
+`scripts/verify-opencode-compat.py` against the OpenCode release that will read
+it; compatibility with future migrations is not implied.
 
 ## Search
 
