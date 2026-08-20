@@ -46,6 +46,7 @@ trace-db ingest
 trace-db ingest --dry-run --json
 trace-db ingest --mode full --agent codex
 trace-db ingest --strict --json
+trace-db watch --json
 trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 trace-db verify --json
@@ -114,6 +115,7 @@ trace-db stats [--json]
 trace-db verify [--json]
 trace-db doctor [--json]
 trace-db config [--json]
+trace-db watch [--agent A[,A...]] [--mode partial|full] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
 trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PATH]
 ```
@@ -195,6 +197,24 @@ const trace = db.show(rows[0].id);
 Both bindings cover ingest, search, show, stats, reindex, and full-capture
 reconstruction. Methods ending in `Json`/`_json` remain available when callers
 prefer to avoid an intermediate object conversion.
+
+## Long-running watch
+
+`trace-db watch` performs an immediate startup ingest, then coalesces native
+filesystem notifications using the configured debounce and runs a periodic
+fallback scan at the configured interval. It waits briefly for changed files
+to become stable before parsing and continues with best-effort per-candidate
+errors. If filesystem notifications are unavailable or the watcher channel
+closes, periodic scans continue. Press Ctrl-C for a clean shutdown.
+
+Human output is written as concise run summaries, with watcher and ingest
+issues on stderr. `--json` (or `output_format = "json"`) writes one JSON event
+per line followed by a final summary object, with no progress text mixed into
+stdout. `--once` runs only the startup ingest and exits, which is useful for
+launch probes and automation tests.
+
+For service-manager examples covering launchd, systemd user services, and
+Windows Task Scheduler, see [`references/watch.md`](references/watch.md).
 
 ## Native stores and data model
 

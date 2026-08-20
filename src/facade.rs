@@ -5,11 +5,16 @@ use crate::{
     search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
 };
 use anyhow::{anyhow, Result};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
+    time::{Duration, Instant},
 };
 
 /// An open TraceDB archive.
@@ -192,6 +197,164 @@ impl TraceDb {
         })
     }
 
+    /// Watch native stores, ingesting on startup, filesystem activity, and a
+    /// periodic fallback interval until the caller requests shutdown.
+    pub fn watch(
+        &mut self,
+        request: WatchRequest,
+        stop: &AtomicBool,
+        observer: &mut dyn FnMut(WatchEvent) -> Result<()>,
+    ) -> Result<WatchSummary> {
+        request.validate()?;
+        let (events, mut watcher, watcher_available, mut issues) =
+            build_watch_channel(&request.ingest, observer)?;
+        let mut run_count = 0;
+        Self::emit_watch_run(
+            self,
+            &request,
+            WatchTrigger::Startup,
+            observer,
+            &mut issues,
+            &mut run_count,
+        )?;
+        if request.once {
+            drop(watcher.take());
+            return Ok(WatchSummary {
+                runs: run_count,
+                stopped: false,
+                watcher_available,
+                issues,
+            });
+        }
+
+        let interval = Duration::from_secs(request.interval_seconds);
+        let debounce = Duration::from_millis(request.debounce_ms);
+        let mut next_periodic = Instant::now() + interval;
+        let mut pending_paths = Vec::new();
+        let mut pending_deadline: Option<Instant> = None;
+        let mut watch_channel_open = true;
+        while !stop.load(Ordering::Relaxed) {
+            let now = Instant::now();
+            let deadline =
+                pending_deadline.map_or(next_periodic, |pending| pending.min(next_periodic));
+            let timeout = deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(250));
+            if !watch_channel_open {
+                thread::sleep(timeout);
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                if next_periodic <= Instant::now() {
+                    Self::emit_watch_run(
+                        self,
+                        &request,
+                        WatchTrigger::Periodic,
+                        observer,
+                        &mut issues,
+                        &mut run_count,
+                    )?;
+                    next_periodic = Instant::now() + interval;
+                }
+                continue;
+            }
+            match events.recv_timeout(timeout) {
+                Ok(Ok(event)) => {
+                    if is_relevant_watch_event(&event.kind) {
+                        pending_paths.extend(event.paths);
+                        pending_deadline = Some(Instant::now() + debounce);
+                    }
+                }
+                Ok(Err(error)) => {
+                    let issue = WatchIssue::watcher(format!("filesystem notification: {error}"));
+                    observer(WatchEvent::Issue(issue.clone()))?;
+                    issues.push(issue);
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let now = Instant::now();
+                    if pending_deadline.is_some_and(|deadline| deadline <= now) {
+                        if let Some(issue) = wait_for_stable_paths(&pending_paths, debounce) {
+                            observer(WatchEvent::Issue(issue.clone()))?;
+                            issues.push(issue);
+                        }
+                        pending_paths.clear();
+                        pending_deadline = None;
+                        Self::emit_watch_run(
+                            self,
+                            &request,
+                            WatchTrigger::Filesystem,
+                            observer,
+                            &mut issues,
+                            &mut run_count,
+                        )?;
+                        next_periodic = Instant::now() + interval;
+                    } else if next_periodic <= now {
+                        Self::emit_watch_run(
+                            self,
+                            &request,
+                            WatchTrigger::Periodic,
+                            observer,
+                            &mut issues,
+                            &mut run_count,
+                        )?;
+                        next_periodic = Instant::now() + interval;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let issue = WatchIssue::watcher("filesystem watcher channel closed");
+                    observer(WatchEvent::Issue(issue.clone()))?;
+                    issues.push(issue);
+                    watch_channel_open = false;
+                    Self::emit_watch_run(
+                        self,
+                        &request,
+                        WatchTrigger::Periodic,
+                        observer,
+                        &mut issues,
+                        &mut run_count,
+                    )?;
+                    next_periodic = Instant::now() + interval;
+                }
+            }
+        }
+        drop(watcher.take());
+        Ok(WatchSummary {
+            runs: run_count,
+            stopped: true,
+            watcher_available,
+            issues,
+        })
+    }
+
+    fn emit_watch_run(
+        db: &mut TraceDb,
+        request: &WatchRequest,
+        trigger: WatchTrigger,
+        observer: &mut dyn FnMut(WatchEvent) -> Result<()>,
+        issues: &mut Vec<WatchIssue>,
+        run_count: &mut usize,
+    ) -> Result<()> {
+        let started = Instant::now();
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        match db.ingest(request.ingest.clone()) {
+            Ok(report) => {
+                *run_count += 1;
+                observer(WatchEvent::Run(WatchRun {
+                    trigger,
+                    started_at_ms,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    report,
+                }))?;
+            }
+            Err(error) => {
+                let issue = WatchIssue::ingest(error);
+                observer(WatchEvent::Issue(issue.clone()))?;
+                issues.push(issue);
+            }
+        }
+        Ok(())
+    }
+
     fn scan_agent(
         &self,
         agent: Agent,
@@ -365,6 +528,223 @@ impl TraceDb {
     ) -> Result<Vec<PathBuf>> {
         store::reconstruct(&self.connection, session_id, out_dir.as_ref(), options)
     }
+}
+
+type WatchChannel = (
+    Receiver<notify::Result<notify::Event>>,
+    Option<RecommendedWatcher>,
+    bool,
+    Vec<WatchIssue>,
+);
+
+fn build_watch_channel(
+    request: &IngestRequest,
+    observer: &mut dyn FnMut(WatchEvent) -> Result<()>,
+) -> Result<WatchChannel> {
+    let (sender, receiver) = mpsc::channel();
+    let callback_sender = sender.clone();
+    let watcher = match notify::recommended_watcher(move |result| {
+        let _ = callback_sender.send(result);
+    }) {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            let issue = WatchIssue::watcher(format!("create filesystem watcher: {error}"));
+            observer(WatchEvent::Issue(issue.clone()))?;
+            return Ok((receiver, None, false, vec![issue]));
+        }
+    };
+    let mut watcher = watcher;
+    let mut issues = Vec::new();
+    let mut available = false;
+    let roots = if let Some(root) = &request.root {
+        vec![root.clone()]
+    } else if request.agents.is_empty() {
+        Agent::ALL.iter().copied().map(native_root).collect()
+    } else {
+        request.agents.iter().copied().map(native_root).collect()
+    };
+    let mut seen = std::collections::HashSet::new();
+    for root in roots {
+        if !seen.insert(root.clone()) {
+            continue;
+        }
+        let Some(watcher) = watcher.as_mut() else {
+            break;
+        };
+        match watcher.watch(&root, RecursiveMode::Recursive) {
+            Ok(()) => available = true,
+            Err(error) => {
+                let issue = WatchIssue::watcher(format!("watch {}: {error}", root.display()));
+                observer(WatchEvent::Issue(issue.clone()))?;
+                issues.push(issue);
+            }
+        }
+    }
+    Ok((receiver, watcher, available, issues))
+}
+
+fn is_relevant_watch_event(kind: &notify::EventKind) -> bool {
+    matches!(
+        kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Modify(_)
+            | notify::EventKind::Remove(_)
+            | notify::EventKind::Any
+    )
+}
+
+fn wait_for_stable_paths(paths: &[PathBuf], debounce: Duration) -> Option<WatchIssue> {
+    let paths = paths
+        .iter()
+        .filter(|path| !path.to_string_lossy().starts_with("watcher-error:"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return None;
+    }
+    let pause = debounce.min(Duration::from_millis(250));
+    if pause.is_zero() {
+        return None;
+    }
+    let before = paths
+        .iter()
+        .map(|path| metadata_signature(path))
+        .collect::<Vec<_>>();
+    thread::sleep(pause);
+    let after = paths
+        .iter()
+        .map(|path| metadata_signature(path))
+        .collect::<Vec<_>>();
+    if before != after {
+        Some(WatchIssue::stability(format!(
+            "native files were still changing after {} ms; ingesting latest state",
+            pause.as_millis()
+        )))
+    } else {
+        None
+    }
+}
+
+fn metadata_signature(path: &Path) -> Option<(u64, Option<i64>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
+    Some((metadata.len(), modified))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchRequest {
+    pub ingest: IngestRequest,
+    pub interval_seconds: u64,
+    pub debounce_ms: u64,
+    pub once: bool,
+}
+
+impl WatchRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.interval_seconds == 0 {
+            anyhow::bail!("watch interval must be greater than zero");
+        }
+        if self.debounce_ms == 0 {
+            anyhow::bail!("watch debounce must be greater than zero");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchRun {
+    pub trigger: WatchTrigger,
+    pub started_at_ms: i64,
+    pub elapsed_ms: u64,
+    pub report: IngestReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchTrigger {
+    Startup,
+    Filesystem,
+    Periodic,
+}
+
+impl fmt::Display for WatchTrigger {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Startup => "startup",
+            Self::Filesystem => "filesystem",
+            Self::Periodic => "periodic",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchIssue {
+    pub stage: WatchIssueStage,
+    pub message: String,
+}
+
+impl WatchIssue {
+    fn watcher(message: impl Into<String>) -> Self {
+        Self {
+            stage: WatchIssueStage::Watcher,
+            message: message.into(),
+        }
+    }
+
+    fn stability(message: impl Into<String>) -> Self {
+        Self {
+            stage: WatchIssueStage::Stability,
+            message: message.into(),
+        }
+    }
+
+    fn ingest(error: impl fmt::Display) -> Self {
+        Self {
+            stage: WatchIssueStage::Ingest,
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchIssueStage {
+    Watcher,
+    Stability,
+    Ingest,
+}
+
+impl fmt::Display for WatchIssueStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Watcher => "watcher",
+            Self::Stability => "stability",
+            Self::Ingest => "ingest",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum WatchEvent {
+    Run(WatchRun),
+    Issue(WatchIssue),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchSummary {
+    pub runs: usize,
+    pub stopped: bool,
+    pub watcher_available: bool,
+    pub issues: Vec<WatchIssue>,
 }
 
 #[derive(Default)]

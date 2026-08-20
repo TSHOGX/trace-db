@@ -8,8 +8,8 @@ TraceDB has four layers:
    and optional full native objects into SQLite.
 3. **Retrieval** uses SQLite FTS5 for bounded event candidates, aggregates them
    at session level, and collapses parent/fork/subagent lineage.
-4. **Interfaces** expose the Rust crate, the CLI, and the line-oriented JSON
-   protocol.
+4. **Interfaces** expose the Rust crate, the CLI, the long-running watch loop,
+   and the line-oriented JSON protocol.
 
 ## Rust module map
 
@@ -18,6 +18,7 @@ src/
   config.rs       typed TOML/environment/CLI resolution and exclusion globs
   lib.rs          crate exports and database path resolution
   facade.rs       typed TraceDb lifecycle and request/result API
+                  watch loop with notification and periodic fallback
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
   model.rs        agents, capture modes, events, sessions, provenance

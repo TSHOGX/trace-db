@@ -2,11 +2,13 @@ use clap::{Parser, Subcommand};
 use std::io::{self, BufRead};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::{atomic::AtomicBool, Arc};
 use tracedb::{
     doctor_configured,
     service::{serve, ServiceEndpoint},
     verify_archive, Agent, ConfigOverrides, EventKind, IngestMode, IngestRequest, ListRequest,
-    OutputFormat, SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig,
+    OutputFormat, SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig, WatchEvent,
+    WatchRequest,
 };
 
 #[derive(Parser, Debug)]
@@ -58,6 +60,30 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Print the complete machine-readable ingest report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Keep the archive synchronized with native stores until interrupted.
+    Watch {
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        agent: Option<Vec<Agent>>,
+        #[arg(long)]
+        mode: Option<IngestMode>,
+        /// Override configured native-source exclusion globs.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        exclude: Option<Vec<String>>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Override the configured periodic fallback interval in seconds.
+        #[arg(long)]
+        interval: Option<u64>,
+        /// Override the configured filesystem debounce in milliseconds.
+        #[arg(long)]
+        debounce: Option<u64>,
+        /// Run one startup ingest and exit without waiting for changes.
+        #[arg(long)]
+        once: bool,
+        /// Print newline-delimited machine-readable watch events.
         #[arg(long)]
         json: bool,
     },
@@ -167,15 +193,24 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let (default_agents, capture_mode, exclude) = match &cli.command {
-        Command::Ingest {
-            agent,
-            mode,
-            exclude,
-            ..
-        } => (agent.clone(), *mode, exclude.clone()),
-        _ => (None, None, None),
-    };
+    let (default_agents, capture_mode, exclude, watch_interval_seconds, watch_debounce_ms) =
+        match &cli.command {
+            Command::Ingest {
+                agent,
+                mode,
+                exclude,
+                ..
+            } => (agent.clone(), *mode, exclude.clone(), None, None),
+            Command::Watch {
+                agent,
+                mode,
+                exclude,
+                interval,
+                debounce,
+                ..
+            } => (agent.clone(), *mode, exclude.clone(), *interval, *debounce),
+            _ => (None, None, None, None, None),
+        };
     let config = TraceDbConfig::load(ConfigOverrides {
         config_path: cli.config.clone(),
         database_path: cli.db.clone(),
@@ -185,8 +220,8 @@ fn main() -> anyhow::Result<()> {
         tokenizer: cli.tokenizer,
         tokenizer_extension: cli.tokenizer_extension.clone(),
         output_format: cli.format,
-        watch_interval_seconds: None,
-        watch_debounce_ms: None,
+        watch_interval_seconds,
+        watch_debounce_ms,
     })?;
     let db_path = &config.database_path;
     if let Command::Config { json } = &cli.command {
@@ -301,6 +336,69 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Command::Watch {
+        root, once, json, ..
+    } = &cli.command
+    {
+        let mut db = TraceDb::open_configured(&config)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        if !once {
+            let signal_stop = Arc::clone(&stop);
+            ctrlc::set_handler(move || {
+                signal_stop.store(true, std::sync::atomic::Ordering::Relaxed)
+            })
+            .map_err(|error| anyhow::anyhow!("install watch signal handler: {error}"))?;
+        }
+        let request = WatchRequest {
+            ingest: IngestRequest {
+                agents: config.default_agents.clone(),
+                mode: config.capture_mode,
+                root: root.clone(),
+                since_ms: None,
+                exclude: config.exclude.clone(),
+            },
+            interval_seconds: config.watch_interval_seconds,
+            debounce_ms: config.watch_debounce_ms,
+            once: *once,
+        };
+        let machine = *json || matches!(config.output_format, OutputFormat::Json);
+        let mut observer = |event: WatchEvent| -> anyhow::Result<()> {
+            if machine {
+                println!("{}", serde_json::to_string(&event)?);
+            } else {
+                match event {
+                    WatchEvent::Run(run) => println!(
+                        "watch {}: ingested {}, unchanged {}, skipped {}, failed {} ({} ms)",
+                        run.trigger,
+                        run.report.total_ingested(),
+                        run.report.total_unchanged(),
+                        run.report.total_skipped(),
+                        run.report.total_failed(),
+                        run.elapsed_ms
+                    ),
+                    WatchEvent::Issue(issue) => {
+                        eprintln!("watch {}: {}", issue.stage, issue.message)
+                    }
+                }
+            }
+            Ok(())
+        };
+        let summary = db.watch(request, &stop, &mut observer)?;
+        if machine {
+            println!("{}", serde_json::to_string(&summary)?);
+        } else {
+            println!(
+                "watch stopped: {} run(s), filesystem watcher {}",
+                summary.runs,
+                if summary.watcher_available {
+                    "available"
+                } else {
+                    "unavailable; periodic fallback only"
+                }
+            );
+        }
+        return Ok(());
+    }
     if let Command::Ingest {
         root,
         since,
@@ -402,6 +500,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Command::Watch { .. } => unreachable!("watch returns before opening the archive"),
         Command::Search {
             query,
             limit,
