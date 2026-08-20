@@ -92,15 +92,18 @@ jobs:
       - name: Smoke test Python wheel
         shell: bash
         run: |
-          python -m pip install --force-reinstall dist/tracedb-*.whl
-          python bindings/python/smoke.py
+          python scripts/smoke-python-wheel.py dist/tracedb-*.whl
           python scripts/verify-release-package.py dist/tracedb-*.whl --version "${GITHUB_REF_NAME#v}" --kind wheel
       - name: Build Node addon
         run: npm --prefix bindings/node run build
         env:
           TRACEDB_BUILD_TARGET: ${{ matrix.target }}
       - name: Smoke test Node addon
-        run: npm --prefix bindings/node test
+        shell: bash
+        run: |
+          npm --prefix bindings/node test
+          npm pack ./bindings/node --pack-destination dist
+          node scripts/smoke-node-package.js "dist/tracedb-core-${GITHUB_REF_NAME#v}.tgz"
       - name: Package Node addon on Unix
         if: runner.os != 'Windows'
         shell: bash

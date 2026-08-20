@@ -59,8 +59,7 @@ jobs:
       - run: python -m pip install "maturin>=1.7,<2"
       - run: cargo clippy --locked -p tracedb-python --all-targets -- -D warnings
       - run: maturin build --release --locked --manifest-path bindings/python/Cargo.toml --out target/wheels
-      - run: python -m pip install target/wheels/tracedb-*.whl
-      - run: python bindings/python/smoke.py
+      - run: python scripts/smoke-python-wheel.py target/wheels/tracedb-*.whl
 
   node:
     runs-on: ubuntu-latest
@@ -76,6 +75,11 @@ jobs:
       - run: cargo clippy --locked -p tracedb-node --all-targets -- -D warnings
       - run: npm --prefix bindings/node run build
       - run: npm --prefix bindings/node test
+      - run: |
+          package_version=$(node -p "require('./bindings/node/package.json').version")
+          mkdir -p target/node-package
+          npm pack ./bindings/node --pack-destination target/node-package
+          node scripts/smoke-node-package.js "target/node-package/tracedb-core-${package_version}.tgz"
 
   platforms:
     strategy:
