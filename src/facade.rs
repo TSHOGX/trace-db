@@ -548,6 +548,11 @@ impl TraceDb {
         store::backup(&self.connection, destination.as_ref())
     }
 
+    /// Import a verified archive snapshot idempotently into this archive.
+    pub fn import_archive(&mut self, source: impl AsRef<Path>) -> Result<ImportReport> {
+        store::import_archive(&mut self.connection, source.as_ref())
+    }
+
     /// Report content-addressed objects that are no longer referenced.
     pub fn gc(&self, dry_run: bool) -> Result<GcReport> {
         store::gc_report(&self.connection, dry_run)
@@ -1725,6 +1730,17 @@ pub struct GcReport {
     pub referenced_objects: u64,
     pub orphan_objects: u64,
     pub orphan_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    pub source: PathBuf,
+    pub imported_sessions: u64,
+    pub imported_events: u64,
+    pub imported_objects: u64,
+    pub skipped_sessions: u64,
+    pub skipped_events: u64,
 }
 
 pub const RESTORE_MANIFEST_SCHEMA_VERSION: &str = "tracedb-restore-manifest-v1";

@@ -70,6 +70,49 @@ fn completions_generate_without_opening_an_archive() {
 }
 
 #[test]
+fn import_json_reports_merge_and_skip_counts() {
+    let (dir, source_path) = archive();
+    let backup_path = dir.path().join("backup.db");
+    TraceDb::open(&source_path)
+        .unwrap()
+        .backup(&backup_path)
+        .unwrap();
+    let destination_path = dir.path().join("destination.db");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            destination_path.to_str().unwrap(),
+            "import",
+            backup_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let first_report: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_report["importedSessions"], 1);
+    assert_eq!(first_report["importedEvents"], 2);
+
+    let second = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args([
+            "--db",
+            destination_path.to_str().unwrap(),
+            "import",
+            backup_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    let second_report: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second_report["importedSessions"], 0);
+    assert_eq!(second_report["importedEvents"], 0);
+    assert_eq!(second_report["skippedSessions"], 1);
+    assert_eq!(second_report["skippedEvents"], 2);
+}
+
+#[test]
 fn list_json_returns_the_canonical_cursor_page() {
     let (_dir, path) = archive();
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))

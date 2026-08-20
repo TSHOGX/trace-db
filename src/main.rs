@@ -151,6 +151,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Import a verified archive snapshot idempotently into the selected archive.
+    Import {
+        source: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Report reclaimable unreferenced full-capture objects without deleting.
     Gc {
         #[arg(long)]
@@ -708,6 +714,22 @@ fn main() -> anyhow::Result<()> {
                     report.sessions,
                     report.events,
                     report.verified
+                );
+            }
+        }
+        Command::Import { source, json } => {
+            let report = db.import_archive(source)?;
+            if json || matches!(config.output_format, OutputFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "import: {} ({} session(s), {} event(s), {} object(s); skipped {} session(s), {} event(s))",
+                    report.source.display(),
+                    report.imported_sessions,
+                    report.imported_events,
+                    report.imported_objects,
+                    report.skipped_sessions,
+                    report.skipped_events
                 );
             }
         }

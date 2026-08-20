@@ -195,6 +195,98 @@ pub fn gc_report(connection: &Connection, dry_run: bool) -> Result<crate::GcRepo
     })
 }
 
+pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crate::ImportReport> {
+    if !source.exists() {
+        anyhow::bail!("import source does not exist: {}", source.display());
+    }
+    let destination = connection
+        .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
+        .unwrap_or_default();
+    if !destination.is_empty()
+        && fs::canonicalize(source).ok() == fs::canonicalize(&destination).ok()
+    {
+        anyhow::bail!("cannot import an archive into itself: {}", source.display());
+    }
+    let source_connection = open_read_only(source)?;
+    let verification = verify(&source_connection, source)?;
+    if verification.failure_count() != 0 {
+        anyhow::bail!(
+            "import source failed verification with {} failure(s)",
+            verification.failure_count()
+        );
+    }
+    drop(source_connection);
+
+    connection.execute(
+        "ATTACH DATABASE ?1 AS import_source",
+        [source.to_string_lossy().as_ref()],
+    )?;
+    let result = (|| -> Result<crate::ImportReport> {
+        connection.execute_batch("BEGIN IMMEDIATE")?;
+        let imported_sessions = connection.execute(
+            "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
+             SELECT id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms
+             FROM import_source.sessions",
+            [],
+        )? as u64;
+        connection.execute(
+            "UPDATE sessions
+             SET mode='full'
+             WHERE mode <> 'full'
+               AND id IN (SELECT id FROM import_source.sessions WHERE mode='full')",
+            [],
+        )?;
+        let source_sessions =
+            connection.query_row("SELECT count(*) FROM import_source.sessions", [], |row| {
+                row.get::<_, u64>(0)
+            })?;
+        let imported_objects = connection.execute(
+            "INSERT OR IGNORE INTO objects(hash,compression,bytes,payload,created_at_ms)
+             SELECT hash,compression,bytes,payload,created_at_ms FROM import_source.objects",
+            [],
+        )? as u64;
+        let imported_events = connection.execute(
+            "INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms)
+             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms
+             FROM import_source.events ie
+             WHERE NOT EXISTS (
+               SELECT 1 FROM events e
+               WHERE e.session_id=ie.session_id AND e.idx=ie.idx
+                 AND COALESCE(e.native_id,'')=COALESCE(ie.native_id,'')
+             )",
+            [],
+        )? as u64;
+        let source_events =
+            connection.query_row("SELECT count(*) FROM import_source.events", [], |row| {
+                row.get::<_, u64>(0)
+            })?;
+        connection.execute(
+            "INSERT OR IGNORE INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash)
+             SELECT session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash
+             FROM import_source.raw_sources",
+            [],
+        )?;
+        connection.execute_batch("COMMIT")?;
+        Ok(crate::ImportReport {
+            source: source.to_path_buf(),
+            imported_sessions,
+            imported_events,
+            imported_objects,
+            skipped_sessions: source_sessions.saturating_sub(imported_sessions),
+            skipped_events: source_events.saturating_sub(imported_events),
+        })
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK");
+    }
+    let detach_result = connection.execute_batch("DETACH DATABASE import_source");
+    match (result, detach_result) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(anyhow::Error::from(error)),
+    }
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     migrate_with_tokenizer(conn, false)
 }
@@ -434,6 +526,10 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
         [],
     ) {
         Ok(_) => Vec::new(),
+        // FTS5's rank-0 integrity check writes transient shadow-table state,
+        // which SQLite refuses for a read-only connection. The structural
+        // document-count and excluded-event checks below remain read-only.
+        Err(error) if error.to_string().contains("readonly database") => Vec::new(),
         Err(error) => vec![VerificationFailure {
             locator: "events_fts".into(),
             message: error.to_string(),

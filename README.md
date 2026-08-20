@@ -51,6 +51,7 @@ trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 trace-db verify --json
 trace-db doctor --json
+trace-db import archive-backup.db --json
 trace-db-bench --sessions 1k,10k,100k --json
 trace-db-relevance --json
 ```
@@ -117,6 +118,7 @@ trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,K
 trace-db reconstruct SESSION_ID --out DIRECTORY [--manifest PATH] [--overwrite]
 trace-db reindex
 trace-db backup PATH [--json]
+trace-db import PATH [--json]
 trace-db gc --dry-run [--json]
 trace-db stats [--json]
 trace-db verify [--json]
@@ -165,6 +167,10 @@ directory and verifies the snapshot before returning. The destination must not
 already exist; this avoids accidental replacement and includes WAL state,
 normalized rows, the FTS index, provenance, and full-capture objects in one
 portable archive file.
+
+`trace-db import PATH` verifies a backup before merging it into the selected
+archive. Session, event, object, and provenance inserts are transactional and
+idempotent; importing the same snapshot again reports the rows it skipped.
 
 `trace-db gc --dry-run` reports unreferenced content-addressed full-capture
 objects and their stored payload bytes. It never deletes objects; omitting

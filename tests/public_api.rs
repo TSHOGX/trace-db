@@ -255,6 +255,108 @@ fn backup_publishes_verified_snapshot_without_overwriting() {
 }
 
 #[test]
+fn import_archive_is_verified_and_idempotent() {
+    let dir = tempdir().unwrap();
+    let source_path = dir.path().join("source.db");
+    let backup_path = dir.path().join("source-backup.db");
+    let destination_path = dir.path().join("destination.db");
+    let raw = b"native source bytes".to_vec();
+    let mut source = TraceDb::open(&source_path).unwrap();
+    source
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:import".into(),
+                    agent: Agent::Codex,
+                    cwd: Some("/workspace".into()),
+                    started_at_ms: Some(1),
+                    ended_at_ms: Some(2),
+                    title: Some("Import me".into()),
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: json!({}),
+                    fingerprint: "import-v1".into(),
+                    sources: vec![NativeSource {
+                        locator: "session.json".into(),
+                        kind: "json".into(),
+                        restore_path: "session.json".into(),
+                        role: None,
+                        bytes: Some(raw.len() as i64),
+                        mtime_ns: None,
+                        mode: None,
+                        capture: Some(Capture::Bytes {
+                            label: "session".into(),
+                            bytes: raw.clone(),
+                        }),
+                    }],
+                },
+                events: vec![Event::new(EventKind::User, "importable deploy event")],
+            },
+            IngestMode::Full,
+        )
+        .unwrap();
+    source.backup(&backup_path).unwrap();
+
+    let mut destination = TraceDb::open(&destination_path).unwrap();
+    let first = destination.import_archive(&backup_path).unwrap();
+    assert_eq!(first.imported_sessions, 1);
+    assert_eq!(first.imported_events, 1);
+    assert_eq!(first.imported_objects, 1);
+    assert_eq!(first.skipped_sessions, 0);
+    assert_eq!(first.skipped_events, 0);
+    assert_eq!(destination.stats().unwrap().total_sessions, 1);
+    assert_eq!(
+        destination
+            .search(SearchRequest::new("importable"))
+            .unwrap()
+            .len(),
+        1
+    );
+    let restored = destination
+        .reconstruct("codex:import", dir.path().join("restored"))
+        .unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(std::fs::read(&restored[0]).unwrap(), raw);
+
+    let second = destination.import_archive(&backup_path).unwrap();
+    assert_eq!(second.imported_sessions, 0);
+    assert_eq!(second.imported_events, 0);
+    assert_eq!(second.imported_objects, 0);
+    assert_eq!(second.skipped_sessions, 1);
+    assert_eq!(second.skipped_events, 1);
+    assert_eq!(
+        destination
+            .search(SearchRequest::new("importable"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn import_archive_rejects_invalid_source_without_mutation() {
+    let dir = tempdir().unwrap();
+    let invalid = dir.path().join("invalid.db");
+    std::fs::write(&invalid, b"not a sqlite archive").unwrap();
+    let destination_path = dir.path().join("destination.db");
+    let mut destination = TraceDb::open(&destination_path).unwrap();
+    assert!(destination.import_archive(&invalid).is_err());
+    assert_eq!(destination.stats().unwrap().total_sessions, 0);
+    assert_eq!(destination.stats().unwrap().total_events, 0);
+}
+
+#[test]
+fn import_archive_rejects_importing_the_open_archive_into_itself() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("archive.db");
+    let mut database = TraceDb::open(&path).unwrap();
+    assert!(database.import_archive(&path).is_err());
+}
+
+#[test]
 fn gc_dry_run_reports_orphan_objects_without_mutation() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("gc.db");
