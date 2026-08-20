@@ -570,7 +570,22 @@ impl TraceDb {
         out_dir: impl AsRef<Path>,
         options: ReconstructionOptions,
     ) -> Result<Vec<PathBuf>> {
-        store::reconstruct(&self.connection, session_id, out_dir.as_ref(), options)
+        Ok(self
+            .reconstruct_manifest(session_id, out_dir, options)?
+            .files
+            .into_iter()
+            .map(|file| file.path)
+            .collect())
+    }
+
+    /// Restore full-capture sources and return a versioned manifest of every file.
+    pub fn reconstruct_manifest(
+        &self,
+        session_id: &str,
+        out_dir: impl AsRef<Path>,
+        options: ReconstructionOptions,
+    ) -> Result<RestoreManifest> {
+        store::reconstruct_manifest(&self.connection, session_id, out_dir.as_ref(), options)
     }
 }
 
@@ -1710,6 +1725,28 @@ pub struct GcReport {
     pub referenced_objects: u64,
     pub orphan_objects: u64,
     pub orphan_bytes: u64,
+}
+
+pub const RESTORE_MANIFEST_SCHEMA_VERSION: &str = "tracedb-restore-manifest-v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreManifest {
+    pub schema_version: String,
+    pub session_id: String,
+    pub output_dir: PathBuf,
+    pub files: Vec<RestoreManifestFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreManifestFile {
+    pub path: PathBuf,
+    pub locator: String,
+    pub object_hash: String,
+    pub bytes: u64,
+    pub mode: Option<u32>,
+    pub mtime_ns: Option<i64>,
 }
 
 /// Resolve the default native store root for one supported agent.

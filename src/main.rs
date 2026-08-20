@@ -162,6 +162,9 @@ enum Command {
         id: String,
         #[arg(long)]
         out: PathBuf,
+        /// Write a versioned restore manifest to this new JSON file.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         /// Replace existing restore targets atomically.
         #[arg(long)]
         overwrite: bool,
@@ -708,16 +711,35 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Command::Reconstruct { id, out, overwrite } => {
-            let paths = db.reconstruct_with_options(
-                &id,
-                &out,
-                tracedb::ReconstructionOptions { overwrite },
-            )?;
-            for p in &paths {
-                println!("{}", p.display());
+        Command::Reconstruct {
+            id,
+            out,
+            manifest,
+            overwrite,
+        } => {
+            let restore_manifest =
+                db.reconstruct_manifest(&id, &out, tracedb::ReconstructionOptions { overwrite })?;
+            if let Some(manifest_path) = manifest {
+                if manifest_path.exists() {
+                    anyhow::bail!(
+                        "restore manifest already exists: {}",
+                        manifest_path.display()
+                    );
+                }
+                if let Some(parent) = manifest_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(
+                    &manifest_path,
+                    serde_json::to_vec_pretty(&restore_manifest)?,
+                )?;
+                println!("{}", manifest_path.display());
+            } else {
+                for file in &restore_manifest.files {
+                    println!("{}", file.path.display());
+                }
             }
-            if paths.is_empty() {
+            if restore_manifest.files.is_empty() {
                 println!("no full native objects for {id}");
             }
         }

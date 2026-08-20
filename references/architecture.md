@@ -63,6 +63,10 @@ fields, and structured event data before SQLite upsert; full-capture bytes are
 stored separately and remain exact. Search snippets have an additional
 presentation-only redaction pass.
 
+Reconstruction can additionally emit a versioned restore manifest containing
+the output paths, source locators, object hashes, sizes, and preserved metadata
+for every atomically written file.
+
 ## Runtime configuration
 
 `TraceDbConfig` is the canonical resolved runtime configuration shared by the

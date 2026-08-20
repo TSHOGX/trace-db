@@ -114,7 +114,7 @@ trace-db ingest [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB..
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]
-trace-db reconstruct SESSION_ID --out DIRECTORY [--overwrite]
+trace-db reconstruct SESSION_ID --out DIRECTORY [--manifest PATH] [--overwrite]
 trace-db reindex
 trace-db backup PATH [--json]
 trace-db gc --dry-run [--json]
@@ -169,6 +169,11 @@ portable archive file.
 objects and their stored payload bytes. It never deletes objects; omitting
 `--dry-run` is rejected until an explicit deletion policy and recovery workflow
 are defined.
+
+`trace-db reconstruct --manifest PATH` writes a new
+`tracedb-restore-manifest-v1` JSON artifact containing every restored path,
+source locator, SHA-256 object hash, byte count, mode, and timestamp. The
+manifest destination must not already exist.
 
 Privacy boundaries are explicit. Built-in credential patterns and configured
 `redact_patterns` apply when normalized sessions/events are stored; the raw

@@ -28,9 +28,10 @@ pub use facade::{
     DoctorDatabase, DoctorFailure, DoctorIngestStatus, DoctorPermissions, DoctorReport,
     DoctorRuntime, DoctorTokenizer, DoctorWatch, GcReport, IngestDryRunReport, IngestErrorCategory,
     IngestIssue, IngestReport, IngestRequest, IngestStage, ListPage, ListRequest,
-    ReconstructionOptions, SessionSummary, SessionTrace, ShowRequest, TraceDb, VerificationFailure,
-    VerifyCheck, VerifyReport, WatchEvent, WatchIssue, WatchIssueStage, WatchRequest, WatchRun,
-    WatchSummary, WatchTrigger,
+    ReconstructionOptions, RestoreManifest, RestoreManifestFile, SessionSummary, SessionTrace,
+    ShowRequest, TraceDb, VerificationFailure, VerifyCheck, VerifyReport, WatchEvent, WatchIssue,
+    WatchIssueStage, WatchRequest, WatchRun, WatchSummary, WatchTrigger,
+    RESTORE_MANIFEST_SCHEMA_VERSION,
 };
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,

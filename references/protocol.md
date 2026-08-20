@@ -46,6 +46,11 @@ equally to CLI, gRPC, and language bindings. Raw full-capture objects are not
 redacted and are only exposed through explicit reconstruction. Search snippets
 may redact again for presentation.
 
+The Rust facade exposes `RestoreManifest` with schema version
+`tracedb-restore-manifest-v1`; the CLI can write this artifact with
+`reconstruct --manifest PATH`. Existing reconstruction APIs continue returning
+the written paths for compatibility.
+
 ## Methods
 
 | Method | Behavior |

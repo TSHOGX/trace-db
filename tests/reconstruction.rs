@@ -1,6 +1,9 @@
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use tracedb::{Agent, IngestMode, IngestRequest, ReconstructionOptions, TraceDb};
+use tracedb::{
+    Agent, IngestMode, IngestRequest, ReconstructionOptions, TraceDb,
+    RESTORE_MANIFEST_SCHEMA_VERSION,
+};
 
 fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, TraceDb) {
     let dir = tempdir().unwrap();
@@ -112,6 +115,29 @@ fn reconstruction_requires_explicit_overwrite() {
     .unwrap();
 
     assert_eq!(std::fs::read_to_string(target).unwrap(), native);
+}
+
+#[test]
+fn reconstruction_manifest_is_versioned_and_hashes_written_files() {
+    let fixtures = tempdir().unwrap();
+    let source = fixtures.path().join("rollout-manifest.jsonl");
+    let native = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"manifest\"}}\n";
+    std::fs::write(&source, native).unwrap();
+    let (archive, db) = ingest_one(fixtures.path(), Agent::Codex);
+    let output = archive.path().join("restore");
+
+    let manifest = db
+        .reconstruct_manifest("codex:manifest", &output, ReconstructionOptions::default())
+        .unwrap();
+
+    assert_eq!(manifest.schema_version, RESTORE_MANIFEST_SCHEMA_VERSION);
+    assert_eq!(manifest.session_id, "codex:manifest");
+    assert_eq!(manifest.files.len(), 1);
+    let file = &manifest.files[0];
+    assert_eq!(std::fs::read(&file.path).unwrap(), native.as_bytes());
+    assert_eq!(file.bytes, native.len() as u64);
+    assert_eq!(file.object_hash.len(), 64);
+    assert_eq!(file.locator, source.display().to_string());
 }
 
 #[cfg(unix)]

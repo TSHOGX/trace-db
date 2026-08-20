@@ -759,12 +759,12 @@ pub fn rebuild_fts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn reconstruct(
+pub fn reconstruct_manifest(
     conn: &Connection,
     session_id: &str,
     out_dir: &Path,
     options: ReconstructionOptions,
-) -> Result<Vec<PathBuf>> {
+) -> Result<crate::RestoreManifest> {
     let mut stmt = conn.prepare("SELECT locator,restore_path,object_hash,mtime_ns,mode FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL ORDER BY locator")?;
     let rows = stmt.query_map([session_id], |r| {
         Ok((
@@ -827,27 +827,27 @@ pub fn reconstruct(
                 "archived object {hash} SHA-256 mismatch: decoded object hashes to {actual_hash}"
             );
         }
-        planned.push((target, bytes, mtime_ns, source_mode));
+        planned.push((target, locator, hash, bytes, mtime_ns, source_mode));
     }
 
-    for (target, _, _, _) in &planned {
+    for (target, _, _, _, _, _) in &planned {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    let mut written = Vec::with_capacity(planned.len());
-    for (target, bytes, mtime_ns, _source_mode) in planned {
+    let mut files = Vec::with_capacity(planned.len());
+    for (target, locator, hash, bytes, mtime_ns, source_mode) in planned {
         let parent = target.parent().unwrap_or(out_dir);
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .with_context(|| format!("create temporary restore file in {}", parent.display()))?;
         temporary.write_all(&bytes)?;
         temporary.as_file_mut().sync_all()?;
         #[cfg(unix)]
-        if let Some(source_mode) = _source_mode {
+        if let Some(source_mode) = source_mode.as_ref() {
             use std::os::unix::fs::PermissionsExt;
             temporary
                 .as_file()
-                .set_permissions(fs::Permissions::from_mode(source_mode as u32))?;
+                .set_permissions(fs::Permissions::from_mode(*source_mode as u32))?;
         }
         if options.overwrite {
             temporary
@@ -869,9 +869,34 @@ pub fn reconstruct(
                 ),
             )?;
         }
-        written.push(target);
+        files.push(crate::RestoreManifestFile {
+            path: target,
+            locator,
+            object_hash: hash,
+            bytes: bytes.len() as u64,
+            mode: source_mode.and_then(|mode| u32::try_from(mode).ok()),
+            mtime_ns,
+        });
     }
-    Ok(written)
+    Ok(crate::RestoreManifest {
+        schema_version: crate::RESTORE_MANIFEST_SCHEMA_VERSION.into(),
+        session_id: session_id.into(),
+        output_dir: out_dir.to_path_buf(),
+        files,
+    })
+}
+
+pub fn reconstruct(
+    conn: &Connection,
+    session_id: &str,
+    out_dir: &Path,
+    options: ReconstructionOptions,
+) -> Result<Vec<PathBuf>> {
+    Ok(reconstruct_manifest(conn, session_id, out_dir, options)?
+        .files
+        .into_iter()
+        .map(|file| file.path)
+        .collect())
 }
 
 pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64, i64)>> {
