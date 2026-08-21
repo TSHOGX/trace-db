@@ -120,37 +120,4 @@ jobs:
       - name: Windows daemon smoke
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $traceDb = Join-Path $pwd "target/debug/trace-db.exe"
-          $root = Join-Path $env:RUNNER_TEMP "tracedb-daemon-native"
-          $database = Join-Path $env:RUNNER_TEMP "tracedb-daemon.db"
-          New-Item -ItemType Directory -Path $root -Force | Out-Null
-          '{"type":"session_meta","payload":{"id":"windows-daemon-smoke","cwd":"C:\\tracedb-smoke"}}' |
-            Set-Content -Encoding utf8 (Join-Path $root "rollout-smoke.jsonl")
-          try {
-            & $traceDb --db $database daemon install --interval 60 --agent codex --root $root
-            if ($LASTEXITCODE -ne 0) { throw "daemon install failed" }
-            $taskXml = schtasks /Query /TN TraceDB-Watch /XML
-            if ($LASTEXITCODE -ne 0 -or $taskXml -notmatch "RestartOnFailure") {
-              throw "registered task is missing restart policy"
-            }
-            $ingested = $false
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              $stats = & $traceDb --db $database stats --json | ConvertFrom-Json
-              if ($stats.totalSessions -eq 1) {
-                $ingested = $true
-                break
-              }
-              Start-Sleep -Seconds 1
-            }
-            if (-not $ingested) { throw "daemon startup ingest did not complete" }
-            & $traceDb --db $database daemon status
-            if ($LASTEXITCODE -ne 0) { throw "daemon status failed" }
-            & $traceDb --db $database daemon stop
-            if ($LASTEXITCODE -ne 0) { throw "daemon stop failed" }
-            & $traceDb --db $database daemon start
-            if ($LASTEXITCODE -ne 0) { throw "daemon start failed" }
-          } finally {
-            & $traceDb --db $database daemon uninstall
-          }
+        run: ./scripts/smoke-windows-task.ps1 target/debug/trace-db.exe

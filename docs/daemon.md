@@ -181,6 +181,8 @@ trace-db daemon install --interval 600
   请为用户启用 lingering (`loginctl enable-linger "$USER"`)。
 - **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。安装命令会
   生成 `TraceDB-Watch.xml`，包含低权限运行、无限执行时限和每分钟最多 3 次失败重启。
+  在 Windows 主机上可运行 `scripts/smoke-windows-task.ps1` 重复验证任务 XML、
+  startup ingest、status、stop、start 与 uninstall；Windows CI 也运行同一脚本。
 
 服务管理器只负责进程生命周期；`watch` 自身负责增量扫描、文件系统通知和定时回退。
 
