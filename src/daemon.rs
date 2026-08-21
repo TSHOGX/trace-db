@@ -389,13 +389,14 @@ fn generate_systemd_unit(args: &[String]) -> String {
 
 #[cfg(target_os = "linux")]
 fn systemd_quote(value: &str) -> String {
+    let escaped = value.replace('%', "%%");
     if value
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-:=".contains(c))
     {
-        value.to_string()
+        escaped
     } else {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        format!("\"{}\"", escaped.replace('\\', "\\\\").replace('"', "\\\""))
     }
 }
 
@@ -540,4 +541,80 @@ pub fn start_daemon() -> Result<()> {
 ))]
 pub fn stop_daemon() -> Result<()> {
     anyhow::bail!("Daemon management is not supported on this platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_args_preserve_all_overrides() {
+        let args = watch_args(
+            Path::new("/opt/trace db/trace-db"),
+            Path::new("/tmp/archive.db"),
+            42,
+            Some("claude,codex".into()),
+            Some("full".into()),
+            Some("**/private/**".into()),
+            Some(Path::new("/native/root")),
+        );
+        assert_eq!(
+            args[1..],
+            [
+                "watch",
+                "--interval",
+                "42",
+                "--db",
+                "/tmp/archive.db",
+                "--agent",
+                "claude,codex",
+                "--mode",
+                "full",
+                "--exclude",
+                "**/private/**",
+                "--root",
+                "/native/root",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_unit_has_restart_policy_and_escaped_arguments() {
+        let unit = generate_systemd_unit(&watch_args(
+            Path::new("/opt/trace db/trace-db"),
+            Path::new("/tmp/100%/archive.db"),
+            42,
+            None,
+            None,
+            None,
+            None,
+        ));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("RestartSec=5"));
+        assert!(unit.contains("\"/opt/trace db/trace-db\""));
+        assert!(unit.contains("\"/tmp/100%%/archive.db\""));
+        assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn task_command_preserves_quoted_paths_and_overrides() {
+        let command = windows_task_command(
+            Path::new(r"C:\Tools\trace db.exe"),
+            Path::new(r"C:\Data\archive.db"),
+            42,
+            Some("claude,codex".into()),
+            Some("full".into()),
+            None,
+            None,
+        );
+        assert!(command.contains(r#""C:\Tools\trace db.exe""#));
+        assert!(command.contains(r#""--interval" "42""#));
+        assert!(command.contains(r#""--agent" "claude,codex""#));
+        assert!(command.contains(r#""C:\Data\archive.db""#));
+    }
 }
