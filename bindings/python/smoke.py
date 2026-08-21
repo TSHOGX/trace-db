@@ -37,6 +37,7 @@ def main() -> None:
         assert Path(restored[0]).read_bytes() == native.read_bytes()
         assert json.loads(database.stats_json())["totalSessions"] == 1
         database.reindex()
+        del database
 
 
 if __name__ == "__main__":
