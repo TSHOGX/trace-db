@@ -34,30 +34,6 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
       - run: cargo test --locked -p fts5-jieba
-      - name: Linux systemd user daemon smoke
-        if: runner.os == 'Linux'
-        run: bash scripts/smoke-systemd-user.sh target/debug/trace-db
-      - name: Windows daemon smoke
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $traceDb = Join-Path $pwd "target/debug/trace-db.exe"
-          $root = Join-Path $env:RUNNER_TEMP "tracedb-daemon-native"
-          $database = Join-Path $env:RUNNER_TEMP "tracedb-daemon.db"
-          New-Item -ItemType Directory -Path $root -Force | Out-Null
-          try {
-            & $traceDb --db $database daemon install --interval 60 --root $root
-            if ($LASTEXITCODE -ne 0) { throw "daemon install failed" }
-            & $traceDb --db $database daemon status
-            if ($LASTEXITCODE -ne 0) { throw "daemon status failed" }
-            & $traceDb --db $database daemon stop
-            if ($LASTEXITCODE -ne 0) { throw "daemon stop failed" }
-            & $traceDb --db $database daemon start
-            if ($LASTEXITCODE -ne 0) { throw "daemon start failed" }
-          } finally {
-            & $traceDb --db $database daemon uninstall
-          }
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - run: cargo package --locked
 
@@ -131,3 +107,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo test --locked -p fts5-jieba
+      - name: Prepare Linux systemd user manager
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Linux systemd user daemon smoke
+        if: runner.os == 'Linux'
+        run: bash scripts/smoke-systemd-user.sh target/debug/trace-db
+      - name: Windows daemon smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $traceDb = Join-Path $pwd "target/debug/trace-db.exe"
+          $root = Join-Path $env:RUNNER_TEMP "tracedb-daemon-native"
+          $database = Join-Path $env:RUNNER_TEMP "tracedb-daemon.db"
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          try {
+            & $traceDb --db $database daemon install --interval 60 --root $root
+            if ($LASTEXITCODE -ne 0) { throw "daemon install failed" }
+            & $traceDb --db $database daemon status
+            if ($LASTEXITCODE -ne 0) { throw "daemon status failed" }
+            & $traceDb --db $database daemon stop
+            if ($LASTEXITCODE -ne 0) { throw "daemon stop failed" }
+            & $traceDb --db $database daemon start
+            if ($LASTEXITCODE -ne 0) { throw "daemon start failed" }
+          } finally {
+            & $traceDb --db $database daemon uninstall
+          }
