@@ -418,6 +418,7 @@ pub fn install_daemon(
     fs::write(&definition_path, windows_task_xml(&args))?;
     let definition = definition_path.to_string_lossy().into_owned();
     run_schtasks(["/Create", "/TN", "TraceDB-Watch", "/XML", &definition, "/F"])?;
+    run_schtasks(["/Run", "/TN", "TraceDB-Watch"])?;
     println!("TraceDB watch daemon installed successfully (Task Scheduler: TraceDB-Watch)");
     println!("  Task definition: {}", definition_path.display());
     Ok(())
