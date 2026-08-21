@@ -43,6 +43,21 @@ byte-for-byte claim for every historical session. The canonical byte-fidelity
 contract remains enforced by the fixture and archive lifecycle tests; repeat
 the probe after native format upgrades.
 
+A separate isolated real-file probe copied one current native session per
+file-backed agent, performed full ingest and reconstruction, and compared the
+source/restored SHA-256 digests. All selected files matched byte-for-byte:
+
+| Agent | Native bytes | SHA-256 result |
+| --- | ---: | --- |
+| Claude Code | 5,112,052 | Match |
+| Codex | 6,830,542 | Match |
+| Gemini CLI | 24,309 | Match |
+| Pi | 1,020,818 | Match |
+
+The byte counts identify the exact probe scope without publishing source paths,
+content, or digests. OpenCode uses a multi-artifact SQLite reconstruction model
+and is covered by the real CLI open/query/export result above instead.
+
 To reproduce the probes without writing an archive, run one command per row:
 
 ```bash
