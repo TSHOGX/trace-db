@@ -8,7 +8,7 @@ TraceDB 提供了一个 `daemon` 子命令，用于自动化定时入库。该�
 - **增量入库**：只处理有变化的 session，跳过未变化的部分
 - **智能检测**：文件系统监听 + 定时回退，确保不遗漏变化
 - **一键安装**：自动生成并安装系统服务
-- **跨平台支持**：目前支持 macOS（使用 launchd），未来可扩展到 Linux 和 Windows
+- **跨平台支持**：macOS 使用 launchd，Linux 使用 systemd user service，Windows 使用 Task Scheduler
 
 ## 使用方法
 
@@ -167,11 +167,13 @@ daemon 实际上是定时运行 `watch` 命令。watch 命令的增量入库逻�
 trace-db daemon install --interval 600
 ```
 
-## 未来扩展
+## 平台实现
 
-计划支持的平台：
+- **macOS**: `~/Library/LaunchAgents/com.tracedb.watch-daemon.plist`
+- **Linux**: `~/.config/systemd/user/tracedb-watch.service`。安装后使用
+  `systemctl --user status tracedb-watch.service` 检查状态；若需要在未登录时继续运行，
+  请为用户启用 lingering (`loginctl enable-linger "$USER"`)。
+- **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。请在任务属性中
+  配置失败重启策略，以便 watch 进程异常退出后自动恢复。
 
-- **Linux**: systemd user service
-- **Windows**: Windows Task Scheduler 或 Windows Service
-
-欢迎贡献实现！
+服务管理器只负责进程生命周期；`watch` 自身负责增量扫描、文件系统通知和定时回退。

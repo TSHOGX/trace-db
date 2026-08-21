@@ -62,7 +62,11 @@ fn daemon_install_and_uninstall() {
 }
 
 #[test]
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(
+    not(target_os = "macos"),
+    not(target_os = "linux"),
+    not(target_os = "windows")
+))]
 fn daemon_unsupported_platform() {
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
         .args(["daemon", "install"])
@@ -71,5 +75,5 @@ fn daemon_unsupported_platform() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("only supported on macOS"));
+    assert!(stderr.contains("not supported on this platform"));
 }

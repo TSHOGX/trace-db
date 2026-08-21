@@ -148,7 +148,9 @@ trace-db completions bash|elvish|fish|powershell|zsh
 
 ### Watch daemon
 
-The `daemon` subcommand manages automatic periodic ingestion (macOS only currently):
+The `daemon` subcommand manages automatic periodic ingestion through the native
+user service manager: launchd on macOS, a systemd user service on Linux, and
+Windows Task Scheduler on Windows.
 
 ```bash
 # Install daemon to run every 30 minutes (default)
