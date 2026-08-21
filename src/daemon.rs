@@ -415,7 +415,10 @@ pub fn install_daemon(
     if let Some(parent) = definition_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&definition_path, windows_task_xml(&args))?;
+    fs::write(
+        &definition_path,
+        windows_task_xml(&args, &windows_task_user()?),
+    )?;
     let definition = definition_path.to_string_lossy().into_owned();
     run_schtasks(["/Create", "/TN", "TraceDB-Watch", "/XML", &definition, "/F"])?;
     run_schtasks(["/Run", "/TN", "TraceDB-Watch"])?;
@@ -477,7 +480,23 @@ fn windows_task_definition_path() -> Result<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_task_xml(args: &[String]) -> String {
+fn windows_task_user() -> Result<String> {
+    let output = ProcessCommand::new("whoami").output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "whoami failed while resolving the Task Scheduler principal: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let user = String::from_utf8(output.stdout)?.trim().to_owned();
+    if user.is_empty() {
+        anyhow::bail!("whoami returned an empty Task Scheduler principal");
+    }
+    Ok(user)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_task_xml(args: &[String], user: &str) -> String {
     let command = xml_escape(&args[0]);
     let arguments = args[1..]
         .iter()
@@ -497,6 +516,7 @@ fn windows_task_xml(args: &[String]) -> String {
   </Triggers>
   <Principals>
     <Principal id="Author">
+      <UserId>{}</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -521,6 +541,7 @@ fn windows_task_xml(args: &[String]) -> String {
   </Actions>
 </Task>
 "#,
+        xml_escape(user),
         xml_escape(&arguments)
     )
 }
@@ -665,15 +686,18 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn task_command_preserves_quoted_paths_and_overrides() {
-        let xml = windows_task_xml(&watch_args(
-            Path::new(r"C:\Tools\trace db.exe"),
-            Path::new(r"C:\Data\archive.db"),
-            42,
-            Some("claude,codex".into()),
-            Some("full".into()),
-            None,
-            None,
-        ));
+        let xml = windows_task_xml(
+            &watch_args(
+                Path::new(r"C:\Tools\trace db.exe"),
+                Path::new(r"C:\Data\archive.db"),
+                42,
+                Some("claude,codex".into()),
+                Some("full".into()),
+                None,
+                None,
+            ),
+            r"runner\ci-user",
+        );
         assert!(xml.contains(r#"&quot;C:\Tools\trace db.exe&quot;"#));
         assert!(xml.contains(r#"&quot;--interval&quot; &quot;42&quot;"#));
         assert!(xml.contains(r#"&quot;--agent&quot; &quot;claude,codex&quot;"#));
@@ -692,8 +716,9 @@ mod tests {
             None,
             None,
         );
-        let xml = windows_task_xml(&args);
+        let xml = windows_task_xml(&args, r"runner\ci-user");
         assert!(xml.contains("<LogonTrigger>"));
+        assert!(xml.contains(r"<UserId>runner\ci-user</UserId>"));
         assert!(xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(xml.contains("<RestartOnFailure>"));
         assert!(xml.contains("<Interval>PT1M</Interval>"));
