@@ -27,6 +27,22 @@ that session successfully. The script limits ingest to the newest native
 session using its exact millisecond timestamp, so compatibility checks remain
 bounded even when the source database contains many sessions.
 
+The other four agents also passed a real native reconstruction probe on the
+same host. Each probe used a fresh temporary archive, ingested the containing
+native directory, reconstructed one selected session, and ran `verify`:
+
+| Agent | Full-ingest candidates | Restored files | Verify |
+| --- | ---: | ---: | --- |
+| Claude Code | 3 | 1 | `passed=true` |
+| Codex | 2 | 1 | `passed=true` |
+| Gemini CLI | 3 | 1 | `passed=true` |
+| Pi | 33 | 1 | `passed=true` |
+
+This is evidence of real-source reconstruction and archive verification, not a
+byte-for-byte claim for every historical session. The canonical byte-fidelity
+contract remains enforced by the fixture and archive lifecycle tests; repeat
+the probe after native format upgrades.
+
 To reproduce the probes without writing an archive, run one command per row:
 
 ```bash
