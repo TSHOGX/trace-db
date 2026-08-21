@@ -40,6 +40,12 @@ try {
   assert.equal(db.show("gemini:node-package").events[0].text, "deploy packaged node");
   console.log("node package install smoke: ok");
 } finally {
-  rmSync(installRoot, { recursive: true, force: true });
-  rmSync(fixtureRoot, { recursive: true, force: true });
+  for (const directory of [installRoot, fixtureRoot]) {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch (error) {
+      // Windows can keep the loaded native addon locked until the process exits.
+      if (process.platform !== "win32") throw error;
+    }
+  }
 }
