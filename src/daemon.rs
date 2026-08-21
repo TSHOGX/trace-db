@@ -704,7 +704,7 @@ mod tests {
             ),
             r"runner\ci-user",
         );
-        assert!(xml.contains(r#"&quot;C:\Tools\trace db.exe&quot;"#));
+        assert!(xml.contains(r#"<Command>C:\Tools\trace db.exe</Command>"#));
         assert!(xml.contains(r#"&quot;--interval&quot; &quot;42&quot;"#));
         assert!(xml.contains(r#"&quot;--agent&quot; &quot;claude,codex&quot;"#));
         assert!(xml.contains(r#"&quot;C:\Data\archive.db&quot;"#));
@@ -729,7 +729,7 @@ mod tests {
         assert!(xml.contains("<RestartOnFailure>"));
         assert!(xml.contains("<Interval>PT1M</Interval>"));
         assert!(xml.contains("<Count>3</Count>"));
-        assert!(xml.contains("&quot;C:\\Tools\\trace db.exe&quot;"));
+        assert!(xml.contains(r#"<Command>C:\Tools\trace db.exe</Command>"#));
         assert!(xml.contains("100%"));
     }
 }
