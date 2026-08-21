@@ -10,11 +10,16 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, env=env, check=False)
+
+
+def rfc3339_millis(value: int) -> str:
+    return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def main() -> None:
@@ -35,10 +40,17 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="tracedb-opencode-compat-") as directory:
         root = Path(directory)
         archive = root / "trace.db"
+        with sqlite3.connect(database) as connection:
+            session_id, updated_at_ms = connection.execute(
+                "SELECT id, COALESCE(time_updated, time_created) FROM session "
+                "ORDER BY COALESCE(time_updated, time_created) DESC, id LIMIT 1"
+            ).fetchone()
+        since = rfc3339_millis(updated_at_ms)
         ingest = run(
             [
                 str(trace_db), "--db", str(archive), "ingest", "--agent", "opencode",
-                "--mode", "full", "--root", str(database), "--format", "json",
+                "--mode", "full", "--root", str(database), "--since", since,
+                "--format", "json",
             ]
         )
         if ingest.returncode != 0:
@@ -48,10 +60,6 @@ def main() -> None:
         if ingested < 1:
             raise SystemExit("TraceDB did not ingest an OpenCode session")
 
-        with sqlite3.connect(database) as connection:
-            session_id = connection.execute(
-                "SELECT id FROM session ORDER BY time_updated DESC, id LIMIT 1"
-            ).fetchone()[0]
         trace_id = f"opencode:{session_id}"
         output = root / "restore"
         reconstruct = run(

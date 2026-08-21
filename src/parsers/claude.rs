@@ -36,6 +36,13 @@ fn rel(root: &Path, p: &Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
+fn is_workflow_journal(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("journal.jsonl")
+        && path
+            .components()
+            .any(|component| component.as_os_str() == "workflows")
+}
+
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
     let records = read_json_lines(path)?;
     let mut id = None;
@@ -228,7 +235,10 @@ impl Parser for ClaudeParser {
                     continue;
                 }
             };
-            if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
+            if e.file_type().is_file()
+                && e.path().extension().is_some_and(|x| x == "jsonl")
+                && !is_workflow_journal(e.path())
+            {
                 match SessionCandidate::file(e.path().to_path_buf()) {
                     Ok(mut candidate) => {
                         let sidecar = e.path().with_extension("meta.json");
@@ -317,5 +327,28 @@ mod tests {
             parsed[0].session.forked_from.as_deref(),
             Some("claude:parent#m-1")
         );
+    }
+
+    #[test]
+    fn discovery_ignores_workflow_journals() {
+        let dir = tempdir().unwrap();
+        let workflow = dir.path().join("project/subagents/workflows/run");
+        fs::create_dir_all(&workflow).unwrap();
+        fs::write(
+            workflow.join("journal.jsonl"),
+            r#"{"type":"started","key":"workflow"}
+"#,
+        )
+        .unwrap();
+        let session = dir.path().join("project/session.jsonl");
+        fs::write(
+            &session,
+            r#"{"type":"user","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hello"}}
+"#,
+        )
+        .unwrap();
+        let discovery = ClaudeParser.discover(dir.path()).unwrap();
+        assert_eq!(discovery.candidates.len(), 1);
+        assert_eq!(discovery.candidates[0].path, session);
     }
 }

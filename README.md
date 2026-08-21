@@ -357,6 +357,11 @@ process-lifetime high-water mark.
 The checked-in [benchmark baseline](docs/benchmark-baseline.md) records a
 repeatable 100,000-session result and its host context.
 
+The [agent compatibility matrix](docs/agent-compatibility.md) records a
+read-only probe against installed Claude Code, Codex, OpenCode, Gemini CLI, and
+Pi versions, including native discovery counts and the OpenCode reconstruction
+check.
+
 ## Relevance evaluation
 
 `trace-db-relevance` runs a deterministic labeled-query suite against normalized

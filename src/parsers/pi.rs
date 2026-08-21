@@ -187,7 +187,10 @@ impl Parser for PiParser {
                     continue;
                 }
             };
-            if e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "jsonl") {
+            if e.file_type().is_file()
+                && e.path().extension().is_some_and(|x| x == "jsonl")
+                && e.path().file_name().and_then(|name| name.to_str()) != Some("None.jsonl")
+            {
                 match SessionCandidate::file(e.path().to_path_buf()) {
                     Ok(candidate) => discovery.candidates.push(candidate),
                     Err(error) => {
@@ -208,5 +211,33 @@ impl Parser for PiParser {
         } else {
             Ok(Some(parsed))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn discovery_ignores_none_placeholder() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("None.jsonl"),
+            r#"{"type":"session","id":null,"cwd":"/tmp","timestamp":"2026-01-01T00:00:00Z"}
+"#,
+        )
+        .unwrap();
+        let session = dir.path().join("real.jsonl");
+        fs::write(
+            &session,
+            r#"{"type":"session","id":"s1","cwd":"/workspace","timestamp":"2026-01-01T00:00:00Z"}
+"#,
+        )
+        .unwrap();
+        let discovery = PiParser.discover(dir.path()).unwrap();
+        assert_eq!(discovery.candidates.len(), 1);
+        assert_eq!(discovery.candidates[0].path, session);
     }
 }

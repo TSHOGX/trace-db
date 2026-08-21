@@ -2,10 +2,9 @@ use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFor
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde_json::{json, Value};
-#[cfg(test)]
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -19,8 +18,22 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .and_then(|x| DateTime::parse_from_rfc3339(x).ok())
         .map(|x| x.timestamp_millis())
 }
+fn read_records(path: &Path) -> Result<Vec<Value>> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "json")
+    {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read Gemini session {}", path.display()))?;
+        let document = serde_json::from_str(&contents)
+            .with_context(|| format!("invalid JSON in {}", path.display()))?;
+        Ok(vec![document])
+    } else {
+        read_json_lines(path)
+    }
+}
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let records = read_json_lines(path)?;
+    let records = read_records(path)?;
     let mut rows = Vec::new();
     let mut sid = None;
     let mut start = None;
@@ -223,7 +236,12 @@ impl Parser for GeminiParser {
                     continue;
                 }
             };
-            if e.file_type().is_file() && e.file_name().to_string_lossy().starts_with("session-") {
+            if e.file_type().is_file()
+                && e.file_name().to_string_lossy().starts_with("session-")
+                && e.path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json" || extension == "jsonl")
+            {
                 match SessionCandidate::file(e.path().to_path_buf()) {
                     Ok(candidate) => discovery.candidates.push(candidate),
                     Err(error) => {
@@ -281,5 +299,45 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn reads_pretty_printed_legacy_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session-pretty.json");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "sessionId": "g-pretty",
+                "startTime": "2026-08-19T00:00:00Z",
+                "messages": [
+                    {"id":"u","type":"user","content":"hello"},
+                    {"id":"a","type":"gemini","content":"world"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let parsed = GeminiParser.parse_all(dir.path()).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].session.id, "gemini:g-pretty");
+        assert_eq!(parsed[0].events.len(), 2);
+    }
+
+    #[test]
+    fn discovery_ignores_unrelated_session_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("session-note.txt"), "not a session").unwrap();
+        fs::write(
+            dir.path().join("session-valid.jsonl"),
+            r#"{"type":"user","content":"hello"}
+"#,
+        )
+        .unwrap();
+        let discovery = GeminiParser.discover(dir.path()).unwrap();
+        assert_eq!(discovery.candidates.len(), 1);
+        assert!(discovery.candidates[0]
+            .path
+            .ends_with("session-valid.jsonl"));
     }
 }
