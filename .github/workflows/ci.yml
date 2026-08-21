@@ -34,6 +34,9 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
       - run: cargo test --locked -p fts5-jieba
+      - name: Linux systemd user daemon smoke
+        if: runner.os == 'Linux'
+        run: bash scripts/smoke-systemd-user.sh target/debug/trace-db
       - name: Windows daemon smoke
         if: runner.os == 'Windows'
         shell: pwsh

@@ -187,3 +187,5 @@ trace-db daemon install --interval 600
 2026-08-21 在 OrbStack Ubuntu arm64 VM 的真实 systemd user manager 上完成了
 `install → systemd-analyze verify → status → stop → start → uninstall` smoke，
 状态按预期在 `Running` 与 `Installed but not running` 之间切换，并在卸载后删除 unit。
+同一流程可用 `scripts/smoke-systemd-user.sh` 重复执行；Linux CI 在 Ubuntu
+runner 上运行该脚本并验证 startup ingest 的 archive session 计数。
