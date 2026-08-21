@@ -187,29 +187,38 @@ class ReleaseArtifactTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="tracedb-installer-") as directory:
             root = Path(directory)
-            package_name = f"trace-db-{VERSION}-{target}"
-            package = root / package_name
-            package.mkdir(parents=True)
-            for name, body in {
-                "trace-db": f"#!/bin/sh\nprintf 'trace-db {VERSION}\\n'\n",
-                "trace-db-bench": "#!/bin/sh\nexit 0\n",
-                "trace-db-relevance": "#!/bin/sh\nexit 0\n",
-            }.items():
-                file = package / name
-                file.write_text(body, encoding="utf-8")
-                file.chmod(0o755)
-            (package / extension).write_bytes(b"extension")
-            (package / "README.md").write_text("README", encoding="utf-8")
-            (package / "LICENSE").write_text("LICENSE", encoding="utf-8")
-            proto = package / "proto/tracedb/v1"
-            proto.mkdir(parents=True)
-            (proto / "tracedb.proto").write_text("syntax = 'proto3';", encoding="utf-8")
-            archive = root / f"{package_name}.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(package, arcname=package_name)
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            def create_asset(version: str) -> Path:
+                package_name = f"trace-db-{version}-{target}"
+                package = root / package_name
+                package.mkdir(parents=True)
+                for name, body in {
+                    "trace-db": f"#!/bin/sh\nprintf 'trace-db {version}\\n'\n",
+                    "trace-db-bench": "#!/bin/sh\nexit 0\n",
+                    "trace-db-relevance": "#!/bin/sh\nexit 0\n",
+                }.items():
+                    file = package / name
+                    file.write_text(body, encoding="utf-8")
+                    file.chmod(0o755)
+                (package / extension).write_bytes(f"extension-{version}".encode())
+                (package / "README.md").write_text(f"README {version}", encoding="utf-8")
+                (package / "LICENSE").write_text("LICENSE", encoding="utf-8")
+                proto = package / "proto/tracedb/v1"
+                proto.mkdir(parents=True)
+                (proto / "tracedb.proto").write_text("syntax = 'proto3';", encoding="utf-8")
+                archive = root / f"{package_name}.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(package, arcname=package_name)
+                return archive
+
+            first_archive = create_asset(VERSION)
+            second_version = "9.8.8"
+            second_archive = create_asset(second_version)
             (root / "SHA256SUMS").write_text(
-                f"{digest}  {archive.name}\n", encoding="utf-8"
+                "".join(
+                    f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
+                    for archive in (first_archive, second_archive)
+                ),
+                encoding="utf-8",
             )
             prefix = root / "prefix"
             environment = {
@@ -231,6 +240,22 @@ class ReleaseArtifactTests(unittest.TestCase):
                 f"trace-db {VERSION}",
             )
             self.assertTrue((prefix / "lib" / extension).exists())
+
+            upgrade = subprocess.run(
+                ["bash", str(INSTALL), "--version", second_version],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+            self.assertEqual(
+                subprocess.check_output([str(prefix / "bin/trace-db"), "--version"], text=True).strip(),
+                f"trace-db {second_version}",
+            )
+            self.assertTrue((prefix / "share/doc" / f"trace-db-{VERSION}" / "README.md").exists())
+            self.assertTrue((prefix / "share/doc" / f"trace-db-{second_version}" / "README.md").exists())
 
 
 if __name__ == "__main__":
