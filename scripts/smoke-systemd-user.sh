@@ -48,6 +48,30 @@ for _ in $(seq 1 30); do
 done
 "$trace_db_bin" --db "$database" stats --json | grep -q '"totalSessions": 1'
 
+first_pid="$(systemctl --user show tracedb-watch.service --property MainPID --value)"
+[[ "$first_pid" =~ ^[1-9][0-9]*$ ]]
+systemctl --user kill --kill-whom=main --signal=KILL tracedb-watch.service
+second_pid=""
+for _ in $(seq 1 30); do
+  second_pid="$(systemctl --user show tracedb-watch.service --property MainPID --value)"
+  if [[ "$second_pid" =~ ^[1-9][0-9]*$ && "$second_pid" != "$first_pid" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ "$second_pid" =~ ^[1-9][0-9]*$ && "$second_pid" != "$first_pid" ]]
+
+cat >> "$native_root/rollout-smoke.jsonl" <<'EOF'
+{"type":"response_item","timestamp":"2026-08-21T00:00:00Z","payload":{"type":"message","id":"assistant-smoke","role":"assistant","content":"incremental daemon smoke"}}
+EOF
+for _ in $(seq 1 30); do
+  if "$trace_db_bin" --db "$database" stats --json | grep -q '"totalEvents": 1'; then
+    break
+  fi
+  sleep 1
+done
+"$trace_db_bin" --db "$database" stats --json | grep -q '"totalEvents": 1'
+
 "$trace_db_bin" --db "$database" daemon stop
 "$trace_db_bin" --db "$database" daemon status | grep -q 'Installed but not running'
 "$trace_db_bin" --db "$database" daemon start
