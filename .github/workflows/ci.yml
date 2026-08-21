@@ -27,7 +27,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/verify-release-version.py
       - run: python -m py_compile scripts/verify-release-version.py scripts/verify-release-package.py scripts/verify-sha256sums.py scripts/verify-opencode-compat.py
-      - run: find scripts -type d -name __pycache__ -prune -exec rm -rf {} +
       - run: python tests/opencode_compat_script.py
       - run: python tests/release_artifacts.py
       - run: python scripts/generate-sbom.py --output target/tracedb-sbom.json
@@ -36,6 +35,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo test --locked -p fts5-jieba
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+      - run: find . -type d -name __pycache__ -prune -exec rm -rf {} +
       - run: cargo package --locked
 
   msrv:

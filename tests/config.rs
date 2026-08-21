@@ -305,7 +305,8 @@ fn config_is_strict_and_missing_default_file_is_normal() {
     let mut defaults = command(dir.path());
     defaults.args(["config", "--json"]);
     let resolved = json_output(defaults);
-    assert_eq!(resolved["configPath"], default_config.display().to_string());
+    let resolved_path = Path::new(resolved["configPath"].as_str().unwrap());
+    assert_eq!(resolved_path, default_config);
     assert_eq!(resolved["configFileExists"], false);
     assert!(!default_config.exists());
 
