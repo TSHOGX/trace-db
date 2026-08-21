@@ -83,7 +83,7 @@ trace-db daemon uninstall
 - **Linux**: systemd user journal；使用
   `journalctl --user -u tracedb-watch.service -f` 查看。
 - **Windows**: Task Scheduler 启动的进程继承宿主输出；建议通过 wrapper 将
-  stdout/stderr 分别重定向到文件，并在任务属性中启用失败重启。
+  stdout/stderr 分别重定向到文件。安装命令会写入带有 3 次失败重试策略的任务定义。
 
 ```bash
 # 查看最近的日志
@@ -179,7 +179,7 @@ trace-db daemon install --interval 600
 - **Linux**: `~/.config/systemd/user/tracedb-watch.service`。安装后使用
   `systemctl --user status tracedb-watch.service` 检查状态；若需要在未登录时继续运行，
   请为用户启用 lingering (`loginctl enable-linger "$USER"`)。
-- **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。安装命令创建
-  任务本身；请在任务属性中配置“失败后重新启动”策略，以便 watch 进程异常退出后自动恢复。
+- **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。安装命令会
+  生成 `TraceDB-Watch.xml`，包含低权限运行、无限执行时限和每分钟最多 3 次失败重启。
 
 服务管理器只负责进程生命周期；`watch` 自身负责增量扫描、文件系统通知和定时回退。

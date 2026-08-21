@@ -85,9 +85,10 @@ schtasks /Create /TN TraceDB-Watch /SC ONLOGON /RL LIMITED /F `
   /TR '"C:\\Tools\\trace-db.exe" --config "C:\\Users\\you\\.config\\trace-db\\config.toml" watch --json'
 ```
 
-Use Task Scheduler's *Restart the task if it fails* policy for recovery. Keep
-JSON stdout and diagnostics stderr in separate redirected files if the task is
-launched through a wrapper script.
+The built-in installer uses an XML task definition with a logon trigger,
+least-privilege execution, unlimited execution time, and up to three restarts at
+one-minute intervals after failure. Keep JSON stdout and diagnostics stderr in
+separate redirected files if the task is launched through a wrapper script.
 
 ## Operational notes
 
@@ -99,8 +100,6 @@ launched through a wrapper script.
 - The archive uses WAL and transactional upserts, so a process restart can
   safely repeat the startup scan.
 - The built-in macOS daemon uses launchd `KeepAlive`; Linux uses systemd
-  `Restart=on-failure`. Windows Task Scheduler requires enabling its restart-on-
-  failure policy in the task properties because `schtasks` does not expose that
-  policy on the command line used by TraceDB.
+  `Restart=on-failure`; Windows uses the XML task's `RestartOnFailure` policy.
 - Use `trace-db watch --once --json` as a deployment health probe before
   enabling a long-lived service.

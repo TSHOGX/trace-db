@@ -1,7 +1,7 @@
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use anyhow::anyhow;
 use anyhow::Result;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::fs;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
@@ -410,34 +410,25 @@ pub fn install_daemon(
     exclude: Option<String>,
     root: Option<&Path>,
 ) -> Result<()> {
-    let task = windows_task_command(trace_db_bin, db_path, interval, agents, mode, exclude, root);
-    let output = ProcessCommand::new("schtasks")
-        .args([
-            "/Create",
-            "/TN",
-            "TraceDB-Watch",
-            "/SC",
-            "ONLOGON",
-            "/RL",
-            "LIMITED",
-            "/F",
-            "/TR",
-            &task,
-        ])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "schtasks failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let args = watch_args(trace_db_bin, db_path, interval, agents, mode, exclude, root);
+    let definition_path = windows_task_definition_path()?;
+    if let Some(parent) = definition_path.parent() {
+        fs::create_dir_all(parent)?;
     }
+    fs::write(&definition_path, windows_task_xml(&args))?;
+    let definition = definition_path.to_string_lossy().into_owned();
+    run_schtasks(["/Create", "/TN", "TraceDB-Watch", "/XML", &definition, "/F"])?;
     println!("TraceDB watch daemon installed successfully (Task Scheduler: TraceDB-Watch)");
+    println!("  Task definition: {}", definition_path.display());
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 pub fn uninstall_daemon() -> Result<()> {
     run_schtasks(["/Delete", "/TN", "TraceDB-Watch", "/F"])?;
+    if let Ok(path) = windows_task_definition_path() {
+        let _ = fs::remove_file(path);
+    }
     println!("TraceDB watch daemon uninstalled successfully");
     Ok(())
 }
@@ -473,25 +464,74 @@ fn run_schtasks<const N: usize>(args: [&str; N]) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_task_command(
-    trace_db_bin: &Path,
-    db_path: &Path,
-    interval: u64,
-    agents: Option<String>,
-    mode: Option<String>,
-    exclude: Option<String>,
-    root: Option<&Path>,
-) -> String {
-    watch_args(trace_db_bin, db_path, interval, agents, mode, exclude, root)
-        .iter()
-        .map(|arg| windows_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn windows_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 #[cfg(target_os = "windows")]
-fn windows_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\\\""))
+fn windows_task_definition_path() -> Result<std::path::PathBuf> {
+    Ok(dirs::config_dir()
+        .ok_or_else(|| anyhow!("cannot determine configuration directory"))?
+        .join("trace-db/TraceDB-Watch.xml"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_task_xml(args: &[String]) -> String {
+    let command = xml_escape(&args[0]);
+    let arguments = args[1..]
+        .iter()
+        .map(|arg| windows_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>TraceDB native-session watcher</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#,
+        xml_escape(&arguments)
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(all(
@@ -624,7 +664,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn task_command_preserves_quoted_paths_and_overrides() {
-        let command = windows_task_command(
+        let xml = windows_task_xml(&watch_args(
             Path::new(r"C:\Tools\trace db.exe"),
             Path::new(r"C:\Data\archive.db"),
             42,
@@ -632,10 +672,32 @@ mod tests {
             Some("full".into()),
             None,
             None,
+        ));
+        assert!(xml.contains(r#"&quot;C:\Tools\trace db.exe&quot;"#));
+        assert!(xml.contains(r#"&quot;--interval&quot; &quot;42&quot;"#));
+        assert!(xml.contains(r#"&quot;--agent&quot; &quot;claude,codex&quot;"#));
+        assert!(xml.contains(r#"&quot;C:\Data\archive.db&quot;"#));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn task_xml_has_logon_trigger_and_restart_policy() {
+        let args = watch_args(
+            Path::new(r"C:\Tools\trace db.exe"),
+            Path::new(r"C:\Data\100%\archive.db"),
+            42,
+            Some("claude,codex".into()),
+            Some("full".into()),
+            None,
+            None,
         );
-        assert!(command.contains(r#""C:\Tools\trace db.exe""#));
-        assert!(command.contains(r#""--interval" "42""#));
-        assert!(command.contains(r#""--agent" "claude,codex""#));
-        assert!(command.contains(r#""C:\Data\archive.db""#));
+        let xml = windows_task_xml(&args);
+        assert!(xml.contains("<LogonTrigger>"));
+        assert!(xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(xml.contains("<RestartOnFailure>"));
+        assert!(xml.contains("<Interval>PT1M</Interval>"));
+        assert!(xml.contains("<Count>3</Count>"));
+        assert!(xml.contains("&quot;C:\\Tools\\trace db.exe&quot;"));
+        assert!(xml.contains("100%"));
     }
 }
