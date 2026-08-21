@@ -124,6 +124,28 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_windows_native_zip_shape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="tracedb-artifacts-") as directory:
+            root = Path(directory)
+            package_root = "trace-db-9.8.7-x86_64-pc-windows-msvc"
+            archive_path = root / "native-windows.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for binary in ("trace-db.exe", "trace-db-bench.exe", "trace-db-relevance.exe"):
+                    archive.writestr(f"{package_root}/{binary}", b"binary")
+                for name in (
+                    "fts5jieba.dll",
+                    "README.md",
+                    "LICENSE",
+                    "proto/tracedb/v1/tracedb.proto",
+                ):
+                    archive.writestr(f"{package_root}/{name}", b"artifact")
+            result = run_verifier(
+                archive_path,
+                "--target",
+                "x86_64-pc-windows-msvc",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
             wheel = root / "tracedb-9.8.7-py3-none-any.whl"
             with zipfile.ZipFile(wheel, "w") as archive:
                 archive.writestr("tracedb/__init__.py", "")

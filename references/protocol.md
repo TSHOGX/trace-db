@@ -65,6 +65,10 @@ not implied.
 
 ## Methods
 
+The table includes the stable gRPC RPCs and the related Rust facade/CLI
+operations. `Backup` and `Gc` are intentionally facade/CLI-only operations;
+they are not part of the `tracedb.v1` wire service.
+
 | Method | Behavior |
 |---|---|
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures. |
