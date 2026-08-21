@@ -98,5 +98,9 @@ launched through a wrapper script.
   active, with a structured stability issue emitted.
 - The archive uses WAL and transactional upserts, so a process restart can
   safely repeat the startup scan.
+- The built-in macOS daemon uses launchd `KeepAlive`; Linux uses systemd
+  `Restart=on-failure`. Windows Task Scheduler requires enabling its restart-on-
+  failure policy in the task properties because `schtasks` does not expose that
+  policy on the command line used by TraceDB.
 - Use `trace-db watch --once --json` as a deployment health probe before
   enabling a long-lived service.

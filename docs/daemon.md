@@ -77,7 +77,13 @@ trace-db daemon uninstall
 
 ## 日志查看
 
-daemon 的运行日志保存在 `~/.config/trace-db/daemon.log`：
+日志位置取决于平台：
+
+- **macOS**: `~/.config/trace-db/daemon.log`（launchd stdout/stderr）。
+- **Linux**: systemd user journal；使用
+  `journalctl --user -u tracedb-watch.service -f` 查看。
+- **Windows**: Task Scheduler 启动的进程继承宿主输出；建议通过 wrapper 将
+  stdout/stderr 分别重定向到文件，并在任务属性中启用失败重启。
 
 ```bash
 # 查看最近的日志
@@ -102,7 +108,7 @@ daemon 通过 launchd 服务管理，配置文件位于 `~/Library/LaunchAgents/
 关键配置：
 - `StartInterval`: 定时触发间隔（秒）
 - `RunAtLoad`: 登录时自动启动
-- `KeepAlive`: false（任务完成后退出，等待下次触发）
+- `KeepAlive`: true（watch 异常退出后由 launchd 自动重启）
 
 ### watch 命令的增量入库
 
@@ -173,7 +179,7 @@ trace-db daemon install --interval 600
 - **Linux**: `~/.config/systemd/user/tracedb-watch.service`。安装后使用
   `systemctl --user status tracedb-watch.service` 检查状态；若需要在未登录时继续运行，
   请为用户启用 lingering (`loginctl enable-linger "$USER"`)。
-- **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。请在任务属性中
-  配置失败重启策略，以便 watch 进程异常退出后自动恢复。
+- **Windows**: Task Scheduler 任务 `TraceDB-Watch`，触发器为用户登录。安装命令创建
+  任务本身；请在任务属性中配置“失败后重新启动”策略，以便 watch 进程异常退出后自动恢复。
 
 服务管理器只负责进程生命周期；`watch` 自身负责增量扫描、文件系统通知和定时回退。

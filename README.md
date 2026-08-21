@@ -172,8 +172,9 @@ trace-db daemon uninstall
 
 The daemon uses `watch` under the hood, which performs incremental ingestion:
 it only processes changed sessions and skips unchanged ones. Logs are written
-to `~/.config/trace-db/daemon.log`. See [docs/daemon.md](docs/daemon.md) for
-detailed documentation.
+to the platform service manager (launchd file on macOS, systemd journal on
+Linux, and the Task Scheduler host/wrapper on Windows). See
+[docs/daemon.md](docs/daemon.md) for detailed logging and recovery guidance.
 
 The global `--format` flag accepts `text`, `json`, `jsonl`, or `markdown` and
 overrides the configured `output_format`. The legacy command-level `--json`

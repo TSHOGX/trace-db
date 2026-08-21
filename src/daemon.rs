@@ -247,7 +247,7 @@ fn generate_plist(label: &str, program_args: &[String], log_path: &Path) -> Resu
   <string>{}</string>
 
   <key>KeepAlive</key>
-  <false/>
+  <true/>
 </dict>
 </plist>"#,
         label,
@@ -598,6 +598,27 @@ mod tests {
         assert!(unit.contains("\"/opt/trace db/trace-db\""));
         assert!(unit.contains("\"/tmp/100%%/archive.db\""));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launchd_plist_restarts_after_failure() {
+        let plist = generate_plist(
+            "com.tracedb.watch-daemon",
+            &watch_args(
+                Path::new("/usr/local/bin/trace-db"),
+                Path::new("/tmp/archive.db"),
+                42,
+                None,
+                None,
+                None,
+                None,
+            ),
+            Path::new("/tmp/trace-db.log"),
+        )
+        .unwrap();
+        assert!(plist.contains("<key>KeepAlive</key>\n  <true/>"));
+        assert!(plist.contains("<key>StartInterval</key>\n  <integer>42</integer>"));
     }
 
     #[cfg(target_os = "windows")]
