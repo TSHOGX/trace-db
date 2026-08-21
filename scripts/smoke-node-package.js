@@ -20,7 +20,7 @@ try {
   execFileSync(
     npm,
     ["install", "--prefix", installRoot, "--ignore-scripts", packagePath],
-    { stdio: "inherit" },
+    { stdio: "inherit", shell: process.platform === "win32" },
   );
   const { TraceDb } = require(join(installRoot, "node_modules/@tracedb/core"));
   const session = join(fixtureRoot, "session-node.json");
