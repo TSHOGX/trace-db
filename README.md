@@ -34,6 +34,32 @@ size for successfully parsed sessions that a full ingest would capture.
 
 ## Install and run
 
+### Homebrew (macOS and Linux)
+
+The recommended native installation uses the maintained
+[`TSHOGX/homebrew-tap`](https://github.com/TSHOGX/homebrew-tap) tap. Homebrew
+selects the correct release archive for Apple Silicon, Intel macOS, Linux
+x86-64, or Linux ARM64 and verifies the archive checksum before installing it.
+
+```bash
+brew tap TSHOGX/tap
+brew install trace-db
+trace-db --version
+trace-db doctor --json
+```
+
+The optional FTS5 Jieba extension is installed under
+`$(brew --prefix trace-db)/lib`. The default tokenizer remains SQLite's
+portable `unicode61`; select Jieba explicitly when needed:
+
+```bash
+export TRACEDB_TOKENIZER=jieba
+export TRACEDB_JIEBA_EXT="$(brew --prefix trace-db)/lib/libfts5jieba.dylib" # macOS
+# Linux: use libfts5jieba.so instead
+```
+
+### Build from source
+
 Requirements: Rust 1.83+ and Cargo.
 
 ```bash
@@ -67,8 +93,8 @@ attestations for the release assets. The release workflow runs
 consumers can verify an attached asset with
 `gh attestation verify ASSET --repo TSHOGX/trace-db`.
 
-For a reproducible Unix install, download the installer from the same release
-tag and pin the version explicitly:
+For a reproducible installation without Homebrew, download the installer from
+the same release tag and pin the version explicitly:
 
 ```bash
 curl --fail --location --output /tmp/tracedb-install.sh \
