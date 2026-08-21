@@ -55,7 +55,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: security
-      - run: cargo install cargo-audit --locked --version 0.21.2
+      - run: cargo install cargo-audit --locked --version 0.22.2
       - run: cargo audit --deny warnings --ignore RUSTSEC-2025-0057
       - run: python scripts/generate-sbom.py --output target/tracedb-sbom.json
 

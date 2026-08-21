@@ -93,10 +93,14 @@ impl Engine {
                 continue;
             }
             // CJK tokens are never English; no stemming.
+            let Some((byte_start, byte_end)) = unicode_span_to_bytes(text, tok.start, tok.end)
+            else {
+                continue;
+            };
             if !push(Emit {
                 text: normalized,
-                byte_start: base + tok.start,
-                byte_end: base + tok.end,
+                byte_start: base + byte_start,
+                byte_end: base + byte_end,
                 colocated: false,
             }) {
                 return false;
@@ -159,6 +163,21 @@ impl Engine {
         }
         true
     }
+}
+
+/// Jieba reports Unicode scalar positions, while SQLite FTS5 requires UTF-8
+/// byte offsets for snippet/highlight reconstruction.
+fn unicode_span_to_bytes(text: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    if start > end {
+        return None;
+    }
+    let start_byte = text.char_indices().nth(start)?.0;
+    let end_byte = if end == text.chars().count() {
+        text.len()
+    } else {
+        text.char_indices().nth(end)?.0
+    };
+    Some((start_byte, end_byte))
 }
 
 /// A word char within a non-CJK run: alphanumeric, or a combining diacritic so
@@ -336,5 +355,13 @@ mod tests {
         let words: Vec<&str> = toks.iter().map(|t| t.0.as_str()).collect();
         assert!(words.contains(&"苹果"));
         assert!(words.contains(&"iphone"));
+    }
+
+    #[test]
+    fn cjk_offsets_are_utf8_byte_offsets() {
+        let e = Engine::new(false);
+        let tokens = collect(&e, "the 棕色 Fox", Reason::Query);
+        let brown = tokens.iter().find(|token| token.0 == "棕色").unwrap();
+        assert_eq!(&"the 棕色 Fox"[brown.1..brown.2], "棕色");
     }
 }

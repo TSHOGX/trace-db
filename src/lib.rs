@@ -14,6 +14,7 @@ pub mod relevance;
 pub mod search;
 pub mod store;
 
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("tracedb.v1");
 }
