@@ -363,6 +363,10 @@ read-only probe against installed Claude Code, Codex, OpenCode, Gemini CLI, and
 Pi versions, including native discovery counts and the OpenCode reconstruction
 check.
 
+The conservative [completion evidence matrix](docs/completion-evidence.md)
+maps every final criterion to its direct tests or runtime probes and records the
+remaining Windows runner evidence gap.
+
 ## Relevance evaluation
 
 `trace-db-relevance` runs a deterministic labeled-query suite against normalized
