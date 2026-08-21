@@ -183,3 +183,7 @@ trace-db daemon install --interval 600
   生成 `TraceDB-Watch.xml`，包含低权限运行、无限执行时限和每分钟最多 3 次失败重启。
 
 服务管理器只负责进程生命周期；`watch` 自身负责增量扫描、文件系统通知和定时回退。
+
+2026-08-21 在 OrbStack Ubuntu arm64 VM 的真实 systemd user manager 上完成了
+`install → systemd-analyze verify → status → stop → start → uninstall` smoke，
+状态按预期在 `Running` 与 `Installed but not running` 之间切换，并在卸载后删除 unit。

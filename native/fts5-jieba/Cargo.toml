@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 libc = "0.2"
-jieba-rs = "0.10"
+jieba-rs = "=0.7.0"
 unicode-normalization = "0.1"
 rust-stemmers = "1.2"
 

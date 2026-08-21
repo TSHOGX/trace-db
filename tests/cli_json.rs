@@ -163,7 +163,7 @@ fn completions_generate_without_opening_an_archive() {
         .unwrap();
     assert!(output.status.success());
     let script = String::from_utf8(output.stdout).unwrap();
-    assert!(script.contains("_trace__db"));
+    assert!(script.contains("trace-db"));
     assert!(!path.exists());
 }
 

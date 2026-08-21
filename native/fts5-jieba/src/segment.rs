@@ -95,8 +95,8 @@ impl Engine {
             // CJK tokens are never English; no stemming.
             if !push(Emit {
                 text: normalized,
-                byte_start: base + tok.byte_start,
-                byte_end: base + tok.byte_end,
+                byte_start: base + tok.start,
+                byte_end: base + tok.end,
                 colocated: false,
             }) {
                 return false;
