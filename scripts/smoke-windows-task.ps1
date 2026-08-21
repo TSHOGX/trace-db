@@ -16,7 +16,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "daemon install failed" }
 
     $TaskXml = schtasks /Query /TN TraceDB-Watch /XML
-    if ($LASTEXITCODE -ne 0 -or $TaskXml -notmatch "RestartOnFailure") {
+    if ($LASTEXITCODE -ne 0 -or -not (($TaskXml -join "`n") -match "RestartOnFailure")) {
         throw "registered task is missing restart policy"
     }
 
