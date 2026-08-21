@@ -90,10 +90,15 @@ fn print_text(report: &BenchmarkSuiteReport) {
                 .write_amplification
                 .map(|value| format!("{value:.2}x"))
                 .unwrap_or_else(|| "n/a".into());
+            let p95 = metrics
+                .p95_wall_time_ns
+                .map(format_duration)
+                .unwrap_or_else(|| "n/a".into());
             println!(
-                "  {:<26} wall {:>10}  cpu {:>10}  peak {:>10}  db {:>10}  write amp {:>8}",
+                "  {:<26} wall {:>10}  p95 {:>10}  cpu {:>10}  peak {:>10}  db {:>10}  write amp {:>8}",
                 operation.name,
                 format_duration(metrics.wall_time_ns),
+                p95,
                 cpu,
                 rss,
                 format_bytes(metrics.database_bytes),

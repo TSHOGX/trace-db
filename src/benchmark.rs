@@ -12,9 +12,10 @@ use std::{
     time::Instant,
 };
 
-pub const BENCHMARK_SCHEMA_VERSION: &str = "tracedb-benchmark-v2";
+pub const BENCHMARK_SCHEMA_VERSION: &str = "tracedb-benchmark-v3";
 pub const STANDARD_SESSION_COUNTS: [usize; 3] = [1_000, 10_000, 100_000];
 pub const EVENTS_PER_SESSION: usize = 6;
+pub const SEARCH_REPETITIONS_PER_QUERY: usize = 20;
 const GENERATOR_VERSION: u32 = 1;
 const CHANGE_DIVISOR: usize = 100;
 const BASE_TIMESTAMP_SECONDS: i64 = 1_767_225_600;
@@ -71,6 +72,7 @@ pub struct BenchmarkSuiteReport {
     pub trace_db_version: String,
     pub generator_version: u32,
     pub events_per_session: usize,
+    pub search_repetitions_per_query: usize,
     pub changed_fraction: String,
     pub host: BenchmarkHost,
     pub runs: Vec<BenchmarkRunReport>,
@@ -131,6 +133,8 @@ impl std::fmt::Display for BenchmarkOperationName {
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkMetrics {
     pub wall_time_ns: u64,
+    /// Nearest-rank p95 of inner samples for operations that expose them.
+    pub p95_wall_time_ns: Option<u64>,
     pub cpu_time_ns: Option<u64>,
     pub process_peak_rss_bytes: Option<u64>,
     pub database_bytes: u64,
@@ -224,6 +228,7 @@ pub fn run_benchmarks(config: &BenchmarkConfig) -> Result<BenchmarkSuiteReport> 
         trace_db_version: env!("CARGO_PKG_VERSION").into(),
         generator_version: GENERATOR_VERSION,
         events_per_session: EVENTS_PER_SESSION,
+        search_repetitions_per_query: SEARCH_REPETITIONS_PER_QUERY,
         changed_fraction: format!("1/{CHANGE_DIVISOR}"),
         host: BenchmarkHost {
             os: std::env::consts::OS.into(),
@@ -295,26 +300,37 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
         },
     )?;
     operations.push(op);
-    let (_, op) = measure(BenchmarkOperationName::Search, &db_path, 0, || {
-        let mut results = 0;
-        for query in [
+    let (search_p95, mut op) = measure(BenchmarkOperationName::Search, &db_path, 0, || {
+        const QUERIES: [&str; 3] = [
             "deployment benchmark",
             "sqlite migration",
             "parser regression",
-        ] {
+        ];
+        let mut results = 0;
+        let mut samples = Vec::new();
+        for query in QUERIES {
             results += archive.search(SearchRequest::new(query))?.len();
+        }
+        for _ in 0..SEARCH_REPETITIONS_PER_QUERY {
+            for query in QUERIES {
+                let started = Instant::now();
+                archive.search(SearchRequest::new(query))?;
+                samples.push(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            }
         }
         if results == 0 {
             bail!("benchmark search returned no results");
         }
+        let p95 = nearest_rank_p95(&mut samples).context("benchmark search produced no samples")?;
         Ok((
-            (),
+            p95,
             BenchmarkResult::Searched {
-                queries: 3,
+                queries: QUERIES.len(),
                 results,
             },
         ))
     })?;
+    op.metrics.p95_wall_time_ns = Some(search_p95);
     operations.push(op);
     let (_, op) = measure(BenchmarkOperationName::List, &db_path, 0, || {
         let page = archive.list(ListRequest {
@@ -424,6 +440,7 @@ fn measure<T>(
     let physical = delta(after.write_bytes, before.write_bytes);
     let metrics = BenchmarkMetrics {
         wall_time_ns: u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        p95_wall_time_ns: None,
         cpu_time_ns: delta(after.cpu_time_ns, before.cpu_time_ns),
         process_peak_rss_bytes: after.peak_rss_bytes,
         database_bytes: database_bytes(db_path)?,
@@ -440,6 +457,15 @@ fn measure<T>(
             result,
         },
     ))
+}
+
+fn nearest_rank_p95(samples: &mut [u64]) -> Option<u64> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable();
+    let rank = (samples.len() * 95).div_ceil(100);
+    samples.get(rank.saturating_sub(1)).copied()
 }
 
 fn ingest_result(mode: IngestMode, r: &IngestReport) -> BenchmarkResult {

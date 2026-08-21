@@ -346,12 +346,16 @@ cargo run --release --bin trace-db-bench -- --sessions 1k,10k,100k --json > repo
 
 Every operation reports wall and CPU time, process peak RSS, database size
 including SQLite WAL/SHM sidecars, physical process write bytes where the host
-exposes them, logical source bytes, and write amplification. Write amplification
+exposes them, logical source bytes, and write amplification. The search operation
+warms each of three deterministic queries, measures each query 20 times, and reports
+the 60-sample nearest-rank p95 latency in `p95WallTimeNs`. Write amplification
 is physical process write bytes divided by source bytes parsed or captured in
 that ingest phase. It is `null` for unchanged/read-only operations and hosts
 without a physical-write counter. The JSON contract is versioned as
-`tracedb-benchmark-v1`; CPU/write values are process deltas while peak RSS is a
+`tracedb-benchmark-v3`; CPU/write values are process deltas while peak RSS is a
 process-lifetime high-water mark.
+The checked-in [benchmark baseline](docs/benchmark-baseline.md) records a
+repeatable 100,000-session result and its host context.
 
 ## Relevance evaluation
 

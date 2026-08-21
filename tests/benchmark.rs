@@ -2,7 +2,7 @@ use std::process::Command;
 use tempfile::tempdir;
 use tracedb::benchmark::{
     run_benchmarks, BenchmarkConfig, BenchmarkOperationName, BenchmarkResult,
-    BENCHMARK_SCHEMA_VERSION,
+    BENCHMARK_SCHEMA_VERSION, SEARCH_REPETITIONS_PER_QUERY,
 };
 
 #[test]
@@ -15,6 +15,10 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
     })
     .unwrap();
     assert_eq!(report.schema_version, BENCHMARK_SCHEMA_VERSION);
+    assert_eq!(
+        report.search_repetitions_per_query,
+        SEARCH_REPETITIONS_PER_QUERY
+    );
     let run = &report.runs[0];
     assert_eq!(run.sessions, 8);
     assert_eq!(run.changed_sessions, 1);
@@ -52,6 +56,20 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
             ..
         }
     ));
+    assert!(run.operations[4].metrics.p95_wall_time_ns.is_some());
+    match &run.operations[4].result {
+        BenchmarkResult::Searched { queries, results } => {
+            assert_eq!(*queries, 3);
+            assert!(*results > 0);
+        }
+        result => panic!("unexpected search result: {result:?}"),
+    }
+    assert!(run
+        .operations
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 4)
+        .all(|(_, operation)| operation.metrics.p95_wall_time_ns.is_none()));
     assert!(workspace
         .join("sessions-8/reconstructed/rollout-bench-000004.jsonl")
         .is_file());
@@ -78,10 +96,15 @@ fn benchmark_binary_emits_the_versioned_json_contract() {
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["schemaVersion"], BENCHMARK_SCHEMA_VERSION);
+    assert_eq!(
+        report["searchRepetitionsPerQuery"],
+        SEARCH_REPETITIONS_PER_QUERY
+    );
     assert_eq!(report["runs"][0]["sessions"], 4);
     assert_eq!(report["runs"][0]["operations"][0]["name"], "generate");
     assert_eq!(
         report["runs"][0]["operations"][3]["result"]["type"],
         "ingested"
     );
+    assert!(report["runs"][0]["operations"][4]["metrics"]["p95WallTimeNs"].is_u64());
 }

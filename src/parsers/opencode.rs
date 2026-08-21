@@ -145,7 +145,8 @@ fn parse_session(
     // `-shm` is a transient SQLite coordination file and changes whenever a
     // reader is active; it is not durable source content. Capture the durable
     // database and WAL, but never make the volatile SHM file a session source.
-    for suffix in ["-wal"] {
+    {
+        let suffix = "-wal";
         let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
         if sidecar.exists() {
             let metadata = fs::metadata(&sidecar)?;
@@ -409,7 +410,8 @@ impl Parser for OpenCodeParser {
         let metadata = fs::metadata(&db)?;
         let file_candidate = SessionCandidate::file(db.clone())?;
         let mut file_candidate = file_candidate;
-        for suffix in ["-wal"] {
+        {
+            let suffix = "-wal";
             let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
             if sidecar.exists() {
                 file_candidate.include_file(&sidecar)?;
