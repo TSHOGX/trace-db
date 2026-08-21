@@ -5,7 +5,7 @@ edition = "2021"
 description = "A loss-aware, local archive and retrieval CLI for coding-agent traces"
 license = "MIT"
 repository = "https://github.com/TSHOGX/trace-db"
-rust-version = "1.82"
+rust-version = "1.83"
 
 [lib]
 name = "tracedb"

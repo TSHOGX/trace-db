@@ -34,7 +34,7 @@ size for successfully parsed sessions that a full ingest would capture.
 
 ## Install and run
 
-Requirements: Rust 1.82+ and Cargo.
+Requirements: Rust 1.83+ and Cargo.
 
 ```bash
 cargo install --path .
@@ -458,12 +458,12 @@ cargo test -p trace-db --test platform_paths
 ```
 
 CI passes the narrowly scoped `RUSTSEC-2025-0057` unmaintained `fxhash`
-exception because it is currently required transitively by the Rust 1.82-
+exception because it is currently required transitively by the Rust 1.83-
 compatible `jieba-rs` tokenizer; see [`docs/security.md`](docs/security.md).
 
 The `native/fts5-jieba` crate is an optional loadable SQLite extension and is
 licensed under MIT OR Apache-2.0. The TraceDB core is MIT licensed.
 
-CI enforces Rust 1.82 compatibility and runs the core and tokenizer tests on
+CI enforces Rust 1.83 compatibility and runs the core and tokenizer tests on
 Linux, macOS, and Windows. A semantic version tag such as `v0.1.0` must match
 `Cargo.toml`; matching tags build and publish the platform archives.

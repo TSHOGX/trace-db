@@ -2,7 +2,7 @@
 name = "tracedb-node"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.83"
 publish = false
 description = "Thin Node.js binding for the TraceDB Rust facade"
 license = "MIT"
@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "=3.0.0", features = ["napi6", "dyn-symbols"] }
 napi-derive = "=3.0.0"
-# Pin napi's broad transitive ranges to retain the workspace Rust 1.82 MSRV.
+# Pin napi's broad transitive ranges to retain the workspace Rust 1.83 MSRV.
 napi-derive-backend = "=2.0.0"
 napi-sys = "=3.0.0"
 libloading = "=0.8.9"

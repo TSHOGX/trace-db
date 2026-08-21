@@ -7,4 +7,4 @@ unmaintained (not vulnerable) transitive dependency of the pinned
 
 The exception is narrowly scoped to that advisory ID. It does not suppress
 security vulnerabilities, unsoundness, or yanked-package findings. Revisit it
-when `jieba-rs` offers a Rust 1.82-compatible release without `fxhash`.
+when `jieba-rs` offers a Rust 1.83-compatible release without `fxhash`.

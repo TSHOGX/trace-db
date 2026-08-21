@@ -12,7 +12,8 @@ from tracedb import TraceDb
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="tracedb-python-") as directory:
         root = Path(directory)
-        (root / "session-python.json").write_text(
+        native = root / "session-python.json"
+        native.write_text(
             json.dumps(
                 {
                     "sessionId": "python",
@@ -31,7 +32,9 @@ def main() -> None:
         assert database.list(agent="gemini")["sessions"][0]["id"] == "gemini:python"
         assert database.search("deploy")[0]["id"] == "gemini:python"
         assert database.show("gemini:python")["events"][0]["text"] == "deploy python"
-        assert database.reconstruct("gemini:python", root / "restored") == []
+        restored = database.reconstruct("gemini:python", root / "restored")
+        assert len(restored) == 1
+        assert Path(restored[0]).read_bytes() == native.read_bytes()
         assert json.loads(database.stats_json())["totalSessions"] == 1
         database.reindex()
 
