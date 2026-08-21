@@ -59,7 +59,8 @@ Plist file: /Users/hsw/Library/LaunchAgents/com.tracedb.watch-daemon.plist
 trace-db daemon stop
 ```
 
-注意：停止后 daemon 仍会保持安装状态，在下次定时触发或系统重启时会重新启动。
+停止后 daemon 仍保持安装状态，但服务管理器不会自动重启它；运行
+`trace-db daemon start` 会重新加载并启动服务。
 
 ### 启动 daemon
 
@@ -192,3 +193,7 @@ trace-db daemon install --interval 600
 同一流程可用 `scripts/smoke-systemd-user.sh` 重复执行；Linux CI 在 Ubuntu
 runner 上运行该脚本并验证 startup ingest、`SIGKILL` 后的新 PID、native fixture
 增量变化以及 archive event 计数。
+
+macOS 的对应流程由 `scripts/smoke-launchd.sh` 重复执行，并已在真实 launchd
+上验证 startup ingest、`SIGKILL` 后 PID 变化、显式 stop/start 与 uninstall 清理；
+macOS CI 运行同一脚本。

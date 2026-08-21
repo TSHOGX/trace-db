@@ -117,6 +117,9 @@ jobs:
       - name: Linux systemd user daemon smoke
         if: runner.os == 'Linux'
         run: bash scripts/smoke-systemd-user.sh target/debug/trace-db
+      - name: macOS launchd daemon smoke
+        if: runner.os == 'macOS'
+        run: bash scripts/smoke-launchd.sh target/debug/trace-db
       - name: Windows daemon smoke
         if: runner.os == 'Windows'
         shell: pwsh

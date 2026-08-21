@@ -159,8 +159,11 @@ pub fn start_daemon() -> Result<()> {
         anyhow::bail!("Daemon is not installed. Run 'trace-db daemon install' first.");
     }
 
+    let plist = plist_path
+        .to_str()
+        .ok_or_else(|| anyhow!("daemon plist path is not valid UTF-8"))?;
     let output = ProcessCommand::new("launchctl")
-        .args(["start", label])
+        .args(["load", plist])
         .output()?;
 
     if !output.status.success() {
@@ -186,8 +189,11 @@ pub fn stop_daemon() -> Result<()> {
         anyhow::bail!("Daemon is not installed");
     }
 
+    let plist = plist_path
+        .to_str()
+        .ok_or_else(|| anyhow!("daemon plist path is not valid UTF-8"))?;
     let output = ProcessCommand::new("launchctl")
-        .args(["stop", label])
+        .args(["unload", plist])
         .output()?;
 
     if !output.status.success() {
