@@ -6,6 +6,7 @@ fn doctor(home: &std::path::Path, database: &std::path::Path) -> std::process::O
     Command::new(env!("CARGO_BIN_EXE_trace-db"))
         .args(["--db", database.to_str().unwrap(), "doctor", "--json"])
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .env_remove("TRACEDB_JIEBA_EXT")
         .output()
         .unwrap()
@@ -57,6 +58,7 @@ fn doctor_reports_an_invalid_tokenizer_extension() {
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db"))
         .args(["--db", database.to_str().unwrap(), "doctor", "--json"])
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
         .env("TRACEDB_JIEBA_EXT", &extension)
         .output()
         .unwrap();
@@ -101,6 +103,7 @@ fn doctor_reports_ingest_telemetry_lag_permissions_and_backup_guidance() {
             "--json",
         ])
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env_remove("TRACEDB_CONFIG")
@@ -137,6 +140,7 @@ fn doctor_reports_ingest_telemetry_lag_permissions_and_backup_guidance() {
             "--json",
         ])
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env_remove("TRACEDB_CONFIG")
