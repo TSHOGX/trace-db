@@ -423,7 +423,7 @@ pub fn install_daemon(
     }
     fs::write(
         &definition_path,
-        windows_task_xml(&args, &windows_task_user()?),
+        windows_task_xml_bytes(&args, &windows_task_user()?),
     )?;
     let definition = definition_path.to_string_lossy().into_owned();
     run_schtasks(["/Create", "/TN", "TraceDB-Watch", "/XML", &definition, "/F"])?;
@@ -510,7 +510,7 @@ fn windows_task_xml(args: &[String], user: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+        r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>TraceDB native-session watcher</Description>
@@ -550,6 +550,16 @@ fn windows_task_xml(args: &[String], user: &str) -> String {
         xml_escape(user),
         xml_escape(&arguments)
     )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_task_xml_bytes(args: &[String], user: &str) -> Vec<u8> {
+    let xml = windows_task_xml(args, user);
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in xml.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes
 }
 
 #[cfg(target_os = "windows")]
