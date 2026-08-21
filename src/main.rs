@@ -16,6 +16,8 @@ use tracedb::{
     WatchRequest,
 };
 
+mod daemon;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "trace-db",
@@ -227,6 +229,41 @@ enum Command {
         /// Target shell (bash, elvish, fish, powershell, or zsh).
         shell: Shell,
     },
+    /// Manage the watch daemon for automatic periodic ingestion.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonAction {
+    /// Install the watch daemon to run automatically.
+    Install {
+        /// Override the periodic interval in seconds (default: 1800, i.e., 30 minutes).
+        #[arg(long, default_value_t = 1800)]
+        interval: u64,
+        /// Override the configured agents to watch.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        agent: Option<Vec<Agent>>,
+        /// Override the configured capture mode.
+        #[arg(long)]
+        mode: Option<IngestMode>,
+        /// Override configured native-source exclusion globs.
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        exclude: Option<Vec<String>>,
+        /// Override the native store root.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// Uninstall the watch daemon.
+    Uninstall,
+    /// Show the daemon status.
+    Status,
+    /// Start the daemon manually.
+    Start,
+    /// Stop the running daemon.
+    Stop,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -959,8 +996,48 @@ fn main() -> anyhow::Result<()> {
             let mut command = Cli::command();
             generate(shell, &mut command, "trace-db", &mut io::stdout());
         }
+        Command::Daemon { action } => {
+            return handle_daemon_command(action, &config);
+        }
     }
     Ok(())
+}
+
+fn handle_daemon_command(action: DaemonAction, config: &TraceDbConfig) -> anyhow::Result<()> {
+    match action {
+        DaemonAction::Install {
+            interval,
+            agent,
+            mode,
+            exclude,
+            root,
+        } => {
+            let trace_db_bin = std::env::current_exe()?;
+            let agents_str = agent.map(|agents| {
+                agents
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
+            let mode_str = mode.map(|m| m.to_string());
+            let exclude_str = exclude.map(|e| e.join(","));
+
+            daemon::install_daemon(
+                &trace_db_bin,
+                &config.database_path,
+                interval,
+                agents_str,
+                mode_str,
+                exclude_str,
+                root.as_deref(),
+            )
+        }
+        DaemonAction::Uninstall => daemon::uninstall_daemon(),
+        DaemonAction::Status => daemon::daemon_status(),
+        DaemonAction::Start => daemon::start_daemon(),
+        DaemonAction::Stop => daemon::stop_daemon(),
+    }
 }
 
 fn display_endpoint(endpoint: &ServiceEndpoint) -> String {

@@ -43,6 +43,8 @@ trace-db ingest --dry-run --json
 trace-db ingest --mode full --agent codex
 trace-db ingest --strict --json
 trace-db watch --json
+trace-db daemon install          # Install watch daemon for automatic periodic ingestion
+trace-db daemon status            # Check daemon status
 trace-db search "deploy netlify" --limit 20 --json
 trace-db stats --json
 trace-db verify --json
@@ -124,6 +126,9 @@ defaults to `full`, output defaults to `text`, and watch timing defaults to
 ```text
 trace-db [--config PATH] [--db PATH] [--format text|json|jsonl|markdown] [--quiet] [--progress] [--tokenizer unicode61|jieba] [--tokenizer-extension PATH] COMMAND
 trace-db ingest [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
+trace-db watch [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
+trace-db daemon install [--interval SECONDS] [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--root PATH]
+trace-db daemon {status|start|stop|uninstall}
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
 trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]
@@ -136,11 +141,37 @@ trace-db stats [--json]
 trace-db verify [--json]
 trace-db doctor [--json]
 trace-db config [--json]
-trace-db watch [--agent A[,A...]] [--mode partial|full] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
 trace-db api
 trace-db serve [--listen 127.0.0.1:50051 | --socket PATH] [--reconstruct-root PATH]
 trace-db completions bash|elvish|fish|powershell|zsh
 ```
+
+### Watch daemon
+
+The `daemon` subcommand manages automatic periodic ingestion (macOS only currently):
+
+```bash
+# Install daemon to run every 30 minutes (default)
+trace-db daemon install
+
+# Install with custom interval (seconds)
+trace-db daemon install --interval 600
+
+# Check daemon status
+trace-db daemon status
+
+# Start/stop manually
+trace-db daemon start
+trace-db daemon stop
+
+# Uninstall
+trace-db daemon uninstall
+```
+
+The daemon uses `watch` under the hood, which performs incremental ingestion:
+it only processes changed sessions and skips unchanged ones. Logs are written
+to `~/.config/trace-db/daemon.log`. See [docs/daemon.md](docs/daemon.md) for
+detailed documentation.
 
 The global `--format` flag accepts `text`, `json`, `jsonl`, or `markdown` and
 overrides the configured `output_format`. The legacy command-level `--json`
