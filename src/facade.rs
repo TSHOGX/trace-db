@@ -1744,7 +1744,10 @@ pub struct RestoreManifestFile {
 
 /// Resolve the default native store root for one supported agent.
 pub fn native_root(agent: Agent) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
     match agent {
         Agent::Claude => home.join(".claude/projects"),
         Agent::Codex => home.join(".codex/sessions"),
