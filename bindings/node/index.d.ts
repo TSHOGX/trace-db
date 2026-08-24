@@ -55,6 +55,12 @@ export interface IngestIssue {
 
 export interface IngestReport {
   agents: AgentIngestReport[];
+  ack: IngestAck | null;
+}
+
+export interface IngestAck {
+  sequence: number;
+  committedAtMs: number;
 }
 
 export interface SearchResult {

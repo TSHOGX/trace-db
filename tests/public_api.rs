@@ -480,11 +480,15 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     assert_eq!(first.total_parsed(), 1);
     assert_eq!(first.total_ingested(), 1);
     assert_eq!(first.total_unchanged(), 0);
+    let first_ack = first.ack.expect("successful ingest has a durable ack");
+    assert_eq!(first_ack.sequence, 1);
+    assert!(first_ack.committed_at_ms > 0);
 
     let unchanged = db.ingest(request(IngestMode::Partial, None)).unwrap();
     assert_eq!(unchanged.total_parsed(), 0);
     assert_eq!(unchanged.total_ingested(), 0);
     assert_eq!(unchanged.total_unchanged(), 1);
+    assert_eq!(unchanged.ack.unwrap().sequence, first_ack.sequence + 1);
 
     let full_plan = db.ingest_dry_run(request(IngestMode::Full, None)).unwrap();
     assert_eq!(full_plan.total_discovered(), 1);
@@ -531,4 +535,10 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     assert_eq!(skipped.total_parsed(), 0);
     assert_eq!(skipped.total_unchanged(), 0);
     assert_eq!(skipped.total_skipped_by_since(), 1);
+
+    let database_path = dir.path().join("trace.db");
+    drop(db);
+    let mut reopened = TraceDb::open(database_path).unwrap();
+    let resumed = reopened.ingest(request(IngestMode::Partial, None)).unwrap();
+    assert_eq!(resumed.ack.unwrap().sequence, 6);
 }

@@ -1,7 +1,8 @@
 use crate::{
     config::TokenizerKind,
     model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
-    IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionSummary, SessionTrace,
+    IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionSummary,
+    SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -28,6 +29,7 @@ pub struct CandidateState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredIngestStatus {
+    pub ack_sequence: u64,
     pub completed_at_ms: i64,
     pub discovered: usize,
     pub ingested: usize,
@@ -371,8 +373,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
 /// Persist the latest ingest outcome and a cumulative failure counter in the
 /// archive metadata table used by doctor and future background services.
-pub fn record_ingest_status(conn: &Connection, report: &IngestReport) -> Result<()> {
-    let previous: Option<String> = conn
+pub fn record_ingest_status(conn: &mut Connection, report: &IngestReport) -> Result<IngestAck> {
+    let tx = conn.transaction()?;
+    let previous: Option<String> = tx
         .query_row(
             "SELECT value FROM schema_meta WHERE key='ingest.last_status'",
             [],
@@ -389,19 +392,57 @@ pub fn record_ingest_status(conn: &Connection, report: &IngestReport) -> Result<
         .and_then(serde_json::Value::as_i64)
         .unwrap_or_default()
         + report.total_failed() as i64;
+    let previous_sequence: Option<String> = tx
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='ingest.next_ack_sequence'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let sequence = previous_sequence
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .context("invalid persisted ingest acknowledgement sequence")
+        })
+        .transpose()?
+        .or_else(|| {
+            previous
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|status| {
+                    status
+                        .get("ackSequence")
+                        .and_then(serde_json::Value::as_u64)
+                })
+        })
+        .unwrap_or_default()
+        .checked_add(1)
+        .context("ingest acknowledgement sequence exhausted")?;
+    let committed_at_ms = now_ms();
     let status = serde_json::json!({
-        "completedAtMs": now_ms(),
+        "ackSequence": sequence,
+        "completedAtMs": committed_at_ms,
         "discovered": report.total_discovered(),
         "ingested": report.total_ingested(),
         "skipped": report.total_skipped(),
         "failed": report.total_failed(),
         "cumulativeFailed": cumulative_failed,
     });
-    conn.execute(
+    tx.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('ingest.next_ack_sequence',?1)",
+        [sequence.to_string()],
+    )?;
+    tx.execute(
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('ingest.last_status',?1)",
         [status.to_string()],
     )?;
-    Ok(())
+    tx.commit()?;
+    Ok(IngestAck {
+        sequence,
+        committed_at_ms,
+    })
 }
 
 /// Read persisted ingest telemetry without mutating the archive.
@@ -426,6 +467,10 @@ pub fn ingest_status(conn: &Connection) -> Result<Option<StoredIngestStatus>> {
             .with_context(|| format!("ingest status field {key} is missing or invalid"))
     };
     Ok(Some(StoredIngestStatus {
+        ack_sequence: status
+            .get("ackSequence")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default(),
         completed_at_ms: status
             .get("completedAtMs")
             .and_then(serde_json::Value::as_i64)

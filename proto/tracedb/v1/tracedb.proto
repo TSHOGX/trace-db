@@ -37,6 +37,15 @@ message IngestResponse {
   uint64 total_skipped = 7;
   uint64 total_failed = 8;
   uint64 total_warnings = 9;
+  // Present when the ingest status was durably committed.  Clients may store
+  // this acknowledgement as an ingestion watermark; it is independent of
+  // source session timestamps such as ended_at_ms.
+  IngestAck ack = 10;
+}
+
+message IngestAck {
+  uint64 sequence = 1;
+  int64 committed_at_ms = 2;
 }
 
 message AgentIngestReport {

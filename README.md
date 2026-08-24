@@ -244,6 +244,11 @@ for row in rows {
 `parsers`, and `store` modules remain public for custom importers and
 specialized SQL access.
 
+Every mutating `ingest` response includes a durable monotonic `ack` containing
+`sequence` and `committedAtMs`. Persist this acknowledgement as the ingestion
+watermark; source `endedAtMs` values describe session activity and are not a
+commit boundary.
+
 `trace-db backup PATH` publishes a consistent SQLite snapshot through a staging
 directory and verifies the snapshot before returning. The destination must not
 already exist; this avoids accidental replacement and includes WAL state,

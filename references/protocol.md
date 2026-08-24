@@ -71,7 +71,7 @@ they are not part of the `tracedb.v1` wire service.
 
 | Method | Behavior |
 |---|---|
-| `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures. |
+| `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures plus a durable monotonic `ack` sequence. Consumers should persist the ack instead of deriving a watermark from `endedAtMs`. |
 | `Search` | Returns lineage-collapsed session hits. |
 | `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, and provider filters. |
 | `Show` | Returns session metadata, sources, and normalized events. |

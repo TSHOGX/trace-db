@@ -206,6 +206,10 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .write(move |database| database.ingest(ingest))
             .await
             .map_err(internal)?;
+        let ack = report.ack.map(|ack| pb::IngestAck {
+            sequence: ack.sequence,
+            committed_at_ms: ack.committed_at_ms,
+        });
         Ok(Response::new(pb::IngestResponse {
             total_discovered: report.total_discovered() as u64,
             total_ingested: report.total_ingested() as u64,
@@ -215,6 +219,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             total_skipped: report.total_skipped() as u64,
             total_failed: report.total_failed() as u64,
             total_warnings: report.total_warnings() as u64,
+            ack,
             agents: report
                 .agents
                 .into_iter()

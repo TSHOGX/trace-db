@@ -87,6 +87,20 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
     assert_eq!(stats.total_sessions, 2);
     assert_eq!(stats.total_events, 3);
 
+    let ingest = client
+        .ingest(tracedb::proto::IngestRequest {
+            agents: vec!["codex".into()],
+            mode: "partial".into(),
+            root: Some(dir.path().to_string_lossy().into_owned()),
+            since_ms: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ack = ingest.ack.expect("ingest response has an explicit ack");
+    assert!(ack.sequence > 0);
+    assert!(ack.committed_at_ms > 0);
+
     let list = client
         .list(ProtoListRequest {
             limit: 1,

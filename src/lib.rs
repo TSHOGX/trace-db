@@ -26,12 +26,12 @@ pub use facade::{
     doctor_archive, doctor_configured, native_root, verify_archive, AgentIngestDryRunReport,
     AgentIngestReport, AgentStats, ArchiveStats, BackupReport, DoctorAgent, DoctorBackup,
     DoctorDatabase, DoctorFailure, DoctorIngestStatus, DoctorPermissions, DoctorReport,
-    DoctorRuntime, DoctorTokenizer, DoctorWatch, GcReport, ImportReport, IngestDryRunReport,
-    IngestErrorCategory, IngestIssue, IngestReport, IngestRequest, IngestStage, ListPage,
-    ListRequest, ReconstructionOptions, RestoreManifest, RestoreManifestFile, SessionSummary,
-    SessionTrace, ShowRequest, TraceDb, VerificationFailure, VerifyCheck, VerifyReport, WatchEvent,
-    WatchIssue, WatchIssueStage, WatchRequest, WatchRun, WatchSummary, WatchTrigger,
-    RESTORE_MANIFEST_SCHEMA_VERSION,
+    DoctorRuntime, DoctorTokenizer, DoctorWatch, GcReport, ImportReport, IngestAck,
+    IngestDryRunReport, IngestErrorCategory, IngestIssue, IngestReport, IngestRequest, IngestStage,
+    ListPage, ListRequest, ReconstructionOptions, RestoreManifest, RestoreManifestFile,
+    SessionSummary, SessionTrace, ShowRequest, TraceDb, VerificationFailure, VerifyCheck,
+    VerifyReport, WatchEvent, WatchIssue, WatchIssueStage, WatchRequest, WatchRun, WatchSummary,
+    WatchTrigger, RESTORE_MANIFEST_SCHEMA_VERSION,
 };
 pub use model::{
     Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,

@@ -149,8 +149,14 @@ impl TraceDb {
                 failures,
             });
         }
-        let report = IngestReport { agents: reports };
-        store::record_ingest_status(&self.connection, &report)?;
+        let mut report = IngestReport {
+            agents: reports,
+            ack: None,
+        };
+        // Persist the run status before exposing its acknowledgement.  A caller
+        // can therefore safely treat the ack as a durable commit boundary; a
+        // crash before this point yields no false-positive acknowledgement.
+        report.ack = Some(store::record_ingest_status(&mut self.connection, &report)?);
         Ok(report)
     }
 
@@ -1310,6 +1316,9 @@ impl IngestIssue {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngestReport {
     pub agents: Vec<AgentIngestReport>,
+    /// Durable acknowledgement for this ingest run.  This is `None` only for
+    /// reports assembled by older callers or in-memory test code.
+    pub ack: Option<IngestAck>,
 }
 
 impl IngestReport {
@@ -1344,6 +1353,19 @@ impl IngestReport {
     pub fn total_warnings(&self) -> usize {
         self.agents.iter().map(|row| row.warnings.len()).sum()
     }
+}
+
+/// A durable, monotonic acknowledgement for a completed ingest run.
+///
+/// The sequence is allocated in SQLite metadata and committed together with
+/// the run telemetry.  It is intentionally independent of session timestamps:
+/// `endedAtMs` describes the source session, not when TraceDB durably accepted
+/// it, and is therefore not a safe ingestion watermark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestAck {
+    pub sequence: u64,
+    pub committed_at_ms: i64,
 }
 
 /// Machine-readable result of an ingest plan that performs no archive writes.
@@ -1549,6 +1571,7 @@ pub struct DoctorAgent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorIngestStatus {
+    pub ack_sequence: u64,
     pub successful: bool,
     pub completed_at_ms: i64,
     pub discovered: usize,
@@ -1561,6 +1584,7 @@ pub struct DoctorIngestStatus {
 impl From<store::StoredIngestStatus> for DoctorIngestStatus {
     fn from(status: store::StoredIngestStatus) -> Self {
         Self {
+            ack_sequence: status.ack_sequence,
             successful: status.failed == 0,
             completed_at_ms: status.completed_at_ms,
             discovered: status.discovered,
