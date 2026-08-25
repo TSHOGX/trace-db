@@ -624,6 +624,9 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if let Command::Daemon { action } = &cli.command {
+        return handle_daemon_command(action, &config);
+    }
     let mut db = TraceDb::open_configured(&config)?;
     match cli.command {
         Command::Ingest {
@@ -996,14 +999,12 @@ fn main() -> anyhow::Result<()> {
             let mut command = Cli::command();
             generate(shell, &mut command, "trace-db", &mut io::stdout());
         }
-        Command::Daemon { action } => {
-            return handle_daemon_command(action, &config);
-        }
+        Command::Daemon { .. } => unreachable!("daemon handled before opening archive"),
     }
     Ok(())
 }
 
-fn handle_daemon_command(action: DaemonAction, config: &TraceDbConfig) -> anyhow::Result<()> {
+fn handle_daemon_command(action: &DaemonAction, config: &TraceDbConfig) -> anyhow::Result<()> {
     match action {
         DaemonAction::Install {
             interval,
@@ -1013,7 +1014,7 @@ fn handle_daemon_command(action: DaemonAction, config: &TraceDbConfig) -> anyhow
             root,
         } => {
             let trace_db_bin = std::env::current_exe()?;
-            let agents_str = agent.map(|agents| {
+            let agents_str = agent.as_ref().map(|agents| {
                 agents
                     .iter()
                     .map(ToString::to_string)
@@ -1021,12 +1022,12 @@ fn handle_daemon_command(action: DaemonAction, config: &TraceDbConfig) -> anyhow
                     .join(",")
             });
             let mode_str = mode.map(|m| m.to_string());
-            let exclude_str = exclude.map(|e| e.join(","));
+            let exclude_str = exclude.as_ref().map(|e| e.join(","));
 
             daemon::install_daemon(
                 &trace_db_bin,
                 &config.database_path,
-                interval,
+                *interval,
                 agents_str,
                 mode_str,
                 exclude_str,
