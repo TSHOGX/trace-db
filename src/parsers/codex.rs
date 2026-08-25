@@ -3,7 +3,9 @@
 //! `response_item/message`). Native records are retained in full mode; this
 //! parser only emits the cross-agent projection used by search/show.
 
-use super::{read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat};
+use super::{
+    read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat,
+};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
     TokenUsage,
@@ -259,13 +261,6 @@ fn rollout_paths(root: &Path, discovery: &mut Discovery) -> Vec<PathBuf> {
     paths
 }
 
-/// Codex records the parent edge only in the parent's spawn_agent output. A
-/// full pre-pass is therefore required even when the caller later filters by
-/// date or project.
-fn build_lineage(paths: &[PathBuf]) -> (Lineage, RolloutSessionIds) {
-    build_lineage_with_cache(paths, &HashMap::new(), &mut HashMap::new())
-}
-
 fn build_lineage_with_cache(
     paths: &[PathBuf],
     fingerprints: &HashMap<String, String>,
@@ -314,6 +309,14 @@ fn build_lineage_with_cache(
         }
         cache.insert(locator, entry);
     }
+    // Rollout files are append-only in place but can be deleted during normal
+    // retention/cleanup. Pruning here keeps the persisted hint bounded and
+    // prevents stale lineage from accumulating forever in schema_meta.
+    let live = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    cache.retain(|locator, _| live.contains(locator));
     (edges, session_ids)
 }
 
@@ -375,11 +378,7 @@ impl Parser for CodexParser {
     fn agent(&self) -> Agent {
         Agent::Codex
     }
-    fn discover_with_hints(
-        &self,
-        root: &Path,
-        hints: &mut DiscoveryHints,
-    ) -> Result<Discovery> {
+    fn discover_with_hints(&self, root: &Path, hints: &mut DiscoveryHints) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);

@@ -397,11 +397,7 @@ impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
     }
-    fn discover_with_hints(
-        &self,
-        root: &Path,
-        _hints: &mut DiscoveryHints,
-    ) -> Result<Discovery> {
+    fn discover_with_hints(&self, root: &Path, _hints: &mut DiscoveryHints) -> Result<Discovery> {
         let Some(db) = db_path(root) else {
             return Ok(Discovery::default());
         };

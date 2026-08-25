@@ -136,8 +136,7 @@ pub(crate) fn fingerprint_metadata_matches(
     let Some((stored_bytes, stored_mtime)) = tail.rsplit_once(':') else {
         return false;
     };
-    stored_bytes == bytes.to_string()
-        && stored_mtime.parse::<i64>().ok() == mtime_ns.or(Some(0))
+    stored_bytes == bytes.to_string() && stored_mtime.parse::<i64>().ok() == mtime_ns.or(Some(0))
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -256,6 +255,16 @@ pub(crate) fn read_json_lines(path: &Path) -> Result<Vec<Value>> {
     Ok(records)
 }
 
+pub fn parser(agent: Agent) -> Box<dyn Parser> {
+    match agent {
+        Agent::Claude => Box::new(claude::ClaudeParser),
+        Agent::Codex => Box::new(codex::CodexParser),
+        Agent::OpenCode => Box::new(opencode::OpenCodeParser),
+        Agent::Gemini => Box::new(gemini::GeminiParser),
+        Agent::Pi => Box::new(pi::PiParser),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,18 +283,7 @@ mod tests {
         let path = dir.path().join("session.jsonl");
         std::fs::write(&path, b"{\"type\":\"session_meta\"}\n").unwrap();
         let first = SessionCandidate::file(path.clone()).unwrap();
-        let second =
-            SessionCandidate::file_with_cache(path, Some(&first.fingerprint)).unwrap();
+        let second = SessionCandidate::file_with_cache(path, Some(&first.fingerprint)).unwrap();
         assert_eq!(first.fingerprint, second.fingerprint);
-    }
-}
-
-pub fn parser(agent: Agent) -> Box<dyn Parser> {
-    match agent {
-        Agent::Claude => Box::new(claude::ClaudeParser),
-        Agent::Codex => Box::new(codex::CodexParser),
-        Agent::OpenCode => Box::new(opencode::OpenCodeParser),
-        Agent::Gemini => Box::new(gemini::GeminiParser),
-        Agent::Pi => Box::new(pi::PiParser),
     }
 }

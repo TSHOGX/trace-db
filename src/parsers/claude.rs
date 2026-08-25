@@ -1,4 +1,6 @@
-use super::{read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat};
+use super::{
+    read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat,
+};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -219,11 +221,7 @@ impl Parser for ClaudeParser {
     fn agent(&self) -> Agent {
         Agent::Claude
     }
-    fn discover_with_hints(
-        &self,
-        root: &Path,
-        hints: &mut DiscoveryHints,
-    ) -> Result<Discovery> {
+    fn discover_with_hints(&self, root: &Path, hints: &mut DiscoveryHints) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);

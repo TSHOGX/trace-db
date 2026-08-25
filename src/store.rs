@@ -592,6 +592,16 @@ pub fn save_codex_rollout_cache(
     cache: &HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>,
 ) -> Result<()> {
     let payload = serde_json::to_string(cache)?;
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key=?1",
+            params![CODEX_ROLLOUT_CACHE_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if previous.as_deref() == Some(payload.as_str()) {
+        return Ok(());
+    }
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?1,?2)",
         params![CODEX_ROLLOUT_CACHE_KEY, payload],
@@ -952,17 +962,31 @@ pub fn upsert(
     mut parsed: ParsedSession,
     requested: IngestMode,
 ) -> Result<()> {
-    assign_indexes(&mut parsed.events);
+    upsert_many(conn, std::slice::from_mut(&mut parsed), requested)
+}
+
+/// Upsert a batch in one transaction. Ingest callers use this as the normal
+/// path so SQLite pays one WAL/fsync boundary per agent rather than one per
+/// session. Callers that need per-candidate best-effort isolation can fall
+/// back to [`upsert`] when the batch transaction fails.
+pub fn upsert_many(
+    conn: &mut Connection,
+    parsed_sessions: &mut [ParsedSession],
+    requested: IngestMode,
+) -> Result<()> {
     let tx = conn.transaction()?;
-    let old: Option<String> = tx
-        .query_row(
-            "SELECT mode FROM sessions WHERE id=?1",
-            [&parsed.session.id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let mode = requested.retain_full(old.and_then(|s| s.parse().ok()));
-    write_session(&tx, &parsed.session, &parsed.events, mode)?;
+    for parsed in parsed_sessions {
+        assign_indexes(&mut parsed.events);
+        let old: Option<String> = tx
+            .query_row(
+                "SELECT mode FROM sessions WHERE id=?1",
+                [&parsed.session.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let mode = requested.retain_full(old.and_then(|s| s.parse().ok()));
+        write_session(&tx, &parsed.session, &parsed.events, mode)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1064,7 +1088,8 @@ fn write_session(
 
 fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event]) -> Result<bool> {
     let mut statement = tx.prepare(
-        "SELECT idx, kind, subtype, native_id, text, data_json
+        "SELECT idx, kind, subtype, role, name, call_id, is_error, native_id,
+                parent_id, model, provider, usage_json, text, data_json, created_at_ms
          FROM events WHERE session_id=?1 ORDER BY idx",
     )?;
     let stored = statement
@@ -1074,21 +1099,64 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<i64>>(14)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if stored.len() != events.len() {
         return Ok(false);
     }
-    for (event, (idx, kind, subtype, native_id, text, data_json)) in events.iter().zip(stored) {
+    for (
+        event,
+        (
+            idx,
+            kind,
+            subtype,
+            role,
+            name,
+            call_id,
+            is_error,
+            native_id,
+            parent_id,
+            model,
+            provider,
+            usage_json,
+            text,
+            data_json,
+            created_at_ms,
+        ),
+    ) in events.iter().zip(stored)
+    {
         if event.idx != idx
             || event.kind.as_str() != kind
             || event.subtype != subtype
+            || event.role != role
+            || event.name != name
+            || event.call_id != call_id
+            || event.is_error.map(i64::from) != is_error
             || event.native_id != native_id
+            || event.parent_id != parent_id
+            || event.model != model
+            || event.provider != provider
+            || event
+                .usage
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?
+                != usage_json
             || event.text != text
             || event.data_json.as_ref().map(ToString::to_string) != data_json
+            || event.created_at_ms != created_at_ms
         {
             return Ok(false);
         }
@@ -1817,6 +1885,22 @@ mod tests {
         reconstruct(&conn, "codex:test", &out, ReconstructionOptions::default()).unwrap();
         assert_eq!(fs::read(out.join("rollout.jsonl")).unwrap(), b"first\n");
         assert_eq!(fs::read(out.join("second.json")).unwrap(), b"second\n");
+    }
+
+    #[test]
+    fn upsert_many_is_atomic_before_best_effort_fallback() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+        let mut invalid = session(&dir.path().join("missing.jsonl"));
+        invalid.session.id = "codex:invalid".into();
+        let mut batch = vec![named_session("codex:valid", "hello"), invalid];
+        assert!(upsert_many(&mut conn, &mut batch, IngestMode::Full).is_err());
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

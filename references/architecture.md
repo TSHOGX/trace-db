@@ -104,6 +104,18 @@ SQLite calls do not occupy asynchronous runtime threads; in-memory test
 archives intentionally use the writer connection for reads because SQLite
 `:memory:` databases are connection-local.
 
+Ingest has two explicit performance invariants:
+
+- Native parsing is parallel only within a bounded worker count derived from
+  available CPU, and results are reassembled in discovery order. This keeps
+  throughput scalable without creating one OS thread per candidate or making
+  reports/session writes nondeterministic.
+- Parsed sessions for one agent are committed in one SQLite transaction. If a
+  candidate makes that batch fail, the facade retries the same batch as
+  individual transactions to preserve best-effort failure isolation. The fast
+  path therefore pays O(agent) commit boundaries while the recovery path keeps
+  the historical per-candidate semantics.
+
 ## Lineage
 
 There are two independent trees:

@@ -117,11 +117,38 @@ impl TraceDb {
             }
             let mut parsed = 0;
             let mut ingested = 0;
+            let mut ready = Vec::new();
             for (candidate, parsed_session) in parsed_candidates {
                 match parsed_session {
                     Ok(Some(mut session)) => {
                         parsed += 1;
                         session.session.fingerprint = candidate.fingerprint.clone();
+                        ready.push((candidate, session));
+                    }
+                    Ok(None) => {
+                        parsed += 1;
+                        skipped += 1;
+                    }
+                    Err(error) => {
+                        failure_quarantine.push((candidate.locator.clone(), candidate.fingerprint));
+                        failures.push(IngestIssue::from_error(
+                            IngestStage::Parsing,
+                            candidate.locator,
+                            &error,
+                        ));
+                    }
+                }
+            }
+            if !ready.is_empty() {
+                let (candidates, mut sessions): (Vec<_>, Vec<_>) = ready.into_iter().unzip();
+                if store::upsert_many(&mut self.connection, &mut sessions, request.mode).is_ok() {
+                    ingested += sessions.len();
+                    ingested_locators
+                        .extend(candidates.into_iter().map(|candidate| candidate.locator));
+                } else {
+                    // Preserve best-effort ingest semantics if one session has
+                    // a malformed object or otherwise poisons the batch.
+                    for (candidate, session) in candidates.into_iter().zip(sessions) {
                         match store::upsert(&mut self.connection, session, request.mode) {
                             Ok(()) => {
                                 ingested += 1;
@@ -137,18 +164,6 @@ impl TraceDb {
                                 ));
                             }
                         }
-                    }
-                    Ok(None) => {
-                        parsed += 1;
-                        skipped += 1;
-                    }
-                    Err(error) => {
-                        failure_quarantine.push((candidate.locator.clone(), candidate.fingerprint));
-                        failures.push(IngestIssue::from_error(
-                            IngestStage::Parsing,
-                            candidate.locator,
-                            &error,
-                        ));
                     }
                 }
             }
@@ -299,7 +314,8 @@ impl TraceDb {
                         &mut issues,
                         &mut run_count,
                     )? {
-                        periodic_interval = adaptive_periodic_interval(interval, &report);
+                        periodic_interval =
+                            adaptive_periodic_interval(interval, periodic_interval, &report);
                     }
                     next_periodic = Instant::now() + periodic_interval;
                 }
@@ -347,7 +363,8 @@ impl TraceDb {
                             &mut issues,
                             &mut run_count,
                         )? {
-                            periodic_interval = adaptive_periodic_interval(interval, &report);
+                            periodic_interval =
+                                adaptive_periodic_interval(interval, periodic_interval, &report);
                         }
                         next_periodic = Instant::now() + periodic_interval;
                     }
@@ -366,7 +383,8 @@ impl TraceDb {
                         &mut issues,
                         &mut run_count,
                     )? {
-                        periodic_interval = adaptive_periodic_interval(interval, &report);
+                        periodic_interval =
+                            adaptive_periodic_interval(interval, periodic_interval, &report);
                     }
                     next_periodic = Instant::now() + periodic_interval;
                 }
@@ -395,7 +413,11 @@ impl TraceDb {
         let mut ingest_request = request.ingest.clone();
         if matches!(trigger, WatchTrigger::Filesystem) {
             if let Some(paths) = touched_paths {
-                let scoped = agents_for_watch_paths(paths, &ingest_request.agents);
+                let scoped = agents_for_watch_paths(
+                    paths,
+                    &ingest_request.agents,
+                    ingest_request.root.as_deref(),
+                );
                 if !scoped.is_empty() {
                     ingest_request.agents = scoped;
                 }
@@ -460,7 +482,17 @@ impl TraceDb {
                 .map(|(locator, state)| (locator.clone(), state.fingerprint.clone()))
                 .collect(),
             codex_rollout_cache: if agent == Agent::Codex {
-                store::load_codex_rollout_cache(&self.connection).unwrap_or_default()
+                match store::load_codex_rollout_cache(&self.connection) {
+                    Ok(cache) => cache,
+                    Err(error) => {
+                        failures.push(IngestIssue::from_error(
+                            IngestStage::Database,
+                            self.path.display().to_string(),
+                            &error,
+                        ));
+                        return AgentScan::failed(failures);
+                    }
+                }
             } else {
                 HashMap::new()
             },
@@ -524,8 +556,7 @@ impl TraceDb {
             skipped_by_since,
             failures,
             parsed_candidates: parse_pending(agent, &pending, root),
-            codex_rollout_cache: (agent == Agent::Codex)
-                .then_some(hints.codex_rollout_cache),
+            codex_rollout_cache: (agent == Agent::Codex).then_some(hints.codex_rollout_cache),
         }
     }
 
@@ -1844,9 +1875,13 @@ pub struct RestoreManifestFile {
     pub mtime_ns: Option<i64>,
 }
 
-fn adaptive_periodic_interval(base: Duration, report: &IngestReport) -> Duration {
+fn adaptive_periodic_interval(
+    base: Duration,
+    current: Duration,
+    report: &IngestReport,
+) -> Duration {
     if report.total_parsed() == 0 && report.total_ingested() == 0 && report.total_failed() == 0 {
-        base.saturating_mul(2).min(base.saturating_mul(4))
+        current.saturating_mul(2).min(base.saturating_mul(4))
     } else {
         base
     }
@@ -1863,22 +1898,47 @@ fn parse_pending(
         return parser(agent).parse_many(pending, root);
     }
     let root = root.to_path_buf();
-    let results = std::sync::Mutex::new(Vec::with_capacity(pending.len()));
+    let workers = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+        .min(pending.len());
+    let chunk_size = pending.len().div_ceil(workers);
+    let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
-        for candidate in pending {
-            let candidate = candidate.clone();
+        for (chunk_index, chunk) in pending.chunks(chunk_size).enumerate() {
+            let batch = chunk.to_vec();
             let root = root.clone();
-            let results = &results;
+            let sender = sender.clone();
             scope.spawn(move || {
-                let parsed = parser(agent).parse(&candidate, &root);
-                results.lock().expect("parse worker result").push((candidate, parsed));
+                let parser = parser(agent);
+                for (offset, candidate) in batch.into_iter().enumerate() {
+                    let parsed = parser.parse(&candidate, &root);
+                    sender
+                        .send((chunk_index * chunk_size + offset, candidate, parsed))
+                        .expect("parse worker result receiver");
+                }
             });
         }
     });
-    results.into_inner().expect("parse worker results")
+    drop(sender);
+    let mut results = pending
+        .iter()
+        .map(|_| None)
+        .collect::<Vec<Option<(SessionCandidate, Result<Option<ParsedSession>>)>>>();
+    for (index, candidate, parsed) in receiver {
+        results[index] = Some((candidate, parsed));
+    }
+    results
+        .into_iter()
+        .map(|result| result.expect("parse worker returned every candidate"))
+        .collect()
 }
 
-fn agents_for_watch_paths(paths: &[PathBuf], configured: &[Agent]) -> Vec<Agent> {
+fn agents_for_watch_paths(
+    paths: &[PathBuf],
+    configured: &[Agent],
+    configured_root: Option<&Path>,
+) -> Vec<Agent> {
     let agents = if configured.is_empty() {
         Agent::ALL.to_vec()
     } else {
@@ -1889,8 +1949,13 @@ fn agents_for_watch_paths(paths: &[PathBuf], configured: &[Agent]) -> Vec<Agent>
     }
     let mut scoped = Vec::new();
     for agent in agents {
-        let root = native_root(agent);
-        if paths.iter().any(|path| path.starts_with(&root) || root.starts_with(path)) {
+        let root = configured_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| native_root(agent));
+        if paths
+            .iter()
+            .any(|path| path.starts_with(&root) || root.starts_with(path))
+        {
             scoped.push(agent);
         }
     }
