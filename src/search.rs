@@ -152,7 +152,11 @@ pub fn search(connection: &Connection, request: &SearchRequest) -> Result<Vec<Se
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    let edges = load_lineage_edges(connection)?;
+    let lineage_roots = scored
+        .iter()
+        .map(|result| result.id.clone())
+        .collect::<Vec<_>>();
+    let edges = load_lineage_edges(connection, &lineage_roots)?;
     let mut collapsed = Vec::<SearchResult>::new();
     let mut roots = HashMap::<String, usize>::new();
     for mut result in scored {
@@ -362,10 +366,33 @@ fn score_session(
     }
 }
 
-fn load_lineage_edges(connection: &Connection) -> Result<LineageEdges> {
-    let mut statement =
-        connection.prepare("SELECT id,parent_session_id,forked_from FROM sessions")?;
-    let rows = statement.query_map([], |row| {
+fn load_lineage_edges(connection: &Connection, roots: &[String]) -> Result<LineageEdges> {
+    if roots.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Search only needs lineage reachable from matched sessions. Loading the
+    // entire sessions table made query latency grow with archive size even for
+    // highly selective searches.
+    let placeholders = (1..=roots.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "WITH RECURSIVE lineage(id) AS (
+           SELECT id FROM sessions WHERE id IN ({placeholders})
+           UNION
+           SELECT COALESCE(s.parent_session_id,
+                           CASE WHEN instr(s.forked_from, '#') > 0
+                                THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
+                                ELSE s.forked_from END)
+           FROM sessions s JOIN lineage l ON s.id=l.id
+           WHERE s.parent_session_id IS NOT NULL OR s.forked_from IS NOT NULL
+         )
+         SELECT s.id,s.parent_session_id,s.forked_from
+         FROM sessions s JOIN lineage l ON l.id=s.id"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(roots.iter()), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,

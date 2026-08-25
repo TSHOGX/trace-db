@@ -535,9 +535,16 @@ pub fn update_ingest_quarantine(
     ingested_locators: &[String],
     failures: &[(String, String)],
 ) -> Result<()> {
+    // The common unchanged-watch pass has neither successes to clear nor
+    // failures to record. Avoid decoding and rewriting the potentially large
+    // JSON map in schema_meta in that case.
+    if ingested_locators.is_empty() && failures.is_empty() {
+        return Ok(());
+    }
     let mut quarantine = load_ingest_quarantine(conn)?;
+    let mut changed = false;
     for locator in ingested_locators {
-        quarantine.remove(locator);
+        changed |= quarantine.remove(locator).is_some();
     }
     let now_ms = now_ms();
     for (locator, fingerprint) in failures {
@@ -558,6 +565,10 @@ pub fn update_ingest_quarantine(
                 last_failed_ms: now_ms,
             };
         }
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
     }
     let payload = serde_json::to_string(&quarantine)?;
     conn.execute(

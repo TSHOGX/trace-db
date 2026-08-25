@@ -7,7 +7,9 @@ TraceDB has four layers:
 2. **The archive store** transactionally upserts sessions, events, provenance,
    and optional full native objects into SQLite.
 3. **Retrieval** uses SQLite FTS5 for bounded event candidates, aggregates them
-   at session level, and collapses parent/fork/subagent lineage.
+   at session level, and collapses parent/fork/subagent lineage. Lineage is
+   loaded with a recursive query rooted at matched sessions, so unrelated
+   archive history does not participate in every search.
 4. **Interfaces** expose the Rust crate, the CLI, the long-running watch loop,
    and the line-oriented JSON protocol.
 
