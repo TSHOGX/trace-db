@@ -4,7 +4,8 @@
 //! parser only emits the cross-agent projection used by search/show.
 
 use super::{
-    read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat,
+    for_each_json_line, set_if_none, Discovery, DiscoveryHints, Parser, SessionCandidate,
+    UnsupportedFormat,
 };
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
@@ -54,7 +55,6 @@ fn event(kind: EventKind, text: String, native: Option<String>, ts: Option<i64>)
 }
 
 fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let records = read_json_lines(path)?;
     let mut id = None;
     let mut cwd = None;
     let mut branch = None;
@@ -65,8 +65,8 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
     let mut meta = json!({});
     let mut events = Vec::new();
     let mut seen_user = std::collections::HashSet::new();
-    for r in &records {
-        let p = payload(r);
+    let record_count = for_each_json_line(path, |r| {
+        let p = payload(&r);
         let typ = r.get("type").and_then(Value::as_str).unwrap_or("");
         let ts = epoch(r.get("timestamp"));
         started = started.or(ts);
@@ -75,14 +75,20 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
         }
         match typ {
             "session_meta" => {
-                id = id.or_else(|| strv(p.get("id")).or_else(|| strv(p.get("session_id"))));
-                cwd = cwd.or_else(|| strv(p.get("cwd")));
-                provider = provider.or_else(|| strv(p.get("model_provider")));
-                branch = branch.or_else(|| p.get("git").and_then(|g| strv(g.get("branch"))));
+                set_if_none(
+                    &mut id,
+                    strv(p.get("id")).or_else(|| strv(p.get("session_id"))),
+                );
+                set_if_none(&mut cwd, strv(p.get("cwd")));
+                set_if_none(&mut provider, strv(p.get("model_provider")));
+                set_if_none(
+                    &mut branch,
+                    p.get("git").and_then(|g| strv(g.get("branch"))),
+                );
                 meta = json!({"cli_version":p.get("cli_version"),"originator":p.get("originator"),"source":p.get("source")});
             }
             "turn_context" => {
-                model = model.or_else(|| strv(p.get("model")));
+                set_if_none(&mut model, strv(p.get("model")));
             }
             "event_msg" => match p.get("type").and_then(Value::as_str).unwrap_or("") {
                 "user_message" => {
@@ -188,11 +194,12 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     let id = id.ok_or_else(|| {
         UnsupportedFormat(format!("rollout missing session id: {}", path.display()))
     })?;
-    let fingerprint = format!("{}:{}", records.len(), ended.unwrap_or_default());
+    let fingerprint = format!("{}:{}", record_count, ended.unwrap_or_default());
     let source = NativeSource {
         locator: path.display().to_string(),
         kind: "jsonl".into(),

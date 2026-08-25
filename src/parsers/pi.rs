@@ -1,5 +1,6 @@
 use super::{
-    read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat,
+    for_each_json_line, set_if_none, Discovery, DiscoveryHints, Parser, SessionCandidate,
+    UnsupportedFormat,
 };
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
@@ -21,25 +22,19 @@ fn ts(v: Option<&Value>) -> Option<i64> {
         .or_else(|| v.and_then(Value::as_i64).map(|x| x / 1_000))
 }
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let rows = read_json_lines(path)?;
-    let head = rows
-        .iter()
-        .find(|r| r.get("type").and_then(Value::as_str) == Some("session"))
-        .unwrap_or(&Value::Null);
-    let id = s(head.get("id")).ok_or_else(|| {
-        UnsupportedFormat(format!(
-            "Pi JSONL missing session header: {}",
-            path.display()
-        ))
-    })?;
-    let cwd = s(head.get("cwd"));
+    let mut id = None;
+    let mut cwd = None;
     let mut model = None;
     let mut provider = None;
-    let mut start = ts(head.get("timestamp"));
+    let mut start = None;
     let mut end = start;
     let mut events = Vec::new();
-    for r in &rows {
+    let row_count = for_each_json_line(path, |r| {
         let typ = r.get("type").and_then(Value::as_str).unwrap_or("");
+        if typ == "session" {
+            set_if_none(&mut id, s(r.get("id")));
+            set_if_none(&mut cwd, s(r.get("cwd")));
+        }
         let t = ts(r.get("timestamp"));
         if start.is_none() {
             start = t;
@@ -49,9 +44,9 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
         }
         match typ {
             "model_change" => {
-                model = model.or(s(r.get("modelId")));
-                provider = provider.or(s(r.get("provider")));
-                let mut e = Event::new(EventKind::System, compact(r));
+                set_if_none(&mut model, s(r.get("modelId")));
+                set_if_none(&mut provider, s(r.get("provider")));
+                let mut e = Event::new(EventKind::System, compact(&r));
                 e.subtype = Some(typ.into());
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
@@ -59,7 +54,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 events.push(e)
             }
             "thinking_level_change" => {
-                let mut e = Event::new(EventKind::System, compact(r));
+                let mut e = Event::new(EventKind::System, compact(&r));
                 e.subtype = Some(typ.into());
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
@@ -126,7 +121,14 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
+    let id = id.ok_or_else(|| {
+        UnsupportedFormat(format!(
+            "Pi JSONL missing session header: {}",
+            path.display()
+        ))
+    })?;
     let restore = path
         .strip_prefix(root)
         .ok()
@@ -163,7 +165,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             parent_session_id: None,
             forked_from: None,
             meta: json!({}),
-            fingerprint: format!("{}:{}", rows.len(), end.unwrap_or_default()),
+            fingerprint: format!("{}:{}", row_count, end.unwrap_or_default()),
             sources: vec![source],
         },
         events,

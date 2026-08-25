@@ -179,6 +179,12 @@ pub(crate) fn file_mode_public(metadata: &Metadata) -> Option<u32> {
     file_mode(metadata)
 }
 
+pub(crate) fn set_if_none<T>(slot: &mut Option<T>, value: Option<T>) {
+    if slot.is_none() {
+        *slot = value;
+    }
+}
+
 pub trait Parser {
     /// Identify the native agent handled by this parser.
     fn agent(&self) -> Agent;
@@ -229,9 +235,24 @@ pub trait Parser {
 }
 
 pub(crate) fn read_json_lines(path: &Path) -> Result<Vec<Value>> {
+    let mut records = Vec::new();
+    for_each_json_line(path, |record| {
+        records.push(record);
+        Ok(())
+    })?;
+    Ok(records)
+}
+
+/// Visit JSONL records one at a time without retaining the entire native
+/// source in memory. The callback receives owned values because parsers often
+/// need to retain nested data in normalized events.
+pub(crate) fn for_each_json_line<F>(path: &Path, mut visit: F) -> Result<usize>
+where
+    F: FnMut(Value) -> Result<()>,
+{
     let file = File::open(path)
         .with_context(|| format!("failed to open JSONL source {}", path.display()))?;
-    let mut records = Vec::new();
+    let mut count = 0;
     for (line_index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.with_context(|| {
             format!(
@@ -250,9 +271,10 @@ pub(crate) fn read_json_lines(path: &Path) -> Result<Vec<Value>> {
                 line_index + 1
             )
         })?;
-        records.push(record);
+        count += 1;
+        visit(record)?;
     }
-    Ok(records)
+    Ok(count)
 }
 
 pub fn parser(agent: Agent) -> Box<dyn Parser> {
@@ -285,5 +307,20 @@ mod tests {
         let first = SessionCandidate::file(path.clone()).unwrap();
         let second = SessionCandidate::file_with_cache(path, Some(&first.fingerprint)).unwrap();
         assert_eq!(first.fingerprint, second.fingerprint);
+    }
+
+    #[test]
+    fn streaming_jsonl_reader_preserves_count_and_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("records.jsonl");
+        std::fs::write(&path, "\n{\"id\":1}\n{\"id\":2}\n").unwrap();
+        let mut ids = Vec::new();
+        let count = for_each_json_line(&path, |record| {
+            ids.push(record["id"].as_i64().unwrap());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(ids, [1, 2]);
     }
 }

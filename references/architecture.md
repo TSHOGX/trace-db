@@ -117,6 +117,11 @@ Ingest has two explicit performance invariants:
   individual transactions to preserve best-effort failure isolation. The fast
   path therefore pays O(agent) commit boundaries while the recovery path keeps
   the historical per-candidate semantics.
+- Claude, Codex, and Pi JSONL sources are parsed as a stream. The parser keeps
+  only the normalized event projection and bounded metadata, rather than a
+  second in-memory copy of every native JSON value; Gemini's legacy embedded
+  array format remains buffered because its shape requires materializing the
+  document before normalization.
 
 ## Lineage
 

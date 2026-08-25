@@ -1,5 +1,6 @@
 use super::{
-    read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat,
+    for_each_json_line, set_if_none, Discovery, DiscoveryHints, Parser, SessionCandidate,
+    UnsupportedFormat,
 };
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
@@ -46,7 +47,6 @@ fn is_workflow_journal(path: &Path) -> bool {
 }
 
 fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<ParsedSession> {
-    let records = read_json_lines(path)?;
     let mut id = None;
     let mut cwd = None;
     let mut branch = None;
@@ -56,7 +56,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
     let mut ended = None;
     let mut forked = None;
     let mut events = Vec::new();
-    for r in &records {
+    let record_count = for_each_json_line(path, |r| {
         let t = ts(r.get("timestamp"));
         if started.is_none() {
             started = t;
@@ -64,7 +64,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
         if t.is_some() {
             ended = t;
         }
-        id = id.or_else(|| s(r.get("sessionId")));
+        set_if_none(&mut id, s(r.get("sessionId")));
         if forked.is_none() {
             forked = r.get("forkedFrom").and_then(|value| {
                 let session_id = s(value.get("sessionId"))?;
@@ -75,13 +75,13 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 })
             });
         }
-        cwd = cwd.or_else(|| s(r.get("cwd")));
-        branch = branch.or_else(|| s(r.get("gitBranch")));
+        set_if_none(&mut cwd, s(r.get("cwd")));
+        set_if_none(&mut branch, s(r.get("gitBranch")));
         if r.get("type").and_then(Value::as_str) == Some("ai-title") {
-            title = title.or_else(|| s(r.get("aiTitle")));
+            set_if_none(&mut title, s(r.get("aiTitle")));
         }
         if r.get("type").and_then(Value::as_str) == Some("assistant") {
-            model = model.or_else(|| r.get("message").and_then(|m| s(m.get("model"))));
+            set_if_none(&mut model, r.get("message").and_then(|m| s(m.get("model"))));
         }
         match r.get("type").and_then(Value::as_str).unwrap_or("") {
             "user" => {
@@ -89,7 +89,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     let mut e = ev(
                         EventKind::ToolResult,
                         compact(r.get("toolUseResult").unwrap_or(&Value::Null)),
-                        r,
+                        &r,
                         t.unwrap_or_default(),
                     );
                     e.subtype = Some("tool_result".into());
@@ -98,7 +98,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     events.push(ev(
                         EventKind::User,
                         flatten(r.get("message").unwrap_or(&Value::Null)),
-                        r,
+                        &r,
                         t.unwrap_or_default(),
                     ));
                 }
@@ -126,7 +126,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                             ),
                             _ => (EventKind::Assistant, s(b.get("text"))),
                         };
-                        let mut e = ev(k, txt.unwrap_or_default(), r, t.unwrap_or_default());
+                        let mut e = ev(k, txt.unwrap_or_default(), &r, t.unwrap_or_default());
                         e.subtype = Some(typ.into());
                         e.name = s(b.get("name"));
                         e.call_id = s(b.get("id").or_else(|| b.get("tool_use_id")));
@@ -137,7 +137,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     events.push(ev(
                         EventKind::Assistant,
                         flatten(c),
-                        r,
+                        &r,
                         t.unwrap_or_default(),
                     ));
                 }
@@ -148,9 +148,9 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     compact(
                         r.get("content")
                             .or_else(|| r.get("attachment"))
-                            .unwrap_or(r),
+                            .unwrap_or(&r),
                     ),
-                    r,
+                    &r,
                     t.unwrap_or_default(),
                 );
                 e.subtype = r
@@ -162,7 +162,8 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     let id = id.ok_or_else(|| {
         UnsupportedFormat(format!(
             "Claude JSONL missing sessionId: {}",
@@ -210,8 +211,8 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             git_branch: branch,
             parent_session_id: None,
             forked_from: forked,
-            meta: json!({"recordCount":records.len()}),
-            fingerprint: format!("{}:{}", records.len(), ended.unwrap_or_default()),
+            meta: json!({"recordCount":record_count}),
+            fingerprint: format!("{}:{}", record_count, ended.unwrap_or_default()),
             sources,
         },
         events,
