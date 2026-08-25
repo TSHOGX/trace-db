@@ -1052,12 +1052,48 @@ fn write_session(
             )?;
         }
     }
-    tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
-    for e in events {
-        let usage_json = e.usage.as_ref().map(serde_json::to_string).transpose()?;
-        tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
+    if !events_match_stored(tx, &session.id, events)? {
+        tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
+        for e in events {
+            let usage_json = e.usage.as_ref().map(serde_json::to_string).transpose()?;
+            tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
+        }
     }
     Ok(())
+}
+
+fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event]) -> Result<bool> {
+    let mut statement = tx.prepare(
+        "SELECT idx, kind, subtype, native_id, text, data_json
+         FROM events WHERE session_id=?1 ORDER BY idx",
+    )?;
+    let stored = statement
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if stored.len() != events.len() {
+        return Ok(false);
+    }
+    for (event, (idx, kind, subtype, native_id, text, data_json)) in events.iter().zip(stored) {
+        if event.idx != idx
+            || event.kind.as_str() != kind
+            || event.subtype != subtype
+            || event.native_id != native_id
+            || event.text != text
+            || event.data_json.as_ref().map(ToString::to_string) != data_json
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn capture_source(tx: &Transaction<'_>, src: &NativeSource) -> Result<Option<String>> {
