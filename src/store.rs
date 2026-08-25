@@ -567,6 +567,38 @@ pub fn update_ingest_quarantine(
     Ok(())
 }
 
+const CODEX_ROLLOUT_CACHE_KEY: &str = "codex.rollout_cache";
+
+/// Load persisted Codex rollout lineage cache entries keyed by rollout path.
+pub fn load_codex_rollout_cache(
+    conn: &Connection,
+) -> Result<HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key=?1",
+            [CODEX_ROLLOUT_CACHE_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(value) = value else {
+        return Ok(HashMap::new());
+    };
+    serde_json::from_str(&value).with_context(|| "invalid codex rollout cache in schema_meta")
+}
+
+/// Persist the Codex rollout lineage cache used to skip unchanged rollout scans.
+pub fn save_codex_rollout_cache(
+    conn: &mut Connection,
+    cache: &HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>,
+) -> Result<()> {
+    let payload = serde_json::to_string(cache)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?1,?2)",
+        params![CODEX_ROLLOUT_CACHE_KEY, payload],
+    )?;
+    Ok(())
+}
+
 fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
     let tokenizer = if jieba { "jieba" } else { PORTABLE_TOKENIZER };
     conn.execute_batch(

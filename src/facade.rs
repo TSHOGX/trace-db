@@ -1,7 +1,7 @@
 use crate::{
     config::{ExcludeMatcher, DEFAULT_WATCH_DEBOUNCE_MS, DEFAULT_WATCH_INTERVAL_SECONDS},
     model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
-    parsers::{parser, SessionCandidate},
+    parsers::{parser, DiscoveryHints, SessionCandidate},
     search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
 };
 use anyhow::{anyhow, Result};
@@ -110,7 +110,11 @@ impl TraceDb {
                 skipped_by_since,
                 mut failures,
                 parsed_candidates,
+                codex_rollout_cache,
             } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
+            if let Some(cache) = codex_rollout_cache {
+                store::save_codex_rollout_cache(&mut self.connection, &cache)?;
+            }
             let mut parsed = 0;
             let mut ingested = 0;
             for (candidate, parsed_session) in parsed_candidates {
@@ -196,6 +200,7 @@ impl TraceDb {
                 skipped_by_since,
                 mut failures,
                 parsed_candidates,
+                codex_rollout_cache: _,
             } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
             let mut changed = 0;
             let mut estimated_full_capture_bytes = 0;
@@ -428,10 +433,6 @@ impl TraceDb {
                 return AgentScan::failed(failures);
             }
         };
-        let fingerprint_hints = states
-            .iter()
-            .map(|(locator, state)| (locator.clone(), state.fingerprint.clone()))
-            .collect::<HashMap<_, _>>();
         let quarantine = match store::load_ingest_quarantine(&self.connection) {
             Ok(quarantine) => quarantine,
             Err(error) => {
@@ -444,7 +445,18 @@ impl TraceDb {
             }
         };
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let discovery = match parser.discover_with_states(root, &fingerprint_hints) {
+        let mut hints = DiscoveryHints {
+            fingerprints: states
+                .iter()
+                .map(|(locator, state)| (locator.clone(), state.fingerprint.clone()))
+                .collect(),
+            codex_rollout_cache: if agent == Agent::Codex {
+                store::load_codex_rollout_cache(&self.connection).unwrap_or_default()
+            } else {
+                HashMap::new()
+            },
+        };
+        let discovery = match parser.discover_with_hints(root, &mut hints) {
             Ok(discovery) => discovery,
             Err(error) => {
                 failures.push(IngestIssue::from_error(
@@ -503,6 +515,8 @@ impl TraceDb {
             skipped_by_since,
             failures,
             parsed_candidates: parser.parse_many(&pending, root),
+            codex_rollout_cache: (agent == Agent::Codex)
+                .then_some(hints.codex_rollout_cache),
         }
     }
 
@@ -856,6 +870,7 @@ struct AgentScan {
     skipped_by_since: usize,
     failures: Vec<IngestIssue>,
     parsed_candidates: Vec<(SessionCandidate, Result<Option<ParsedSession>>)>,
+    codex_rollout_cache: Option<HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>>,
 }
 
 impl AgentScan {

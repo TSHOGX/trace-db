@@ -57,6 +57,13 @@ pub struct SessionCandidate {
     pub agent_type: Option<String>,
 }
 
+/// Hints from the archive used to avoid redundant discovery work.
+#[derive(Debug, Default, Clone)]
+pub struct DiscoveryHints {
+    pub fingerprints: std::collections::HashMap<String, String>,
+    pub codex_rollout_cache: std::collections::HashMap<String, codex::CodexRolloutCacheEntry>,
+}
+
 impl SessionCandidate {
     /// Build a content fingerprint for a file-backed native source. Metadata
     /// alone can miss same-size rewrites or coarse-timestamp updates.
@@ -178,14 +185,10 @@ pub trait Parser {
     fn agent(&self) -> Agent;
     /// Discover cheap candidates without parsing complete session contents.
     fn discover(&self, root: &Path) -> Result<Discovery> {
-        self.discover_with_states(root, &std::collections::HashMap::new())
+        self.discover_with_hints(root, &mut DiscoveryHints::default())
     }
     /// Discover candidates, reusing stored fingerprints when file metadata is unchanged.
-    fn discover_with_states(
-        &self,
-        root: &Path,
-        states: &std::collections::HashMap<String, String>,
-    ) -> Result<Discovery>;
+    fn discover_with_hints(&self, root: &Path, hints: &mut DiscoveryHints) -> Result<Discovery>;
     /// Parse one candidate. `None` means the candidate is intentionally filtered.
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>>;
 

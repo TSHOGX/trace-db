@@ -1,4 +1,4 @@
-use super::{Discovery, Parser, SessionCandidate};
+use super::{Discovery, DiscoveryHints, Parser, SessionCandidate};
 use crate::model::{
     compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -397,10 +397,10 @@ impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
     }
-    fn discover_with_states(
+    fn discover_with_hints(
         &self,
         root: &Path,
-        _states: &std::collections::HashMap<String, String>,
+        _hints: &mut DiscoveryHints,
     ) -> Result<Discovery> {
         let Some(db) = db_path(root) else {
             return Ok(Discovery::default());

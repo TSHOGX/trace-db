@@ -1,4 +1,4 @@
-use super::{read_json_lines, Discovery, Parser, SessionCandidate, UnsupportedFormat};
+use super::{read_json_lines, Discovery, DiscoveryHints, Parser, SessionCandidate, UnsupportedFormat};
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
@@ -220,10 +220,10 @@ impl Parser for GeminiParser {
     fn agent(&self) -> Agent {
         Agent::Gemini
     }
-    fn discover_with_states(
+    fn discover_with_hints(
         &self,
         root: &Path,
-        states: &std::collections::HashMap<String, String>,
+        hints: &mut DiscoveryHints,
     ) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
@@ -249,7 +249,7 @@ impl Parser for GeminiParser {
                 let locator = e.path().display().to_string();
                 match SessionCandidate::file_with_cache(
                     e.path().to_path_buf(),
-                    states.get(&locator).map(String::as_str),
+                    hints.fingerprints.get(&locator).map(String::as_str),
                 ) {
                     Ok(candidate) => discovery.candidates.push(candidate),
                     Err(error) => {
