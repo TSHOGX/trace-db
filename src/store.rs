@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -481,6 +482,89 @@ pub fn ingest_status(conn: &Connection) -> Result<Option<StoredIngestStatus>> {
         failed: get_usize("failed")?,
         cumulative_failed: get_usize("cumulativeFailed")?,
     }))
+}
+
+const INGEST_QUARANTINE_KEY: &str = "ingest.quarantine";
+const QUARANTINE_FAILURE_THRESHOLD: u32 = 3;
+const QUARANTINE_RETRY_MS: i64 = 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestQuarantineEntry {
+    pub fingerprint: String,
+    pub failures: u32,
+    pub last_failed_ms: i64,
+}
+
+/// Load persisted ingest quarantine entries keyed by candidate locator.
+pub fn load_ingest_quarantine(conn: &Connection) -> Result<HashMap<String, IngestQuarantineEntry>> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key=?1",
+            [INGEST_QUARANTINE_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(value) = value else {
+        return Ok(HashMap::new());
+    };
+    serde_json::from_str(&value).with_context(|| "invalid ingest quarantine in schema_meta")
+}
+
+/// Return whether a candidate should be skipped because of repeated failures.
+pub fn is_ingest_quarantined(
+    quarantine: &HashMap<String, IngestQuarantineEntry>,
+    locator: &str,
+    fingerprint: &str,
+    now_ms: i64,
+) -> bool {
+    let Some(entry) = quarantine.get(locator) else {
+        return false;
+    };
+    if entry.fingerprint != fingerprint {
+        return false;
+    }
+    if entry.failures < QUARANTINE_FAILURE_THRESHOLD {
+        return false;
+    }
+    now_ms.saturating_sub(entry.last_failed_ms) < QUARANTINE_RETRY_MS
+}
+
+/// Record ingest failures and clear quarantine for successfully ingested locators.
+pub fn update_ingest_quarantine(
+    conn: &mut Connection,
+    ingested_locators: &[String],
+    failures: &[(String, String)],
+) -> Result<()> {
+    let mut quarantine = load_ingest_quarantine(conn)?;
+    for locator in ingested_locators {
+        quarantine.remove(locator);
+    }
+    let now_ms = now_ms();
+    for (locator, fingerprint) in failures {
+        let entry = quarantine
+            .entry(locator.clone())
+            .or_insert(IngestQuarantineEntry {
+                fingerprint: fingerprint.clone(),
+                failures: 0,
+                last_failed_ms: now_ms,
+            });
+        if entry.fingerprint == *fingerprint {
+            entry.failures = entry.failures.saturating_add(1);
+            entry.last_failed_ms = now_ms;
+        } else {
+            *entry = IngestQuarantineEntry {
+                fingerprint: fingerprint.clone(),
+                failures: 1,
+                last_failed_ms: now_ms,
+            };
+        }
+    }
+    let payload = serde_json::to_string(&quarantine)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?1,?2)",
+        params![INGEST_QUARANTINE_KEY, payload],
+    )?;
+    Ok(())
 }
 
 fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {

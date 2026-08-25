@@ -9,6 +9,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -98,6 +99,8 @@ impl TraceDb {
             request.agents
         };
         let mut reports = Vec::with_capacity(agents.len());
+        let mut ingested_locators = Vec::new();
+        let mut failure_quarantine = Vec::new();
         for agent in agents {
             let root = request.root.clone().unwrap_or_else(|| native_root(agent));
             let AgentScan {
@@ -114,25 +117,35 @@ impl TraceDb {
                 match parsed_session {
                     Ok(Some(mut session)) => {
                         parsed += 1;
-                        session.session.fingerprint = candidate.fingerprint;
+                        session.session.fingerprint = candidate.fingerprint.clone();
                         match store::upsert(&mut self.connection, session, request.mode) {
-                            Ok(()) => ingested += 1,
-                            Err(error) => failures.push(IngestIssue::from_error(
-                                IngestStage::Database,
-                                candidate.locator,
-                                &error,
-                            )),
+                            Ok(()) => {
+                                ingested += 1;
+                                ingested_locators.push(candidate.locator);
+                            }
+                            Err(error) => {
+                                failure_quarantine
+                                    .push((candidate.locator.clone(), candidate.fingerprint));
+                                failures.push(IngestIssue::from_error(
+                                    IngestStage::Database,
+                                    candidate.locator,
+                                    &error,
+                                ));
+                            }
                         }
                     }
                     Ok(None) => {
                         parsed += 1;
                         skipped += 1;
                     }
-                    Err(error) => failures.push(IngestIssue::from_error(
-                        IngestStage::Parsing,
-                        candidate.locator,
-                        &error,
-                    )),
+                    Err(error) => {
+                        failure_quarantine.push((candidate.locator.clone(), candidate.fingerprint));
+                        failures.push(IngestIssue::from_error(
+                            IngestStage::Parsing,
+                            candidate.locator,
+                            &error,
+                        ));
+                    }
                 }
             }
             reports.push(AgentIngestReport {
@@ -153,6 +166,11 @@ impl TraceDb {
             agents: reports,
             ack: None,
         };
+        store::update_ingest_quarantine(
+            &mut self.connection,
+            &ingested_locators,
+            &failure_quarantine,
+        )?;
         // Persist the run status before exposing its acknowledgement.  A caller
         // can therefore safely treat the ack as a durable commit boundary; a
         // crash before this point yields no false-positive acknowledgement.
@@ -232,6 +250,7 @@ impl TraceDb {
             self,
             &request,
             WatchTrigger::Startup,
+            None,
             observer,
             &mut issues,
             &mut run_count,
@@ -269,6 +288,7 @@ impl TraceDb {
                         self,
                         &request,
                         WatchTrigger::Periodic,
+                        None,
                         observer,
                         &mut issues,
                         &mut run_count,
@@ -296,12 +316,13 @@ impl TraceDb {
                             observer(WatchEvent::Issue(issue.clone()))?;
                             issues.push(issue);
                         }
-                        pending_paths.clear();
+                        let touched_paths = std::mem::take(&mut pending_paths);
                         pending_deadline = None;
                         Self::emit_watch_run(
                             self,
                             &request,
                             WatchTrigger::Filesystem,
+                            Some(&touched_paths),
                             observer,
                             &mut issues,
                             &mut run_count,
@@ -312,6 +333,7 @@ impl TraceDb {
                             self,
                             &request,
                             WatchTrigger::Periodic,
+                            None,
                             observer,
                             &mut issues,
                             &mut run_count,
@@ -328,6 +350,7 @@ impl TraceDb {
                         self,
                         &request,
                         WatchTrigger::Periodic,
+                        None,
                         observer,
                         &mut issues,
                         &mut run_count,
@@ -349,13 +372,23 @@ impl TraceDb {
         db: &mut TraceDb,
         request: &WatchRequest,
         trigger: WatchTrigger,
+        touched_paths: Option<&[PathBuf]>,
         observer: &mut dyn FnMut(WatchEvent) -> Result<()>,
         issues: &mut Vec<WatchIssue>,
         run_count: &mut usize,
     ) -> Result<()> {
         let started = Instant::now();
         let started_at_ms = chrono::Utc::now().timestamp_millis();
-        match db.ingest(request.ingest.clone()) {
+        let mut ingest_request = request.ingest.clone();
+        if matches!(trigger, WatchTrigger::Filesystem) {
+            if let Some(paths) = touched_paths {
+                let scoped = agents_for_watch_paths(paths, &ingest_request.agents);
+                if !scoped.is_empty() {
+                    ingest_request.agents = scoped;
+                }
+            }
+        }
+        match db.ingest(ingest_request) {
             Ok(report) => {
                 *run_count += 1;
                 observer(WatchEvent::Run(WatchRun {
@@ -384,7 +417,34 @@ impl TraceDb {
     ) -> AgentScan {
         let parser = parser(agent);
         let mut failures = Vec::new();
-        let discovery = match parser.discover(root) {
+        let states = match store::candidate_states(&self.connection, agent) {
+            Ok(states) => states,
+            Err(error) => {
+                failures.push(IngestIssue::from_error(
+                    IngestStage::Database,
+                    self.path.display().to_string(),
+                    &error,
+                ));
+                return AgentScan::failed(failures);
+            }
+        };
+        let fingerprint_hints = states
+            .iter()
+            .map(|(locator, state)| (locator.clone(), state.fingerprint.clone()))
+            .collect::<HashMap<_, _>>();
+        let quarantine = match store::load_ingest_quarantine(&self.connection) {
+            Ok(quarantine) => quarantine,
+            Err(error) => {
+                failures.push(IngestIssue::from_error(
+                    IngestStage::Database,
+                    self.path.display().to_string(),
+                    &error,
+                ));
+                return AgentScan::failed(failures);
+            }
+        };
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let discovery = match parser.discover_with_states(root, &fingerprint_hints) {
             Ok(discovery) => discovery,
             Err(error) => {
                 failures.push(IngestIssue::from_error(
@@ -403,21 +463,6 @@ impl TraceDb {
             ));
         }
         let discovered = discovery.candidates.len() + failures.len();
-        let states = match store::candidate_states(&self.connection, agent) {
-            Ok(states) => states,
-            Err(error) => {
-                failures.push(IngestIssue::from_error(
-                    IngestStage::Database,
-                    self.path.display().to_string(),
-                    &error,
-                ));
-                return AgentScan {
-                    discovered,
-                    failures,
-                    ..AgentScan::default()
-                };
-            }
-        };
         let mut unchanged = 0;
         let mut skipped = 0;
         let mut skipped_by_since = 0;
@@ -431,6 +476,15 @@ impl TraceDb {
                 .is_some_and(|cutoff| candidate.updated_at_ms.is_some_and(|time| time < cutoff))
             {
                 skipped_by_since += 1;
+                skipped += 1;
+                continue;
+            }
+            if store::is_ingest_quarantined(
+                &quarantine,
+                &candidate.locator,
+                &candidate.fingerprint,
+                now_ms,
+            ) {
                 skipped += 1;
                 continue;
             }
@@ -1764,6 +1818,25 @@ pub struct RestoreManifestFile {
     pub bytes: u64,
     pub mode: Option<u32>,
     pub mtime_ns: Option<i64>,
+}
+
+fn agents_for_watch_paths(paths: &[PathBuf], configured: &[Agent]) -> Vec<Agent> {
+    let agents = if configured.is_empty() {
+        Agent::ALL.to_vec()
+    } else {
+        configured.to_vec()
+    };
+    if paths.is_empty() {
+        return agents;
+    }
+    let mut scoped = Vec::new();
+    for agent in agents {
+        let root = native_root(agent);
+        if paths.iter().any(|path| path.starts_with(&root) || root.starts_with(path)) {
+            scoped.push(agent);
+        }
+    }
+    scoped
 }
 
 /// Resolve the default native store root for one supported agent.
