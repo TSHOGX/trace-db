@@ -602,7 +602,6 @@ pub fn save_codex_rollout_cache(
     conn: &mut Connection,
     cache: &HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>,
 ) -> Result<()> {
-    let payload = serde_json::to_string(cache)?;
     let previous: Option<String> = conn
         .query_row(
             "SELECT value FROM schema_meta WHERE key=?1",
@@ -610,9 +609,17 @@ pub fn save_codex_rollout_cache(
             |row| row.get(0),
         )
         .optional()?;
-    if previous.as_deref() == Some(payload.as_str()) {
-        return Ok(());
+    if let Some(previous) = previous {
+        if let Ok(previous_cache) = serde_json::from_str::<
+            HashMap<String, crate::parsers::codex::CodexRolloutCacheEntry>,
+        >(&previous)
+        {
+            if previous_cache == *cache {
+                return Ok(());
+            }
+        }
     }
+    let payload = serde_json::to_string(cache)?;
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?1,?2)",
         params![CODEX_ROLLOUT_CACHE_KEY, payload],

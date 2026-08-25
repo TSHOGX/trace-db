@@ -28,7 +28,7 @@ pub struct CodexParser;
 type Lineage = HashMap<String, (String, Option<String>)>;
 type RolloutSessionIds = HashMap<PathBuf, String>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CodexRolloutCacheEntry {
     pub fingerprint: String,
     pub session_id: Option<String>,
@@ -388,10 +388,20 @@ impl Parser for CodexParser {
             build_lineage_with_cache(&paths, &hints.fingerprints, &mut hints.codex_rollout_cache);
         for path in paths {
             let locator = path.display().to_string();
-            match SessionCandidate::file_with_cache(
-                path.clone(),
-                hints.fingerprints.get(&locator).map(String::as_str),
-            ) {
+            // A cache miss is fingerprinted during the lineage pre-pass. Reuse
+            // that result here instead of hashing a newly discovered rollout a
+            // second time in the candidate pass.
+            let cached_fingerprint = hints
+                .fingerprints
+                .get(&locator)
+                .map(String::as_str)
+                .or_else(|| {
+                    hints
+                        .codex_rollout_cache
+                        .get(&locator)
+                        .map(|entry| entry.fingerprint.as_str())
+                });
+            match SessionCandidate::file_with_cache(path.clone(), cached_fingerprint) {
                 Ok(mut candidate) => {
                     if let Some(native_id) = session_ids.get(&path) {
                         candidate.native_id = Some(native_id.clone());
