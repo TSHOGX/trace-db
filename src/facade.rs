@@ -251,7 +251,7 @@ impl TraceDb {
         let (events, mut watcher, watcher_available, mut issues) =
             build_watch_channel(&request.ingest, observer)?;
         let mut run_count = 0;
-        Self::emit_watch_run(
+        let _ = Self::emit_watch_run(
             self,
             &request,
             WatchTrigger::Startup,
@@ -272,7 +272,8 @@ impl TraceDb {
 
         let interval = Duration::from_secs(request.interval_seconds);
         let debounce = Duration::from_millis(request.debounce_ms);
-        let mut next_periodic = Instant::now() + interval;
+        let mut periodic_interval = interval;
+        let mut next_periodic = Instant::now() + periodic_interval;
         let mut pending_paths = Vec::new();
         let mut pending_deadline: Option<Instant> = None;
         let mut watch_channel_open = true;
@@ -289,7 +290,7 @@ impl TraceDb {
                     break;
                 }
                 if next_periodic <= Instant::now() {
-                    Self::emit_watch_run(
+                    if let Some(report) = Self::emit_watch_run(
                         self,
                         &request,
                         WatchTrigger::Periodic,
@@ -297,8 +298,10 @@ impl TraceDb {
                         observer,
                         &mut issues,
                         &mut run_count,
-                    )?;
-                    next_periodic = Instant::now() + interval;
+                    )? {
+                        periodic_interval = adaptive_periodic_interval(interval, &report);
+                    }
+                    next_periodic = Instant::now() + periodic_interval;
                 }
                 continue;
             }
@@ -332,9 +335,10 @@ impl TraceDb {
                             &mut issues,
                             &mut run_count,
                         )?;
-                        next_periodic = Instant::now() + interval;
+                        periodic_interval = interval;
+                        next_periodic = Instant::now() + periodic_interval;
                     } else if next_periodic <= now {
-                        Self::emit_watch_run(
+                        if let Some(report) = Self::emit_watch_run(
                             self,
                             &request,
                             WatchTrigger::Periodic,
@@ -342,8 +346,10 @@ impl TraceDb {
                             observer,
                             &mut issues,
                             &mut run_count,
-                        )?;
-                        next_periodic = Instant::now() + interval;
+                        )? {
+                            periodic_interval = adaptive_periodic_interval(interval, &report);
+                        }
+                        next_periodic = Instant::now() + periodic_interval;
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -351,7 +357,7 @@ impl TraceDb {
                     observer(WatchEvent::Issue(issue.clone()))?;
                     issues.push(issue);
                     watch_channel_open = false;
-                    Self::emit_watch_run(
+                    if let Some(report) = Self::emit_watch_run(
                         self,
                         &request,
                         WatchTrigger::Periodic,
@@ -359,8 +365,10 @@ impl TraceDb {
                         observer,
                         &mut issues,
                         &mut run_count,
-                    )?;
-                    next_periodic = Instant::now() + interval;
+                    )? {
+                        periodic_interval = adaptive_periodic_interval(interval, &report);
+                    }
+                    next_periodic = Instant::now() + periodic_interval;
                 }
             }
         }
@@ -381,7 +389,7 @@ impl TraceDb {
         observer: &mut dyn FnMut(WatchEvent) -> Result<()>,
         issues: &mut Vec<WatchIssue>,
         run_count: &mut usize,
-    ) -> Result<()> {
+    ) -> Result<Option<IngestReport>> {
         let started = Instant::now();
         let started_at_ms = chrono::Utc::now().timestamp_millis();
         let mut ingest_request = request.ingest.clone();
@@ -400,16 +408,17 @@ impl TraceDb {
                     trigger,
                     started_at_ms,
                     elapsed_ms: started.elapsed().as_millis() as u64,
-                    report,
+                    report: report.clone(),
                 }))?;
+                Ok(Some(report))
             }
             Err(error) => {
                 let issue = WatchIssue::ingest(error);
                 observer(WatchEvent::Issue(issue.clone()))?;
                 issues.push(issue);
+                Ok(None)
             }
         }
-        Ok(())
     }
 
     fn scan_agent(
@@ -514,7 +523,7 @@ impl TraceDb {
             skipped,
             skipped_by_since,
             failures,
-            parsed_candidates: parser.parse_many(&pending, root),
+            parsed_candidates: parse_pending(agent, &pending, root),
             codex_rollout_cache: (agent == Agent::Codex)
                 .then_some(hints.codex_rollout_cache),
         }
@@ -1833,6 +1842,40 @@ pub struct RestoreManifestFile {
     pub bytes: u64,
     pub mode: Option<u32>,
     pub mtime_ns: Option<i64>,
+}
+
+fn adaptive_periodic_interval(base: Duration, report: &IngestReport) -> Duration {
+    if report.total_parsed() == 0 && report.total_ingested() == 0 && report.total_failed() == 0 {
+        base.saturating_mul(2).min(base.saturating_mul(4))
+    } else {
+        base
+    }
+}
+
+const PARALLEL_PARSE_THRESHOLD: usize = 8;
+
+fn parse_pending(
+    agent: Agent,
+    pending: &[SessionCandidate],
+    root: &Path,
+) -> Vec<(SessionCandidate, Result<Option<ParsedSession>>)> {
+    if pending.len() < PARALLEL_PARSE_THRESHOLD {
+        return parser(agent).parse_many(pending, root);
+    }
+    let root = root.to_path_buf();
+    let results = std::sync::Mutex::new(Vec::with_capacity(pending.len()));
+    std::thread::scope(|scope| {
+        for candidate in pending {
+            let candidate = candidate.clone();
+            let root = root.clone();
+            let results = &results;
+            scope.spawn(move || {
+                let parsed = parser(agent).parse(&candidate, &root);
+                results.lock().expect("parse worker result").push((candidate, parsed));
+            });
+        }
+    });
+    results.into_inner().expect("parse worker results")
 }
 
 fn agents_for_watch_paths(paths: &[PathBuf], configured: &[Agent]) -> Vec<Agent> {
