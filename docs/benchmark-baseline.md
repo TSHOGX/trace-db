@@ -38,7 +38,7 @@ use smaller workloads, but they make the architectural improvements visible:
 | Checkpoint | First ingest | Unchanged ingest | Search operation | Peak RSS | Write amplification |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 1k, current `a66db36` | 267 ms | 5.8 ms | 507 ms | 17.9 MiB | 2.62x |
-| 10k, post-batch/search checkpoint | 3.80 s | 104 ms | 4.34 s | 97.9 MiB | 4.75x |
+| 10k, post-batch/search `91e8189` checkpoint | 3.80 s | 104 ms | 4.34 s | 97.9 MiB | 4.75x |
 
 The current 1k run also wrote only 16 KiB during the unchanged pass. The
 streaming parser primarily reduces memory pressure for large native JSONL files;
