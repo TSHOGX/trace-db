@@ -13,7 +13,7 @@ executed result until a runner has actually completed it.
 | CLI/API/gRPC output and errors | JSON/JSONL/Markdown contracts, structured API errors, gRPC status-code/range/kind/security tests, protocol compatibility rules | Proven for v1 contracts |
 | Platform install, upgrade, checksums, packages | Five-target release matrix; Unix offline install/upgrade test; Windows zip, wheel, Node package, checksum, SBOM, and attestation workflow checks | Proven except published attestation execution |
 | Long-running watch and daemon recovery | Watch notification/fallback tests; real macOS launchd and Linux systemd startup ingest, crash restart, state transition, and cleanup smokes | Proven on macOS/Linux |
-| 100k search/resource baseline | Versioned 100,000-session/601,000-event report with 60-sample search p95, RSS, DB size, write amplification, unchanged ingest | Proven on recorded host |
+| 100k search/resource baseline | Historical versioned 100,000-session/601,000-event report plus post-optimization 1k/10k checkpoints covering search, RSS, DB size, write amplification, batch ingest, unchanged ingest, and streaming parser paths | Proven on recorded hosts; compare like-for-like runs |
 | Relevance/lineage/context | Labeled deterministic evaluation with ranking metrics, lineage-collapse accuracy, context answerability, and tagged slices | Proven for evaluation suite |
 | gRPC reads not globally serialized | Independent read pool tests and a read-not-blocked-by-writer concurrency test | Proven |
 | OpenCode native reconstruction | OpenCode 1.18.18 opens, queries, and exports a schema-cloned reconstructed session | Proven for 1.18.18 |

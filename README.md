@@ -19,6 +19,10 @@ spelling, but is canonicalized to `full` and never creates a lossy record.
 Ingestion first discovers lightweight candidates from file metadata or native
 session rows. It compares content-aware fingerprints with archived source
 locators and only parses changed sessions.
+File-backed Claude, Codex, and Pi JSONL sources are parsed as streams. Pending
+sessions are parsed with a bounded worker count, then committed per agent in a
+single SQLite transaction; if a batch fails, TraceDB retries candidates
+individually so one malformed source does not discard unrelated sessions.
 The CLI and APIs report discovered, parsed, ingested, unchanged, skipped,
 failed, warning, and time-filtered counts separately. Best-effort ingest
 continues past malformed or unreadable candidates and reports structured

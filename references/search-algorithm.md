@@ -15,7 +15,8 @@ not an isolated event, so retrieval is intentionally session-oriented.
    hit as the representative ordering signal.
 5. Explainable relevance, coverage, kind, recency, and title components are
    calculated for each session.
-6. Sessions are walked to their parent or fork root with cycle protection.
+6. A recursive lineage query loads only the parent/fork closure reachable from
+   matched sessions, with cycle protection in the Rust walk.
 7. Related sessions collapse into one result and their hit counts are merged.
 8. First-user and last-assistant bookends are loaded for all top lineages in one
    batch query, including bounded ancestor paths that did not themselves match
@@ -45,10 +46,11 @@ Regression tests protect this invariant.
 
 ## Lineage collapse
 
-Search loads the small session-edge table once per request. For each candidate,
-it follows `parent_session_id`, then the session portion of `forked_from`, until
-it reaches a known root. Cycles terminate the walk safely. The strongest member
-remains the representative and hit counts from related members are added.
+Search issues one recursive SQL query rooted at matched session IDs to load the
+reachable session-edge closure. For each candidate, Rust follows
+`parent_session_id`, then the session portion of `forked_from`, until it reaches
+a known root. Cycles terminate the walk safely. The strongest member remains
+the representative and hit counts from related members are added.
 
 This prevents a parent task and its subagents from occupying multiple result
 slots while still rewarding work spread across the lineage.
@@ -96,7 +98,8 @@ and usage rows.
 ## Performance invariants
 
 - Candidate event count is bounded globally and per session before aggregation.
-- Lineage loading is one small query, not an N+1 walk.
+- Lineage loading is one recursive query rooted at matched sessions, not a
+  full-archive scan or an N+1 walk.
 - Search never reads native trace files.
 - Reindex never reads native trace files.
 - Result context assembly uses one batch query across representatives, related

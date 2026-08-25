@@ -94,11 +94,17 @@ separate redirected files if the task is launched through a wrapper script.
 
 - `watch_interval_seconds` is the maximum quiet period before a fallback scan;
   it is not a sleep inserted after filesystem runs.
+- Periodic scans with no parsed, ingested, or failed candidates back off from
+  the configured interval to 2x and then 4x. Filesystem activity or a failed
+  ingest resets the next periodic scan to the configured interval.
 - `watch_debounce_ms` coalesces bursts and bounds the initial file-stability
   check. The latest file contents are ingested even when a writer remains
   active, with a structured stability issue emitted.
 - The archive uses WAL and transactional upserts, so a process restart can
   safely repeat the startup scan.
+- Candidate parsing is bounded and deterministic; successful parsed sessions
+  are committed per agent in one transaction, with per-session fallback when a
+  batch cannot be committed.
 - The built-in macOS daemon uses launchd `KeepAlive`; Linux uses systemd
   `Restart=on-failure`; Windows uses the XML task's `RestartOnFailure` policy.
 - Use `trace-db watch --once --json` as a deployment health probe before
