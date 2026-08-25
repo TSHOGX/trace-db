@@ -171,7 +171,11 @@ impl Parser for PiParser {
     fn agent(&self) -> Agent {
         Agent::Pi
     }
-    fn discover(&self, root: &Path) -> Result<Discovery> {
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);
@@ -191,7 +195,11 @@ impl Parser for PiParser {
                 && e.path().extension().is_some_and(|x| x == "jsonl")
                 && e.path().file_name().and_then(|name| name.to_str()) != Some("None.jsonl")
             {
-                match SessionCandidate::file(e.path().to_path_buf()) {
+                let locator = e.path().display().to_string();
+                match SessionCandidate::file_with_cache(
+                    e.path().to_path_buf(),
+                    states.get(&locator).map(String::as_str),
+                ) {
                     Ok(candidate) => discovery.candidates.push(candidate),
                     Err(error) => {
                         discovery.push_failure(e.path().display().to_string(), error);

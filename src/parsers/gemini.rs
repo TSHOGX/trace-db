@@ -220,7 +220,11 @@ impl Parser for GeminiParser {
     fn agent(&self) -> Agent {
         Agent::Gemini
     }
-    fn discover(&self, root: &Path) -> Result<Discovery> {
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);
@@ -242,7 +246,11 @@ impl Parser for GeminiParser {
                     .extension()
                     .is_some_and(|extension| extension == "json" || extension == "jsonl")
             {
-                match SessionCandidate::file(e.path().to_path_buf()) {
+                let locator = e.path().display().to_string();
+                match SessionCandidate::file_with_cache(
+                    e.path().to_path_buf(),
+                    states.get(&locator).map(String::as_str),
+                ) {
                     Ok(candidate) => discovery.candidates.push(candidate),
                     Err(error) => {
                         discovery.push_failure(e.path().display().to_string(), error);

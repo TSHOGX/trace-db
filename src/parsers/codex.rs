@@ -313,7 +313,11 @@ impl Parser for CodexParser {
     fn agent(&self) -> Agent {
         Agent::Codex
     }
-    fn discover(&self, root: &Path) -> Result<Discovery> {
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);
@@ -321,7 +325,11 @@ impl Parser for CodexParser {
         let paths = rollout_paths(root, &mut discovery);
         let (lineage, session_ids) = build_lineage(&paths);
         for path in paths {
-            match SessionCandidate::file(path.clone()) {
+            let locator = path.display().to_string();
+            match SessionCandidate::file_with_cache(
+                path.clone(),
+                states.get(&locator).map(String::as_str),
+            ) {
                 Ok(mut candidate) => {
                     if let Some(native_id) = session_ids.get(&path) {
                         candidate.native_id = Some(native_id.clone());

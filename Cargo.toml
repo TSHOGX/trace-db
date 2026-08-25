@@ -39,7 +39,7 @@ filetime = "0.2"
 globset = "=0.4.16"
 hex = "0.4"
 prost = "0.13"
-rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions", "load_extension", "backup"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -3,11 +3,12 @@ use crate::model::{
     compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
 };
 use anyhow::{Context, Result};
-use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{backup::Backup, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 pub struct OpenCodeParser;
@@ -129,41 +130,21 @@ fn parse_session(
     let envelope = json!({"format":"trace-db/opencode-session-v1","session":{"id":sid,"parent_id":parent,"directory":directory,"title":title,"agent":agent,"model":model,"time_created":created,"time_updated":updated},"message":messages,"part":parts});
     let portable_bytes = serde_json::to_vec(&envelope)?;
     let native_bytes = build_native_bundle(connection, &sid)?;
+    let db_bytes = snapshot_database(connection)?;
     let native_source = NativeSource {
         locator: format!("{}#{id}", db.display()),
         kind: "sqlite".into(),
         restore_path: format!("{sid}/opencode.db"),
         role: None,
-        bytes: candidate.bytes,
+        bytes: Some(db_bytes.len() as i64),
         mtime_ns: candidate.mtime_ns,
         mode: candidate.mode,
-        capture: Some(Capture::File {
-            path: db.display().to_string(),
+        capture: Some(Capture::Bytes {
+            label: format!("{sid}-db"),
+            bytes: db_bytes,
         }),
     };
     let mut sources = vec![native_source];
-    // `-shm` is a transient SQLite coordination file and changes whenever a
-    // reader is active; it is not durable source content. Capture the durable
-    // database and WAL, but never make the volatile SHM file a session source.
-    {
-        let suffix = "-wal";
-        let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
-        if sidecar.exists() {
-            let metadata = fs::metadata(&sidecar)?;
-            sources.push(NativeSource {
-                locator: format!("{}#{id}:sidecar{suffix}", db.display()),
-                kind: "sqlite-sidecar".into(),
-                restore_path: format!("{sid}/opencode.db{suffix}"),
-                role: Some(format!("source-sidecar{suffix}")),
-                bytes: Some(metadata.len() as i64),
-                mtime_ns: crate::parsers::modified_ns_public(&metadata),
-                mode: crate::parsers::file_mode_public(&metadata),
-                capture: Some(Capture::File {
-                    path: sidecar.display().to_string(),
-                }),
-            });
-        }
-    }
     let portable_source = NativeSource {
         locator: format!("{}#{id}:portable", db.display()),
         kind: "portable-json".into(),
@@ -218,6 +199,19 @@ fn parse_session(
         },
         events: evs,
     })
+}
+
+fn snapshot_database(connection: &Connection) -> Result<Vec<u8>> {
+    let temporary_directory = tempfile::tempdir()?;
+    let path = temporary_directory.path().join("snapshot.db");
+    {
+        let mut destination = Connection::open(&path)?;
+        {
+            let backup = Backup::new(connection, &mut destination)?;
+            backup.run_to_completion(5, Duration::from_millis(50), None)?;
+        }
+    }
+    fs::read(&path).with_context(|| format!("read OpenCode snapshot {}", path.display()))
 }
 
 fn build_native_bundle(source: &Connection, id: &str) -> Result<Vec<u8>> {
@@ -403,47 +397,50 @@ impl Parser for OpenCodeParser {
     fn agent(&self) -> Agent {
         Agent::OpenCode
     }
-    fn discover(&self, root: &Path) -> Result<Discovery> {
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        _states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery> {
         let Some(db) = db_path(root) else {
             return Ok(Discovery::default());
         };
         let metadata = fs::metadata(&db)?;
-        let file_candidate = SessionCandidate::file(db.clone())?;
-        let mut file_candidate = file_candidate;
-        {
-            let suffix = "-wal";
-            let sidecar = PathBuf::from(format!("{}{}", db.display(), suffix));
-            if sidecar.exists() {
-                file_candidate.include_file(&sidecar)?;
-            }
-        }
         let c = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut st =
-            c.prepare("SELECT id,time_updated,time_created FROM session ORDER BY time_updated")?;
+        let mut st = c.prepare(
+            "SELECT s.id, s.time_updated, s.time_created,
+                    (SELECT COUNT(*) FROM message m WHERE m.session_id=s.id),
+                    (SELECT COUNT(*) FROM part p WHERE p.session_id=s.id)
+             FROM session s ORDER BY s.time_updated",
+        )?;
         let rows = st
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<i64>>(1)?,
                     row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
-        for (id, updated, created) in rows {
+        for (id, updated, created, message_count, part_count) in rows {
+            let locator = format!("{}#{id}", db.display());
             out.push(SessionCandidate {
                 path: db.clone(),
-                locator: format!("{}#{id}", db.display()),
-                native_id: Some(id),
+                locator,
+                native_id: Some(id.clone()),
                 fingerprint: format!(
-                    "{}:{}",
-                    file_candidate.fingerprint,
-                    updated.or(created).unwrap_or_default()
+                    "opencode-session:{id}:{}:{}:{}",
+                    updated.or(created).unwrap_or_default(),
+                    message_count,
+                    part_count
                 ),
                 updated_at_ms: updated.or(created),
                 bytes: Some(metadata.len() as i64),
-                mtime_ns: file_candidate.mtime_ns,
-                mode: file_candidate.mode,
+                mtime_ns: crate::parsers::modified_ns_public(&metadata),
+                mode: crate::parsers::file_mode_public(&metadata),
                 parent_session_id: None,
                 agent_type: None,
             });

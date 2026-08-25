@@ -61,19 +61,29 @@ impl SessionCandidate {
     /// Build a content fingerprint for a file-backed native source. Metadata
     /// alone can miss same-size rewrites or coarse-timestamp updates.
     pub fn file(path: PathBuf) -> Result<Self> {
+        Self::file_with_cache(path, None)
+    }
+
+    /// Reuse a previously stored fingerprint when size and mtime are unchanged,
+    /// avoiding a full-file SHA-256 on every discovery pass.
+    pub fn file_with_cache(path: PathBuf, cached_fingerprint: Option<&str>) -> Result<Self> {
         let metadata = path.metadata()?;
         let mtime_ns = modified_ns_public(&metadata);
-        let digest = sha256_file(&path)?;
+        let bytes = metadata.len();
+        let fingerprint = if let Some(cached) = cached_fingerprint {
+            if fingerprint_metadata_matches(cached, bytes, mtime_ns) {
+                cached.to_string()
+            } else {
+                file_fingerprint(&path, bytes, mtime_ns)?
+            }
+        } else {
+            file_fingerprint(&path, bytes, mtime_ns)?
+        };
         Ok(Self {
             locator: path.display().to_string(),
-            fingerprint: format!(
-                "file-v2:{}:{}:{}",
-                digest,
-                metadata.len(),
-                mtime_ns.unwrap_or_default()
-            ),
+            fingerprint,
             updated_at_ms: mtime_ns.map(|value| value / 1_000_000),
-            bytes: Some(metadata.len() as i64),
+            bytes: Some(bytes as i64),
             mtime_ns,
             mode: file_mode(&metadata),
             path,
@@ -94,6 +104,33 @@ impl SessionCandidate {
         ));
         Ok(())
     }
+}
+
+fn file_fingerprint(path: &Path, bytes: u64, mtime_ns: Option<i64>) -> Result<String> {
+    Ok(format!(
+        "file-v2:{}:{}:{}",
+        sha256_file(path)?,
+        bytes,
+        mtime_ns.unwrap_or_default()
+    ))
+}
+
+pub(crate) fn fingerprint_metadata_matches(
+    fingerprint: &str,
+    bytes: u64,
+    mtime_ns: Option<i64>,
+) -> bool {
+    let Some(rest) = fingerprint.strip_prefix("file-v2:") else {
+        return false;
+    };
+    let Some((_, tail)) = rest.split_once(':') else {
+        return false;
+    };
+    let Some((stored_bytes, stored_mtime)) = tail.rsplit_once(':') else {
+        return false;
+    };
+    stored_bytes == bytes.to_string()
+        && stored_mtime.parse::<i64>().ok() == mtime_ns.or(Some(0))
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -140,7 +177,15 @@ pub trait Parser {
     /// Identify the native agent handled by this parser.
     fn agent(&self) -> Agent;
     /// Discover cheap candidates without parsing complete session contents.
-    fn discover(&self, root: &Path) -> Result<Discovery>;
+    fn discover(&self, root: &Path) -> Result<Discovery> {
+        self.discover_with_states(root, &std::collections::HashMap::new())
+    }
+    /// Discover candidates, reusing stored fingerprints when file metadata is unchanged.
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery>;
     /// Parse one candidate. `None` means the candidate is intentionally filtered.
     fn parse(&self, candidate: &SessionCandidate, root: &Path) -> Result<Option<ParsedSession>>;
 
@@ -206,6 +251,30 @@ pub(crate) fn read_json_lines(path: &Path) -> Result<Vec<Value>> {
         records.push(record);
     }
     Ok(records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_metadata_matches_unchanged_files() {
+        let fingerprint = "file-v2:deadbeef:42:1000";
+        assert!(fingerprint_metadata_matches(fingerprint, 42, Some(1000)));
+        assert!(!fingerprint_metadata_matches(fingerprint, 43, Some(1000)));
+        assert!(!fingerprint_metadata_matches("other", 42, Some(1000)));
+    }
+
+    #[test]
+    fn file_with_cache_reuses_fingerprint_when_metadata_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, b"{\"type\":\"session_meta\"}\n").unwrap();
+        let first = SessionCandidate::file(path.clone()).unwrap();
+        let second =
+            SessionCandidate::file_with_cache(path, Some(&first.fingerprint)).unwrap();
+        assert_eq!(first.fingerprint, second.fingerprint);
+    }
 }
 
 pub fn parser(agent: Agent) -> Box<dyn Parser> {

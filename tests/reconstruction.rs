@@ -301,9 +301,19 @@ fn opencode_full_capture_restores_deterministic_session_bundle() {
         .iter()
         .find(|path| path.ends_with("s1/opencode.db"))
         .unwrap();
+    let restored_db = rusqlite::Connection::open(exact).unwrap();
+    let source_db = rusqlite::Connection::open(&db_path).unwrap();
     assert_eq!(
-        std::fs::read(exact).unwrap(),
-        std::fs::read(&db_path).unwrap()
+        restored_db
+            .query_row("SELECT id,title FROM session", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap(),
+        source_db
+            .query_row("SELECT id,title FROM session", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
     );
     let native = restored
         .iter()

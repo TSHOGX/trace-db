@@ -219,7 +219,11 @@ impl Parser for ClaudeParser {
     fn agent(&self) -> Agent {
         Agent::Claude
     }
-    fn discover(&self, root: &Path) -> Result<Discovery> {
+    fn discover_with_states(
+        &self,
+        root: &Path,
+        states: &std::collections::HashMap<String, String>,
+    ) -> Result<Discovery> {
         let mut discovery = Discovery::default();
         if !root.exists() {
             return Ok(discovery);
@@ -239,7 +243,11 @@ impl Parser for ClaudeParser {
                 && e.path().extension().is_some_and(|x| x == "jsonl")
                 && !is_workflow_journal(e.path())
             {
-                match SessionCandidate::file(e.path().to_path_buf()) {
+                let locator = e.path().display().to_string();
+                match SessionCandidate::file_with_cache(
+                    e.path().to_path_buf(),
+                    states.get(&locator).map(String::as_str),
+                ) {
                     Ok(mut candidate) => {
                         let sidecar = e.path().with_extension("meta.json");
                         if sidecar.exists() {
