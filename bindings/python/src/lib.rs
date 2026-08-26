@@ -147,8 +147,8 @@ impl PyTraceDb {
         )
     }
 
-    /// Rebuild the full-text index.
-    fn reindex(&self) -> PyResult<()> {
+    /// Rebuild the full-text index and every derived projection.
+    fn reindex(&mut self) -> PyResult<()> {
         self.db.reindex().map_err(runtime_error)
     }
 }

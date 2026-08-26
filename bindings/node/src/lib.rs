@@ -158,7 +158,7 @@ impl NodeTraceDb {
 
     /// Rebuild the full-text index.
     #[napi]
-    pub fn reindex(&self) -> Result<()> {
+    pub fn reindex(&mut self) -> Result<()> {
         self.db.reindex().map_err(native_error)
     }
 }

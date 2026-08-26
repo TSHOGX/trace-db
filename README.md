@@ -304,10 +304,11 @@ Every mutating `ingest` response includes a durable monotonic `ack` containing
 watermark; source `endedAtMs` values describe session activity and are not a
 commit boundary.
 
-`trace-db reindex` recomputes all derived state: it rebuilds the FTS index and
-repairs every materialized session aggregate from the normalized rows. `verify`
-reports aggregate drift as a `session_aggregates` check, so a mismatch is
-detected rather than silently served.
+`trace-db reindex` recomputes all derived state: it rebuilds the FTS index,
+repairs every materialized session aggregate, and re-derives turn-internal
+spans from the normalized rows. `verify` reports aggregate drift as a
+`session_aggregates` check and span divergence as a `spans` check, so a
+mismatch is detected rather than silently served.
 
 `trace-db backup PATH` publishes a consistent SQLite snapshot through a staging
 directory and verifies the snapshot before returning. The destination must not

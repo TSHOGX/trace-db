@@ -1015,6 +1015,55 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
         lineage_failures,
     ));
 
+    let mut span_failures = connection
+        .prepare(
+            "SELECT e.session_id,e.idx,e.span_id
+             FROM events e
+             LEFT JOIN spans s ON s.session_id=e.session_id AND s.id=e.span_id
+             WHERE e.span_id IS NOT NULL AND s.id IS NULL
+             ORDER BY e.session_id,e.idx",
+        )?
+        .query_map([], |row| {
+            Ok(VerificationFailure {
+                locator: format!("{}:{}", row.get::<_, String>(0)?, row.get::<_, i64>(1)?),
+                message: format!(
+                    "event references span {} that does not exist; run `trace-db reindex` to repair",
+                    row.get::<_, String>(2)?
+                ),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    span_failures.extend(
+        connection
+            .prepare(
+                "SELECT sp.session_id,sp.id,sp.start_event_idx,sp.end_event_idx,s.event_count
+                 FROM spans sp JOIN sessions s ON s.id=sp.session_id
+                 WHERE (sp.start_event_idx IS NOT NULL
+                        AND (sp.start_event_idx < 0 OR sp.start_event_idx >= s.event_count))
+                    OR (sp.end_event_idx IS NOT NULL
+                        AND (sp.end_event_idx < 0 OR sp.end_event_idx >= s.event_count))
+                    OR (sp.start_event_idx IS NOT NULL AND sp.end_event_idx IS NOT NULL
+                        AND sp.end_event_idx < sp.start_event_idx)
+                 ORDER BY sp.session_id,sp.id",
+            )?
+            .query_map([], |row| {
+                Ok(VerificationFailure {
+                    locator: format!("{}:{}", row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                    message: format!(
+                        "span event range [{:?},{:?}] is outside the session's {} event(s)",
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, i64>(4)?
+                    ),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+    let total_spans = connection.query_row("SELECT count(*) FROM spans", [], |row| {
+        row.get::<_, usize>(0)
+    })?;
+    checks.push(VerifyCheck::new("spans", total_spans, span_failures));
+
     let mut object_statement =
         connection.prepare("SELECT hash,compression,bytes,payload FROM objects ORDER BY hash")?;
     let objects = object_statement
@@ -1247,26 +1296,33 @@ fn write_session(
     }
     tx.execute("DELETE FROM spans WHERE session_id=?1", [&session.id])?;
     for span in spans {
-        tx.execute(
-            "INSERT INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![
-                session.id,
-                span.id,
-                span.parent_span_id,
-                span.kind.to_string(),
-                span.name,
-                span.native_id,
-                span.call_id,
-                span.status.map(|status| status.to_string()),
-                span.started_at_ms,
-                span.ended_at_ms,
-                span.start_event_idx,
-                span.end_event_idx,
-                span.data_json.as_ref().map(Value::to_string),
-            ],
-        )?;
+        insert_span(tx, &session.id, span)?;
     }
+    Ok(())
+}
+
+/// Write one span row. Shared by ingest and by `reindex`'s span repair so the
+/// two paths cannot drift apart.
+fn insert_span(tx: &Transaction<'_>, session_id: &str, span: &Span) -> Result<()> {
+    tx.execute(
+        "INSERT INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        params![
+            session_id,
+            span.id,
+            span.parent_span_id,
+            span.kind.to_string(),
+            span.name,
+            span.native_id,
+            span.call_id,
+            span.status.map(|status| status.to_string()),
+            span.started_at_ms,
+            span.ended_at_ms,
+            span.start_event_idx,
+            span.end_event_idx,
+            span.data_json.as_ref().map(Value::to_string),
+        ],
+    )?;
     Ok(())
 }
 
@@ -1516,6 +1572,36 @@ pub fn rebuild_aggregates(conn: &Connection) -> Result<u64> {
     let repaired = conn.execute(&format!("UPDATE sessions SET {AGGREGATE_PROJECTION}"), [])? as u64;
     truncate_stored_previews(conn)?;
     Ok(repaired)
+}
+
+/// Re-derive every session's spans from its stored event stream.
+///
+/// Spans are a deterministic projection of events, so `reindex` restores them
+/// alongside the search index and the session aggregates. The rewrite also
+/// refreshes each event's `span_id`, because the projection owns both sides of
+/// that link.
+pub fn rebuild_spans(conn: &mut Connection) -> Result<u64> {
+    let session_ids = conn
+        .prepare("SELECT id FROM sessions ORDER BY id")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tx = conn.transaction()?;
+    for session_id in &session_ids {
+        let mut events = load_events(&tx, session_id)?;
+        let spans = derive_spans(&mut events);
+        tx.execute("DELETE FROM spans WHERE session_id=?1", [session_id])?;
+        for span in &spans {
+            insert_span(&tx, session_id, span)?;
+        }
+        for event in &events {
+            tx.execute(
+                "UPDATE events SET span_id=?3 WHERE session_id=?1 AND idx=?2",
+                params![session_id, event.idx, event.span_id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(session_ids.len() as u64)
 }
 
 /// Apply the shared preview budget to the previews the SQL pass copied whole.
@@ -1988,6 +2074,94 @@ fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
     Ok((sort_time, id))
 }
 
+/// Load a session's normalized event stream in index order.
+///
+/// Shared by `show` and by `reindex`'s span repair so both observe exactly the
+/// same projection of the stored rows.
+fn load_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>> {
+    let mut statement = conn.prepare(
+        "SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,
+                model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
+         FROM events WHERE session_id=?1 ORDER BY idx",
+    )?;
+    let raw = statement
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    raw.into_iter()
+        .map(
+            |(
+                idx,
+                kind,
+                subtype,
+                role,
+                name,
+                call_id,
+                is_error,
+                native_id,
+                parent_id,
+                parent_kind,
+                span_id,
+                model,
+                provider,
+                usage_json,
+                text,
+                data_json,
+                created_at_ms,
+                ended_at_ms,
+            )| {
+                Ok(Event {
+                    idx,
+                    kind: kind.parse().map_err(anyhow::Error::msg)?,
+                    subtype,
+                    role,
+                    name,
+                    call_id,
+                    is_error: is_error.map(|value| value != 0),
+                    native_id,
+                    parent_id,
+                    parent_kind: parent_kind
+                        .map(|value| value.parse::<crate::EventParentKind>())
+                        .transpose()
+                        .map_err(anyhow::Error::msg)?,
+                    span_id,
+                    model,
+                    provider,
+                    usage: usage_json
+                        .map(|json| serde_json::from_str::<TokenUsage>(&json))
+                        .transpose()?,
+                    text,
+                    data_json: data_json
+                        .map(|json| serde_json::from_str::<Value>(&json))
+                        .transpose()?,
+                    created_at_ms,
+                    ended_at_ms,
+                })
+            },
+        )
+        .collect()
+}
+
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
     let row = conn
         .query_row(
@@ -2049,84 +2223,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
-    let raw_events = event_stmt
-        .query_map([session_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<String>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-                row.get::<_, Option<String>>(12)?,
-                row.get::<_, Option<String>>(13)?,
-                row.get::<_, String>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<i64>>(16)?,
-                row.get::<_, Option<i64>>(17)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut events = raw_events
-        .into_iter()
-        .map(
-            |(
-                idx,
-                kind,
-                subtype,
-                role,
-                name,
-                call_id,
-                is_error,
-                native_id,
-                parent_id,
-                parent_kind,
-                span_id,
-                model,
-                provider,
-                usage_json,
-                text,
-                data_json,
-                created_at_ms,
-                ended_at_ms,
-            )| {
-                Ok(Event {
-                    idx,
-                    kind: kind.parse().map_err(anyhow::Error::msg)?,
-                    subtype,
-                    role,
-                    name,
-                    call_id,
-                    is_error: is_error.map(|value| value != 0),
-                    native_id,
-                    parent_id,
-                    parent_kind: parent_kind
-                        .map(|value| value.parse::<crate::EventParentKind>())
-                        .transpose()
-                        .map_err(anyhow::Error::msg)?,
-                    span_id,
-                    model,
-                    provider,
-                    usage: usage_json
-                        .map(|json| serde_json::from_str::<TokenUsage>(&json))
-                        .transpose()?,
-                    text,
-                    data_json: data_json
-                        .map(|json| serde_json::from_str::<Value>(&json))
-                        .transpose()?,
-                    created_at_ms,
-                    ended_at_ms,
-                })
-            },
-        )
-        .collect::<Result<Vec<_>>>()?;
+    let events = load_events(conn, session_id)?;
 
     let mut span_statement = conn.prepare(
         "SELECT id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
@@ -2150,7 +2247,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut spans = raw_spans
+    let spans = raw_spans
         .into_iter()
         .map(
             |(
@@ -2189,9 +2286,6 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             },
         )
         .collect::<Result<Vec<_>>>()?;
-    if spans.is_empty() {
-        spans = derive_spans(&mut events);
-    }
 
     Ok(Some(SessionTrace {
         session: Session {
@@ -2606,5 +2700,66 @@ mod tests {
         let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].hits, 2);
+    }
+
+    /// A tool call/result pair is a span, and the read path must return the
+    /// persisted rows rather than re-deriving them. Reindex re-derives spans
+    /// from events, so deleting them is repairable and verify reports the gap.
+    #[test]
+    fn spans_are_persisted_and_reindex_repairs_them() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trace.db");
+        let mut conn = open(&path).unwrap();
+
+        let mut parsed = named_session("codex:spans", "run the build");
+        let mut call = Event::new(EventKind::ToolCall, "cargo build");
+        call.name = Some("Bash".into());
+        call.call_id = Some("call-1".into());
+        let mut result = Event::new(EventKind::ToolResult, "ok");
+        result.call_id = Some("call-1".into());
+        parsed.events.push(call);
+        parsed.events.push(result);
+        upsert(&mut conn, parsed).unwrap();
+
+        // Ingest materialized the span, and show reads it back from storage.
+        let stored: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM spans WHERE session_id='codex:spans'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 1);
+        let trace = show(&conn, "codex:spans").unwrap().unwrap();
+        assert_eq!(trace.spans.len(), 1);
+        assert_eq!(trace.spans[0].call_id.as_deref(), Some("call-1"));
+        assert!(trace
+            .events
+            .iter()
+            .any(|event| event.span_id.as_deref() == Some("call:call-1")));
+
+        // Losing the span rows is visible to verify and is not silently papered
+        // over by the read path.
+        conn.execute("DELETE FROM spans WHERE session_id='codex:spans'", [])
+            .unwrap();
+        assert!(show(&conn, "codex:spans")
+            .unwrap()
+            .unwrap()
+            .spans
+            .is_empty());
+        let report = verify(&conn, &path).unwrap();
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.name == "spans" && !check.failures.is_empty()));
+
+        // Reindex re-derives them from the stored events.
+        rebuild_spans(&mut conn).unwrap();
+        assert_eq!(show(&conn, "codex:spans").unwrap().unwrap().spans.len(), 1);
+        let report = verify(&conn, &path).unwrap();
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.name == "spans" && check.failures.is_empty()));
     }
 }

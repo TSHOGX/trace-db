@@ -152,6 +152,14 @@ Because these are projections, `reindex` repairs them and `verify` reports drift
 as the `session_aggregates` check. `import` recomputes them after a merge, since
 the counts describe the union rather than either input archive.
 
+Spans obey the same rule. They are materialized during ingestion and are never
+re-derived on read: `show` returns exactly the persisted rows, so a direct SQL
+reader and the facade cannot disagree, and a span bug in a parser stays visible
+instead of being masked by a read-path fallback. `reindex` re-derives spans
+along with the other projections, and `verify`'s `spans` check reports events
+that reference a missing span and spans whose event range falls outside the
+session.
+
 ## Lineage
 
 There are three independent relationship layers:

@@ -631,15 +631,16 @@ impl TraceDb {
         })
     }
 
-    /// Rebuild the gated FTS index from normalized events.
-    /// Rebuild the FTS index and repair every materialized session aggregate.
+    /// Rebuild the FTS index and every derived projection.
     ///
-    /// This is the single "recompute derived state" command: both the search
-    /// index and the session aggregates are deterministic projections, so one
-    /// operation restores them from the normalized rows.
-    pub fn reindex(&self) -> Result<()> {
+    /// This is the single "recompute derived state" command: the search
+    /// index, the session aggregates, and the turn-internal spans are all
+    /// deterministic projections, so one operation restores them from the
+    /// normalized rows.
+    pub fn reindex(&mut self) -> Result<()> {
         store::rebuild_fts(&self.connection)?;
         store::rebuild_aggregates(&self.connection)?;
+        store::rebuild_spans(&mut self.connection)?;
         Ok(())
     }
 
