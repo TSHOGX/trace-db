@@ -280,6 +280,12 @@ the stored fingerprint, `ingestedAtMs`, capture mode, normalized event/source
 counts, and latest source mtime without loading the event stream or consulting
 native agent stores. List rows include the same fingerprint for bulk scans.
 
+List inventory remains expanded by default. `--collapse-lineage` (or API v2
+`collapseLineage`) applies scope-preserving collapse: a child is hidden only
+when its direct parent also satisfies the same agent/cwd/time/model/provider/
+mode filters. A worktree child therefore remains visible in its own cwd scope
+instead of being folded into an out-of-scope parent.
+
 Every mutating `ingest` response includes a durable monotonic `ack` containing
 `sequence` and `committedAtMs`. Persist this acknowledgement as the ingestion
 watermark; source `endedAtMs` values describe session activity and are not a

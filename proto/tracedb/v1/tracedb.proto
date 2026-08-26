@@ -206,6 +206,7 @@ message ListRequest {
   optional string mode = 6;
   optional string model = 7;
   optional string provider = 8;
+  bool collapse_lineage = 9;
 }
 
 message ListResponse {

@@ -1566,6 +1566,9 @@ pub struct ListRequest {
     /// When true, match cwd as a normalized exact path instead of a substring.
     #[serde(default)]
     pub cwd_exact: bool,
+    /// Hide a child only when its direct lineage parent is also in scope.
+    #[serde(default)]
+    pub collapse_lineage: bool,
     pub since_ms: Option<i64>,
     pub mode: Option<IngestMode>,
     pub model: Option<String>,
@@ -1584,6 +1587,7 @@ impl Default for ListRequest {
             agent: None,
             cwd: None,
             cwd_exact: false,
+            collapse_lineage: false,
             since_ms: None,
             mode: None,
             model: None,

@@ -127,6 +127,9 @@ enum Command {
         /// Match cwd exactly after removing a trailing slash.
         #[arg(long)]
         cwd_exact: bool,
+        /// Hide child sessions only when their parent also matches this list scope.
+        #[arg(long)]
+        collapse_lineage: bool,
         #[arg(long)]
         since: Option<String>,
         #[arg(long)]
@@ -747,6 +750,7 @@ fn main() -> anyhow::Result<()> {
             agent,
             cwd,
             cwd_exact,
+            collapse_lineage,
             since,
             mode,
             model,
@@ -760,6 +764,7 @@ fn main() -> anyhow::Result<()> {
                 agent,
                 cwd,
                 cwd_exact,
+                collapse_lineage,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
                 mode,
                 model,
@@ -1147,6 +1152,7 @@ struct ApiV2List {
     agent: Option<Agent>,
     cwd: Option<String>,
     cwd_exact: Option<bool>,
+    collapse_lineage: Option<bool>,
     since_ms: Option<i64>,
     mode: Option<IngestMode>,
     model: Option<String>,
@@ -1200,6 +1206,7 @@ fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<()
             "agent",
             "cwd",
             "cwd_exact",
+            "collapse_lineage",
             "since",
             "mode",
             "model",
@@ -1436,6 +1443,7 @@ fn execute_api_v2(
                     agent: typed.agent,
                     cwd: typed.cwd,
                     cwd_exact: typed.cwd_exact.unwrap_or(false),
+                    collapse_lineage: typed.collapse_lineage.unwrap_or(false),
                     since_ms: typed.since_ms,
                     mode: typed.mode,
                     model: typed.model,
@@ -1579,6 +1587,8 @@ fn execute_api_request(
                     agent,
                     cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
                     cwd_exact: optional_json_bool(request, "cwd_exact")?.unwrap_or(false),
+                    collapse_lineage: optional_json_bool(request, "collapse_lineage")?
+                        .unwrap_or(false),
                     since_ms,
                     mode,
                     model: optional_json_string(request, "model")?.map(str::to_owned),

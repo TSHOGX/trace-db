@@ -73,7 +73,7 @@ they are not part of the `tracedb.v1` wire service.
 |---|---|
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures plus a durable monotonic `ack` sequence. Consumers should persist the ack instead of deriving a watermark from `endedAtMs`. |
 | `Search` | Returns lineage-collapsed session hits. |
-| `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, provider, optional terminal status, and direct lineage metadata (`parentSessionId`, `parentRelation`, `subagentCount`). The Rust/JSON facade also supports `cwdExact` to avoid substring-prefix collisions. |
+| `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, provider, optional terminal status, fingerprint, and direct lineage metadata (`parentSessionId`, `parentRelation`, `subagentCount`). `cwdExact` avoids substring-prefix collisions; optional lineage collapse hides a child only when its parent is in the same filtered scope. |
 | `Coverage` | Returns one session's fingerprint, archive commit time, capture mode, event/source counts, and latest source mtime without loading its trace. |
 | `Show` | Returns session metadata, sources, normalized events, and first-class turn-internal spans. Events may include producer-supplied `createdAtMs` and `endedAtMs`; absent end times remain null rather than being inferred. `parentKind` discriminates overloaded native parent links. |
 | `Stats` | Returns archive-wide and per-agent counts. |
@@ -110,7 +110,7 @@ instead of silently turning into an unfiltered archive scan.
 Line API version 2 is selected with `"version":2`. Its operation requests are
 deserialized into strict typed structures with unknown-field rejection and
 consistent camelCase names (`sinceMs`, `cwdExact`, `fromIdx`, `toIdx`, `kinds`,
-`outDir`). Version 1 remains available for compatibility. V2 camel-cases only
+`collapseLineage`, `outDir`). Version 1 remains available for compatibility. V2 camel-cases only
 the normalized envelope/model; vendor keys inside `dataJson` and `meta` remain
 byte-for-byte semantic JSON keys.
 

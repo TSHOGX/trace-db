@@ -328,6 +328,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             agent,
             cwd: request.cwd,
             cwd_exact: false,
+            collapse_lineage: request.collapse_lineage,
             since_ms: request.since_ms,
             mode,
             model: request.model,

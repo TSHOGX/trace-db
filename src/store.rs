@@ -1721,6 +1721,51 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
             bind(" AND s.mode=?", mode.to_string().into());
         }
     }
+    if request.collapse_lineage {
+        sql.push_str(
+            " AND NOT EXISTS (
+                SELECT 1 FROM sessions parent
+                WHERE parent.id=coalesce(
+                    s.parent_session_id,
+                    CASE WHEN instr(s.forked_from, '#') > 0
+                         THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
+                         ELSE s.forked_from END)",
+        );
+        if request.agent.is_some() {
+            sql.push_str(" AND parent.agent=s.agent");
+        }
+        if let Some(cwd) = &request.cwd {
+            if request.cwd_exact {
+                sql.push_str(
+                    " AND (CASE WHEN parent.cwd='/' THEN '/' ELSE rtrim(parent.cwd,'/') END)=?",
+                );
+                values.push(normalize_cwd(cwd).into());
+            } else {
+                sql.push_str(" AND parent.cwd LIKE '%' || ? || '%'");
+                values.push(cwd.clone().into());
+            }
+        }
+        if let Some(since_ms) = request.since_ms {
+            sql.push_str(
+                " AND coalesce(parent.ended_at_ms,parent.started_at_ms,parent.ingested_at_ms)>=?",
+            );
+            values.push(since_ms.into());
+        }
+        if request.model.is_some() {
+            sql.push_str(" AND parent.model=s.model");
+        }
+        if request.provider.is_some() {
+            sql.push_str(" AND parent.provider=s.provider");
+        }
+        if let Some(mode) = mode_filter {
+            if matches!(mode, IngestMode::Partial) {
+                sql.push_str(" AND parent.mode IN ('partial','full')");
+            } else {
+                sql.push_str(" AND parent.mode=s.mode");
+            }
+        }
+        sql.push(')');
+    }
     if let Some((sort_time, id)) = cursor {
         sql.push_str(
             " AND (coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)<?

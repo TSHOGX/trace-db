@@ -96,6 +96,7 @@ impl PyTraceDb {
                     agent,
                     cwd,
                     cwd_exact: false,
+                    collapse_lineage: false,
                     since_ms,
                     mode,
                     model,

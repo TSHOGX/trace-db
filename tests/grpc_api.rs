@@ -113,6 +113,7 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
             mode: Some("partial".into()),
             model: None,
             provider: None,
+            collapse_lineage: false,
         })
         .await
         .unwrap()
@@ -134,6 +135,7 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
             mode: Some("partial".into()),
             model: None,
             provider: None,
+            collapse_lineage: false,
         })
         .await
         .unwrap()

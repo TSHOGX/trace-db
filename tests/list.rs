@@ -307,4 +307,28 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
     assert_eq!(child.parent_session_id.as_deref(), Some("codex:parent"));
     assert_eq!(child.parent_relation.as_deref(), Some("parent"));
     assert_eq!(child.status, Some(SessionStatus::Completed));
+
+    let collapsed_all = database
+        .list(ListRequest {
+            limit: 10,
+            collapse_lineage: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(collapsed_all
+        .sessions
+        .iter()
+        .all(|session| session.id != "codex:child"));
+
+    let worktree_scope = database
+        .list(ListRequest {
+            limit: 10,
+            cwd: Some("/workspace/worktree".into()),
+            cwd_exact: true,
+            collapse_lineage: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(worktree_scope.sessions.len(), 1);
+    assert_eq!(worktree_scope.sessions[0].id, "codex:child");
 }
