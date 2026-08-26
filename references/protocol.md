@@ -74,7 +74,7 @@ they are not part of the `tracedb.v1` wire service.
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures plus a durable monotonic `ack` sequence. Consumers should persist the ack instead of deriving a watermark from `endedAtMs`. |
 | `Search` | Returns lineage-collapsed session hits. |
 | `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, provider, optional terminal status, and direct lineage metadata (`parentSessionId`, `parentRelation`, `subagentCount`). The Rust/JSON facade also supports `cwdExact` to avoid substring-prefix collisions. |
-| `Show` | Returns session metadata, sources, and normalized events. Events may include producer-supplied `createdAtMs` and `endedAtMs`; absent end times remain null rather than being inferred. |
+| `Show` | Returns session metadata, sources, and normalized events. Events may include producer-supplied `createdAtMs` and `endedAtMs`; absent end times remain null rather than being inferred. `parentKind` discriminates overloaded native parent links. |
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |
 | `Backup` | Exposed by the CLI and Rust facade; creates a verified archive snapshot. |
@@ -88,6 +88,12 @@ Session status is optional and uses `active`, `completed`, `failed`,
 `interrupted`, or `abandoned`. Null means the producer did not provide enough
 evidence; TraceDB does not equate a last observed timestamp with clean
 completion.
+
+Event `parentId` is intentionally accompanied by optional `parentKind`:
+`previous_event` is a transcript predecessor chain, `message_parent` is a
+native message relationship, and `native_mixed` warns that the producer uses
+multiple meanings. Consumers must not treat an untyped or unsupported parent
+link as a structural span.
 
 The line-oriented `trace-db api` rejects unknown request fields with an
 `invalid_argument` error. This is deliberate: for example, `list` accepts the

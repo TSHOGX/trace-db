@@ -3,7 +3,8 @@ use super::{
     UnsupportedFormat,
 };
 use crate::model::{
-    compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
+    compact, flatten, Agent, Capture, Event, EventKind, EventParentKind, NativeSource,
+    ParsedSession, Session,
 };
 use anyhow::Result;
 use chrono::DateTime;
@@ -50,6 +51,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.subtype = Some(typ.into());
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
+                e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::NativeMixed);
                 e.created_at_ms = t;
                 e.data_json = Some(r.clone());
                 events.push(e)
@@ -59,6 +61,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.subtype = Some(typ.into());
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
+                e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::NativeMixed);
                 e.created_at_ms = t;
                 e.data_json = Some(r.clone());
                 events.push(e)
@@ -79,6 +82,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     e.is_error = m.get("isError").and_then(Value::as_bool);
                     e.native_id = base_id;
                     e.parent_id = parent;
+                    e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::NativeMixed);
                     e.created_at_ms = mt;
                     e.data_json = Some(r.clone());
                     events.push(e)
@@ -110,6 +114,8 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                             e.subtype = Some(typ.into());
                             e.native_id = base_id.clone();
                             e.parent_id = parent.clone();
+                            e.parent_kind =
+                                e.parent_id.as_ref().map(|_| EventParentKind::NativeMixed);
                             e.created_at_ms = mt;
                             e.data_json = Some(b.clone());
                             events.push(e)
@@ -118,6 +124,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         let mut e = Event::new(kind, flatten(m.get("content").unwrap_or(m)));
                         e.native_id = base_id;
                         e.parent_id = parent;
+                        e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::NativeMixed);
                         e.created_at_ms = mt;
                         e.data_json = Some(r.clone());
                         events.push(e)

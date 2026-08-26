@@ -153,6 +153,45 @@ pub enum EventKind {
     Usage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventParentKind {
+    /// A transcript predecessor link, typically forming a linear chain.
+    PreviousEvent,
+    /// A native message-parent/grouping relationship.
+    MessageParent,
+    /// The producer overloads the native field with multiple relationship kinds.
+    NativeMixed,
+}
+
+impl EventParentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PreviousEvent => "previous_event",
+            Self::MessageParent => "message_parent",
+            Self::NativeMixed => "native_mixed",
+        }
+    }
+}
+
+impl fmt::Display for EventParentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EventParentKind {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "previous_event" => Ok(Self::PreviousEvent),
+            "message_parent" => Ok(Self::MessageParent),
+            "native_mixed" => Ok(Self::NativeMixed),
+            _ => Err(format!("unknown event parent kind: {value}")),
+        }
+    }
+}
+
 impl EventKind {
     pub const ALL: [EventKind; 7] = [
         Self::User,
@@ -245,6 +284,7 @@ pub struct Event {
     pub is_error: Option<bool>,
     pub native_id: Option<String>,
     pub parent_id: Option<String>,
+    pub parent_kind: Option<EventParentKind>,
     pub model: Option<String>,
     pub provider: Option<String>,
     pub usage: Option<TokenUsage>,
@@ -270,6 +310,7 @@ impl Event {
             is_error: None,
             native_id: None,
             parent_id: None,
+            parent_kind: None,
             model: None,
             provider: None,
             usage: None,

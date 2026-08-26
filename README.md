@@ -240,6 +240,11 @@ Sessions may expose `status` as `active`, `completed`, `failed`, `interrupted`,
 or `abandoned`. It remains null when the native producer supplies no explicit
 terminal evidence; timestamps alone are not treated as proof of completion.
 
+Event `parentId` links are typed with optional `parentKind`. Claude predecessor
+chains are `previous_event`, OpenCode message relationships are
+`message_parent`, and Pi's overloaded native relation is `native_mixed`.
+Consumers should never interpret an untyped parent link as a span hierarchy.
+
 This protocol is intentionally simple and language-neutral for Python, Node.js,
 Go, and shell clients without exposing SQLite internals. Every non-empty input
 line produces either `{"ok":true,"result":...}` or a stable

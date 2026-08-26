@@ -1,6 +1,7 @@
 use super::{Discovery, DiscoveryHints, Parser, SessionCandidate};
 use crate::model::{
-    compact, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
+    compact, Agent, Capture, Event, EventKind, EventParentKind, NativeSource, ParsedSession,
+    Session,
 };
 use anyhow::{Context, Result};
 use rusqlite::{backup::Backup, types::Value as SqlValue, Connection, OptionalExtension};
@@ -107,6 +108,7 @@ fn parse_session(
             e.subtype = Some(typ.into());
             e.native_id = Some(mid.clone());
             e.parent_id = s(md.get("parentID"));
+            e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::MessageParent);
             e.created_at_ms = t;
             e.data_json = Some(p.clone());
             evs.push(e)

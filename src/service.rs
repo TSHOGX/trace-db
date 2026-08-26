@@ -653,6 +653,7 @@ fn event_to_proto(event: Event) -> Result<pb::Event> {
         is_error: event.is_error,
         native_id: event.native_id,
         parent_id: event.parent_id,
+        parent_kind: event.parent_kind.map(|kind| kind.to_string()),
         model: event.model,
         provider: event.provider,
         usage_json: event

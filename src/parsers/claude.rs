@@ -3,7 +3,8 @@ use super::{
     UnsupportedFormat,
 };
 use crate::model::{
-    compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
+    compact, flatten, Agent, Capture, Event, EventKind, EventParentKind, NativeSource,
+    ParsedSession, Session,
 };
 use anyhow::{Context, Result};
 use chrono::DateTime;
@@ -24,6 +25,7 @@ fn ev(k: EventKind, text: String, r: &Value, t: i64) -> Event {
     let mut e = Event::new(k, text);
     e.native_id = s(r.get("uuid"));
     e.parent_id = s(r.get("parentUuid"));
+    e.parent_kind = e.parent_id.as_ref().map(|_| EventParentKind::PreviousEvent);
     e.created_at_ms = Some(t);
     // Keep the original vendor record alongside the normalized projection so
     // fields such as Claude's parent_tool_use_id remain queryable.
@@ -324,6 +326,8 @@ mod tests {
             &path,
             [json!({
                 "sessionId":"child",
+                "uuid":"m-2",
+                "parentUuid":"m-1",
                 "forkedFrom":{"sessionId":"parent","messageUuid":"m-1"},
                 "type":"user",
                 "timestamp":"2026-08-19T00:00:00Z",
@@ -337,6 +341,10 @@ mod tests {
         assert_eq!(
             parsed[0].session.forked_from.as_deref(),
             Some("claude:parent#m-1")
+        );
+        assert_eq!(
+            parsed[0].events[0].parent_kind,
+            Some(EventParentKind::PreviousEvent)
         );
     }
 
