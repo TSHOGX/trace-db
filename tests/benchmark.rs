@@ -1,3 +1,4 @@
+#[cfg(feature = "cli")]
 use std::process::Command;
 use tempfile::tempdir;
 use tracedb::benchmark::{
@@ -74,6 +75,7 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
         .is_file());
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn benchmark_binary_emits_the_versioned_json_contract() {
     let parent = tempdir().unwrap();

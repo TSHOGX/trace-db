@@ -21,6 +21,64 @@ use std::{
 };
 
 pub const SCHEMA_VERSION: i64 = 8;
+
+/// Refusal to open an archive written by a different schema version.
+///
+/// The normalized layer is a deterministic, rebuildable projection of the native
+/// stores, so TraceDB carries no per-column upgrade paths and an archive either
+/// already speaks the current schema or is re-derived. Embedded, that refusal is
+/// the difference between a host that cannot start and one that recovers, so the
+/// condition travels as a type a caller can match on rather than as prose: the
+/// message is guidance and may be reworded, while `found` and `expected` are the
+/// contract. Recover with [`crate::TraceDb::rebuild`] or
+/// [`crate::TraceDb::open_or_rebuild`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "TraceDB archive uses schema version {found} but this build requires {expected}; \
+     rebuild the archive to re-derive it from the native stores \
+     (`TraceDb::rebuild`, or delete it and re-run `trace-db ingest`)"
+)]
+pub struct SchemaVersionMismatch {
+    /// The schema version recorded in the archive that was opened.
+    pub found: i64,
+    /// The schema version this build of TraceDB speaks.
+    pub expected: i64,
+}
+
+/// Remove an archive and the WAL sidecars that belong to it.
+///
+/// All three files go together. A `-wal` left beside a freshly created `.db` is
+/// adopted by it, so removing the main file alone is silent data loss rather
+/// than a clean slate — the surviving WAL replays committed frames from an
+/// archive that no longer exists into one that never held them. The sidecars are
+/// named by appending to the full file name, so `trace.db` owns `trace.db-wal`
+/// and `trace.db-shm`; `set_extension` would compute `trace-wal` and delete
+/// nothing.
+pub fn remove_archive_files(path: &Path) -> Result<()> {
+    for candidate in archive_files(path) {
+        match fs::remove_file(&candidate) {
+            Ok(()) => {}
+            // A missing sidecar is the normal case for a cleanly closed archive.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("remove TraceDB archive file {}", candidate.display())
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The archive's main database file and its two WAL sidecars, in removal order.
+pub fn archive_files(path: &Path) -> [PathBuf; 3] {
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    [path.to_path_buf(), sidecar("-wal"), sidecar("-shm")]
+}
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
 
@@ -665,10 +723,15 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
             .parse::<i64>()
             .context("invalid TraceDB schema version")?;
         if version != SCHEMA_VERSION {
-            anyhow::bail!(
-                "TraceDB archive uses schema version {version} but this build requires {SCHEMA_VERSION}; \
-                 delete the archive and re-run `trace-db ingest` to rebuild it from the native stores"
-            );
+            // Returned as the typed error rather than `bail!`ing a string so an
+            // embedder can recognize the one recoverable open failure without
+            // matching on prose. `?` and `anyhow::Error::from` preserve the
+            // concrete type, so this survives to a caller's `downcast_ref`.
+            return Err(SchemaVersionMismatch {
+                found: version,
+                expected: SCHEMA_VERSION,
+            }
+            .into());
         }
     }
     let previous_tokenizer: Option<String> = conn

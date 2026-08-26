@@ -53,6 +53,95 @@ impl TraceDb {
         Ok(Self { path, connection })
     }
 
+    /// Discard the archive at `path` and create an empty one at the current schema.
+    ///
+    /// The normalized layer is a rebuildable projection of the native stores, so
+    /// discarding it loses no captured history — it is re-derived by the next
+    /// ingest. This exists so an embedder can recover from
+    /// [`store::SchemaVersionMismatch`] in process, without shelling out to the
+    /// CLI or hand-deleting files, which is the only documented recovery the
+    /// refusal used to offer.
+    ///
+    /// Removal goes through [`store::remove_archive_files`], which takes the WAL
+    /// sidecars with the main file: a `-wal` adopted by a fresh database replays
+    /// frames from an archive that no longer exists.
+    pub fn rebuild(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        store::remove_archive_files(path)?;
+        Self::open(path)
+    }
+
+    /// Open the archive at `path`, rebuilding it only if its schema is foreign.
+    ///
+    /// Recovery is scoped to [`store::SchemaVersionMismatch`] deliberately. That
+    /// is the one open failure whose remedy is known to be safe, because the data
+    /// it discards is derived. Every other failure — a corrupt database, a
+    /// permission error, an unloadable tokenizer extension — propagates
+    /// unchanged, since rebuilding on those would delete an archive that a
+    /// human may still be able to salvage, and would turn a diagnosable fault
+    /// into a silent one.
+    ///
+    /// Callers needing to act on the mismatch themselves — to log it, or to ask
+    /// before discarding anything — can match the same error out of
+    /// [`TraceDb::open`]:
+    ///
+    /// ```rust,no_run
+    /// use tracedb::{SchemaVersionMismatch, TraceDb};
+    ///
+    /// let path = "/path/to/trace.db";
+    /// let db = match TraceDb::open(path) {
+    ///     Ok(db) => db,
+    ///     Err(error) => match error.downcast_ref::<SchemaVersionMismatch>() {
+    ///         // The normalized layer is derived, so discarding it loses no
+    ///         // captured history: the next ingest re-derives it.
+    ///         Some(mismatch) => {
+    ///             eprintln!("rebuilding: found v{}, want v{}", mismatch.found, mismatch.expected);
+    ///             TraceDb::rebuild(path)?
+    ///         }
+    ///         None => return Err(error),
+    ///     },
+    /// };
+    /// # let _ = db;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn open_or_rebuild(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        match Self::open(path) {
+            Ok(database) => Ok(database),
+            Err(error) => {
+                if error
+                    .downcast_ref::<store::SchemaVersionMismatch>()
+                    .is_some()
+                {
+                    Self::rebuild(path)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Open the configured archive, rebuilding it only if its schema is foreign.
+    ///
+    /// The configured counterpart of [`TraceDb::open_or_rebuild`], carrying the
+    /// same narrow recovery rule and the config's selected tokenizer.
+    pub fn open_or_rebuild_configured(config: &TraceDbConfig) -> Result<Self> {
+        match Self::open_configured(config) {
+            Ok(database) => Ok(database),
+            Err(error) => {
+                if error
+                    .downcast_ref::<store::SchemaVersionMismatch>()
+                    .is_some()
+                {
+                    store::remove_archive_files(&config.database_path)?;
+                    Self::open_configured(config)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     /// Open an existing archive without migrations or archive-record writes.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();

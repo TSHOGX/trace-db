@@ -4,6 +4,7 @@
 //! archive statistics, FTS maintenance, and native-source reconstruction.
 
 mod facade;
+#[cfg(feature = "grpc")]
 pub mod service;
 
 pub mod benchmark;
@@ -14,6 +15,12 @@ pub mod relevance;
 pub mod search;
 pub mod store;
 
+/// Generated `tracedb.v1` types, client, and server.
+///
+/// Gated on `grpc` together with the proto build step: `include_proto!` reads a
+/// file `build.rs` only writes when that feature is on, so the module and its
+/// generator are one unit and cannot be enabled apart.
+#[cfg(feature = "grpc")]
 #[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("tracedb.v1");
@@ -38,7 +45,11 @@ pub use model::{
     SessionRelation, SessionStatus, Span, SpanKind, SpanStatus, TokenUsage,
 };
 pub use parsers::SessionCandidate;
+// Re-exported at the root because it is an error a consumer is expected to match
+// on: `open_or_rebuild` recovers from it internally, and a host driving `open`
+// itself has to name the type to `downcast_ref` it.
 pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};
+pub use store::SchemaVersionMismatch;
 
 use anyhow::Result;
 use rusqlite::Connection;

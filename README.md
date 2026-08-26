@@ -18,8 +18,11 @@ output directory.
 
 The normalized tables are a deterministic projection, so TraceDB carries no
 per-column schema upgrades. An archive written by a different schema version is
-refused with guidance to delete it and re-run `trace-db ingest`, which rebuilds
-every normalized row from the native stores.
+refused, and the refusal is a typed `SchemaVersionMismatch` carrying `found` and
+`expected` rather than only a message, so an embedding host can match on it
+instead of parsing prose. `trace-db ingest` rebuilds every normalized row from
+the native stores; in process, `TraceDb::open_or_rebuild` does the same without
+shelling out.
 
 Ingestion first discovers lightweight candidates from file metadata or native
 session rows. It compares content-aware fingerprints with archived source
@@ -287,6 +290,56 @@ for row in rows {
 `stats`, `reindex`, `backup`, and `reconstruct` methods. Lower-level `model`,
 `parsers`, and `store` modules remain public for custom importers and
 specialized SQL access.
+
+### Cargo features
+
+Both surfaces layered on top of the archive are optional, and neither is
+referenced by the store, facade, parsers, ingest, watch, search, or reconstruct
+paths:
+
+| Feature | Default | Adds |
+| --- | --- | --- |
+| `grpc` | yes | The `tracedb.v1` server and generated `proto` types, `tonic`/`prost`/`tokio`, and the `protoc` build step |
+| `cli` | yes | The `trace-db`, `trace-db-bench`, and `trace-db-relevance` binaries and `clap`. Implies `grpc`, because `trace-db serve` is one of its commands |
+
+An embedder that wants only the in-process archive takes neither:
+
+```toml
+[dependencies]
+tracedb = { package = "trace-db", version = "0.1", default-features = false }
+```
+
+That drops the dependency graph from 155 packages to 73 and removes the proto
+build step, so no `protoc` runs and nothing async is compiled in. `tokio` belongs
+to `grpc` because `src/service.rs` is its only user; the archive itself is
+entirely synchronous.
+
+### Recovering from a foreign schema
+
+Opening an archive written by another schema version fails with
+`store::SchemaVersionMismatch`, which survives `anyhow` wrapping so a caller can
+recover from exactly that condition:
+
+```rust,no_run
+use tracedb::TraceDb;
+
+// Rebuilds only on a schema mismatch; any other open failure propagates.
+let db = TraceDb::open_or_rebuild("/path/to/trace.db")?;
+# let _ = db;
+# Ok::<(), anyhow::Error>(())
+```
+
+To decide for yourself — to log the mismatch, or to ask before discarding
+anything — match the typed error out of `TraceDb::open` instead; the rustdoc for
+`open_or_rebuild` carries that worked example as a compiled doctest.
+
+`TraceDb::open_or_rebuild` is that policy in one call, and
+`open_or_rebuild_configured` is its configured counterpart. Both recover **only**
+from a schema mismatch and propagate every other open failure unchanged, so a
+corrupt archive is never silently deleted. `TraceDb::rebuild` is the explicit,
+unconditional form. All of them remove the `-wal` and `-shm` sidecars along with
+the main file, because a stale WAL adopted by a fresh database is silent data
+loss rather than a clean slate.
 
 `coverage(sessionId)` is the cheap per-session ingestion watermark: it returns
 the stored fingerprint, `ingestedAtMs`, normalized event/source counts,
@@ -572,6 +625,8 @@ cargo audit --deny warnings --ignore RUSTSEC-2025-0057
 python3 scripts/verify-opencode-compat.py ~/.local/share/opencode/opencode.db
 python3 scripts/smoke-python-wheel.py WHEEL
 node scripts/smoke-node-package.js PACKAGE_TGZ
+cargo build --no-default-features
+cargo test --no-default-features
 cargo test -p trace-db --test parser_robustness
 cargo test -p trace-db --test migrations
 cargo test -p trace-db --test sqlite_lifecycle

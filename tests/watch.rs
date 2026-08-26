@@ -1,7 +1,9 @@
+#[cfg(feature = "cli")]
 use serde_json::Value;
+#[cfg(feature = "cli")]
+use std::process::Command;
 use std::{
     path::PathBuf,
-    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -125,6 +127,7 @@ fn watch_rejects_zero_timings() {
     assert!(error.to_string().contains("interval"));
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn watch_cli_once_emits_json_events_and_summary() {
     let dir = tempdir().unwrap();

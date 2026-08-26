@@ -33,6 +33,7 @@ jobs:
       - run: bash -n scripts/install-release.sh scripts/package-release.sh
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
+      - run: cargo test --locked --no-default-features
       - run: cargo test --locked -p fts5-jieba
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - run: find . -type d -name __pycache__ -prune -exec rm -rf {} +

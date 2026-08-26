@@ -1,4 +1,6 @@
+#[cfg(feature = "cli")]
 use serde_json::Value;
+#[cfg(feature = "cli")]
 use std::process::Command;
 use tempfile::tempdir;
 use tracedb::{verify_archive, Agent, IngestRequest, TraceDb};
@@ -92,6 +94,7 @@ fn verify_reports_contract_and_object_corruption() {
     assert!(objects.failures[0].message.contains("decompression failed"));
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn verify_cli_prints_json_before_nonzero_exit() {
     let (_dir, path) = full_archive();

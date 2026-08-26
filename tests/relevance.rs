@@ -1,3 +1,4 @@
+#[cfg(feature = "cli")]
 use std::process::Command;
 use tracedb::relevance::{evaluate_relevance, RelevanceTag, RELEVANCE_SCHEMA_VERSION};
 
@@ -34,6 +35,7 @@ fn relevance_report_covers_labeled_ranking_and_context_contracts() {
     }
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn relevance_binary_emits_versioned_json() {
     let output = Command::new(env!("CARGO_BIN_EXE_trace-db-relevance"))
