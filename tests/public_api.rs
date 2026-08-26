@@ -546,3 +546,48 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     let resumed = reopened.ingest(request(IngestMode::Partial, None)).unwrap();
     assert_eq!(resumed.ack.unwrap().sequence, 6);
 }
+
+#[test]
+fn tool_spans_round_trip_through_the_archive() {
+    let dir = tempdir().unwrap();
+    let mut database = TraceDb::open(dir.path().join("trace.db")).unwrap();
+    let mut call = Event::new(EventKind::ToolCall, "run");
+    call.name = Some("shell".into());
+    call.call_id = Some("call-1".into());
+    call.created_at_ms = Some(10);
+    let mut result = Event::new(EventKind::ToolResult, "ok");
+    result.call_id = Some("call-1".into());
+    result.created_at_ms = Some(20);
+    database
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:spans".into(),
+                    agent: Agent::Codex,
+                    cwd: None,
+                    started_at_ms: Some(10),
+                    ended_at_ms: Some(20),
+                    status: None,
+                    title: None,
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: json!({}),
+                    fingerprint: "spans".into(),
+                    sources: Vec::new(),
+                },
+                events: vec![call, result],
+            },
+            IngestMode::Full,
+        )
+        .unwrap();
+
+    let trace = database.show("codex:spans").unwrap().unwrap();
+    assert_eq!(trace.spans.len(), 1);
+    assert_eq!(trace.spans[0].id, "call:call-1");
+    assert_eq!(trace.spans[0].started_at_ms, Some(10));
+    assert_eq!(trace.spans[0].ended_at_ms, Some(20));
+    assert_eq!(trace.events[0].span_id.as_deref(), Some("call:call-1"));
+}

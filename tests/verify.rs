@@ -38,7 +38,7 @@ fn verify_accepts_a_healthy_full_archive() {
 
     assert!(report.passed);
     assert_eq!(report.failure_count(), 0);
-    assert_eq!(report.checks.len(), 6);
+    assert_eq!(report.checks.len(), 7);
     assert!(report.checks.iter().all(|check| check.passed));
     assert!(report
         .checks

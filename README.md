@@ -456,6 +456,12 @@ The normalized event kinds are `user`, `assistant`, `thinking`, `tool_call`,
 excluded from the default FTS index. Event lineage (`parent_id`) and
 cross-session lineage (`parent_session_id`, `forked_from`) are separate trees.
 
+Turn-internal structure is represented by first-class `spans`, not synthetic
+sessions. Tool calls/results sharing a `callId` form a span; delegation tools
+form delegation spans, and structured payloads with multiple `task_id` values
+form child spans under one host. `show` returns both events and spans, with each
+participating event carrying its `spanId`.
+
 The SQLite schema records its version, archive contract, and selected tokenizer
 in `schema_meta`. Full native snapshots live in a content-addressed `objects`
 table and are referenced by `raw_sources`.

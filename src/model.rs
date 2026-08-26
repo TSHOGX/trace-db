@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,6 +164,97 @@ pub enum EventParentKind {
     NativeMixed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanKind {
+    Tool,
+    Delegation,
+}
+
+impl SpanKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Delegation => "delegation",
+        }
+    }
+}
+
+impl fmt::Display for SpanKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SpanKind {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "tool" => Ok(Self::Tool),
+            "delegation" => Ok(Self::Delegation),
+            _ => Err(format!("unknown span kind: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanStatus {
+    Active,
+    Completed,
+    Failed,
+    Interrupted,
+    Abandoned,
+}
+
+impl SpanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+impl fmt::Display for SpanStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SpanStatus {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "active" => Ok(Self::Active),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "interrupted" => Ok(Self::Interrupted),
+            "abandoned" => Ok(Self::Abandoned),
+            _ => Err(format!("unknown span status: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Span {
+    pub id: String,
+    pub parent_span_id: Option<String>,
+    pub kind: SpanKind,
+    pub name: Option<String>,
+    pub native_id: Option<String>,
+    pub call_id: Option<String>,
+    pub status: Option<SpanStatus>,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+    pub start_event_idx: Option<i64>,
+    pub end_event_idx: Option<i64>,
+    pub data_json: Option<Value>,
+}
+
 impl EventParentKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -285,6 +376,8 @@ pub struct Event {
     pub native_id: Option<String>,
     pub parent_id: Option<String>,
     pub parent_kind: Option<EventParentKind>,
+    /// First-class normalized trajectory containing this event.
+    pub span_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
     pub usage: Option<TokenUsage>,
@@ -311,6 +404,7 @@ impl Event {
             native_id: None,
             parent_id: None,
             parent_kind: None,
+            span_id: None,
             model: None,
             provider: None,
             usage: None,
@@ -376,6 +470,150 @@ pub fn assign_indexes(events: &mut [Event]) {
     }
 }
 
+/// Materialize stable turn-internal trajectories without inventing sessions.
+/// Tool calls/results form call spans; delegation payloads may additionally
+/// fan out child spans by native `task_id`.
+pub fn derive_spans(events: &mut [Event]) -> Vec<Span> {
+    let mut spans = BTreeMap::<String, Span>::new();
+    for event in events {
+        if !matches!(event.kind, EventKind::ToolCall | EventKind::ToolResult) {
+            continue;
+        }
+        let Some(call_id) = event.call_id.clone() else {
+            continue;
+        };
+        let span_id = format!("call:{call_id}");
+        let delegation = event.name.as_deref().is_some_and(is_delegation_tool);
+        let span = spans.entry(span_id.clone()).or_insert_with(|| Span {
+            id: span_id.clone(),
+            parent_span_id: None,
+            kind: if delegation {
+                SpanKind::Delegation
+            } else {
+                SpanKind::Tool
+            },
+            name: event.name.clone(),
+            native_id: event.native_id.clone(),
+            call_id: Some(call_id.clone()),
+            status: Some(SpanStatus::Active),
+            started_at_ms: event.created_at_ms,
+            ended_at_ms: None,
+            start_event_idx: Some(event.idx),
+            end_event_idx: None,
+            data_json: None,
+        });
+        if delegation {
+            span.kind = SpanKind::Delegation;
+        }
+        span.name = span.name.clone().or_else(|| event.name.clone());
+        span.started_at_ms = span.started_at_ms.or(event.created_at_ms);
+        span.start_event_idx = span.start_event_idx.or(Some(event.idx));
+        if event.kind == EventKind::ToolResult {
+            span.ended_at_ms = event.ended_at_ms.or(event.created_at_ms);
+            span.end_event_idx = Some(event.idx);
+            span.status = Some(if event.is_error == Some(true) {
+                SpanStatus::Failed
+            } else {
+                SpanStatus::Completed
+            });
+        }
+        event.span_id = Some(span_id.clone());
+
+        if let Some(data) = event.data_json.as_ref() {
+            let mut tasks = Vec::new();
+            collect_task_records(data, &mut tasks);
+            for (task_id, task_data) in tasks {
+                let child_id = format!("task:{task_id}");
+                let child = spans.entry(child_id.clone()).or_insert_with(|| Span {
+                    id: child_id,
+                    parent_span_id: Some(span_id.clone()),
+                    kind: SpanKind::Delegation,
+                    name: task_data
+                        .get("name")
+                        .or_else(|| task_data.get("subject"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    native_id: Some(task_id),
+                    call_id: None,
+                    status: task_data
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .and_then(parse_span_status),
+                    started_at_ms: task_data
+                        .get("started_at_ms")
+                        .and_then(Value::as_i64)
+                        .or(event.created_at_ms),
+                    ended_at_ms: task_data.get("ended_at_ms").and_then(Value::as_i64),
+                    start_event_idx: Some(event.idx),
+                    end_event_idx: None,
+                    data_json: Some(Value::Object(task_data.clone())),
+                });
+                if let Some(status) = task_data
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .and_then(parse_span_status)
+                {
+                    child.status = Some(status);
+                    if !matches!(status, SpanStatus::Active) {
+                        child.ended_at_ms = task_data
+                            .get("ended_at_ms")
+                            .and_then(Value::as_i64)
+                            .or(event.ended_at_ms)
+                            .or(event.created_at_ms);
+                        child.end_event_idx = Some(event.idx);
+                    }
+                }
+                child.data_json = Some(Value::Object(task_data.clone()));
+            }
+        }
+    }
+    spans.into_values().collect()
+}
+
+fn is_delegation_tool(name: &str) -> bool {
+    matches!(
+        name.rsplit([':', '/', '.'])
+            .next()
+            .unwrap_or(name)
+            .to_ascii_lowercase()
+            .as_str(),
+        "task" | "workflow" | "spawn_agent" | "delegate"
+    )
+}
+
+fn collect_task_records<'a>(
+    value: &'a Value,
+    output: &mut Vec<(String, &'a serde_json::Map<String, Value>)>,
+) {
+    match value {
+        Value::Object(object) => {
+            if let Some(task_id) = object.get("task_id").and_then(Value::as_str) {
+                output.push((task_id.to_owned(), object));
+            }
+            for child in object.values() {
+                collect_task_records(child, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_task_records(item, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_span_status(value: &str) -> Option<SpanStatus> {
+    match value.to_ascii_lowercase().as_str() {
+        "active" | "running" | "in_progress" => Some(SpanStatus::Active),
+        "completed" | "complete" | "done" | "succeeded" => Some(SpanStatus::Completed),
+        "failed" | "error" => Some(SpanStatus::Failed),
+        "interrupted" | "cancelled" | "canceled" => Some(SpanStatus::Interrupted),
+        "abandoned" => Some(SpanStatus::Abandoned),
+        _ => None,
+    }
+}
+
 pub fn turn_count(events: &[Event]) -> i64 {
     events
         .iter()
@@ -414,5 +652,43 @@ pub fn flatten(value: &Value) -> String {
             .map(compact)
             .unwrap_or_else(|| compact(value)),
         _ => compact(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn spans_express_multiplexed_delegation_without_sessions() {
+        let mut call = Event::new(EventKind::ToolCall, "workflow");
+        call.name = Some("Workflow".into());
+        call.call_id = Some("host-1".into());
+        call.created_at_ms = Some(10);
+        call.data_json = Some(json!({
+            "delegates": [
+                {"task_id":"task-a","name":"review"},
+                {"task_id":"task-b","name":"test"}
+            ]
+        }));
+        let mut result = Event::new(EventKind::ToolResult, "done");
+        result.call_id = Some("host-1".into());
+        result.created_at_ms = Some(20);
+        let mut events = vec![call, result];
+        assign_indexes(&mut events);
+
+        let spans = derive_spans(&mut events);
+        assert_eq!(events[0].span_id.as_deref(), Some("call:host-1"));
+        assert_eq!(events[1].span_id.as_deref(), Some("call:host-1"));
+        assert_eq!(spans.len(), 3);
+        let host = spans.iter().find(|span| span.id == "call:host-1").unwrap();
+        assert_eq!(host.kind, SpanKind::Delegation);
+        assert_eq!(host.status, Some(SpanStatus::Completed));
+        for task_id in ["task:task-a", "task:task-b"] {
+            let child = spans.iter().find(|span| span.id == task_id).unwrap();
+            assert_eq!(child.parent_span_id.as_deref(), Some("call:host-1"));
+            assert_eq!(child.kind, SpanKind::Delegation);
+        }
     }
 }

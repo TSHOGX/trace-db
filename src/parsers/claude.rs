@@ -98,6 +98,14 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         t.unwrap_or_default(),
                     );
                     e.subtype = Some("tool_result".into());
+                    let result = r.get("toolUseResult").unwrap_or(&Value::Null);
+                    e.call_id = s(result
+                        .get("tool_use_id")
+                        .or_else(|| result.get("toolUseId"))
+                        .or_else(|| r.get("tool_use_id"))
+                        .or_else(|| r.get("toolUseId"))
+                        .or_else(|| r.get("parent_tool_use_id")));
+                    e.name = s(result.get("name").or_else(|| result.get("toolName")));
                     events.push(e)
                 } else {
                     events.push(ev(

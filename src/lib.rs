@@ -35,7 +35,7 @@ pub use facade::{
 };
 pub use model::{
     Agent, Capture, Event, EventKind, EventParentKind, IngestMode, NativeSource, ParsedSession,
-    Session, SessionStatus, TokenUsage,
+    Session, SessionStatus, Span, SpanKind, SpanStatus, TokenUsage,
 };
 pub use parsers::SessionCandidate;
 pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};

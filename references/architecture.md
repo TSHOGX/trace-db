@@ -125,15 +125,26 @@ Ingest has two explicit performance invariants:
 
 ## Lineage
 
-There are two independent trees:
+There are three independent relationship layers:
 
-- Event lineage links native event IDs within a session.
+- Typed event lineage preserves producer-native predecessor/message links
+  without treating them as structural spans.
 - Session lineage links forks and subagents across sessions.
+- First-class spans represent turn-internal tools and delegations. Spans can
+  exist without a child session or a dedicated event, so one Workflow call can
+  parent multiple `task_id` delegates and promoted tool calls remain native to
+  their containing session.
 
 Claude subagents prove their parent through the nested path
 `<parent>/subagents/agent-*.jsonl`. Codex stores the edge only in the parent's
 `spawn_agent` call/output pair, so the parser performs a cross-rollout pre-pass.
 OpenCode exposes `parent_id` directly in its SQLite session table.
+
+Span projection is deterministic and materialized during ingestion. Tool
+calls/results with the same `call_id` form one interval; known delegation tools
+use `delegation` kind. Structured payloads containing multiple `task_id`
+objects create child delegation spans under the host call. Missing end/status
+evidence remains null rather than being inferred.
 
 ## Compatibility and extension policy
 

@@ -1,6 +1,9 @@
 use crate::{
     config::TokenizerKind,
-    model::{assign_indexes, Event, IngestMode, NativeSource, ParsedSession, Session, TokenUsage},
+    model::{
+        assign_indexes, derive_spans, Event, IngestMode, NativeSource, ParsedSession, Session,
+        Span, TokenUsage,
+    },
     IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionSummary,
     SessionTrace,
 };
@@ -17,7 +20,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 pub const ARCHIVE_CONTRACT: &str = "lossless-v1";
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
@@ -229,6 +232,9 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         schema_has_column(connection, "import_source", "events", "ended_at_ms")?;
     let source_has_parent_kind =
         schema_has_column(connection, "import_source", "events", "parent_kind")?;
+    let source_has_event_span =
+        schema_has_column(connection, "import_source", "events", "span_id")?;
+    let source_has_spans = schema_has_table(connection, "import_source", "spans")?;
     let result = (|| -> Result<crate::ImportReport> {
         connection.execute_batch("BEGIN IMMEDIATE")?;
         validate_import_compatibility(
@@ -236,6 +242,7 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
             source_has_status,
             source_has_event_end,
             source_has_parent_kind,
+            source_has_event_span,
         )?;
         let status_projection = if source_has_status { "status" } else { "NULL" };
         let imported_sessions = connection.execute(
@@ -270,9 +277,14 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         } else {
             "NULL"
         };
+        let span_projection = if source_has_event_span {
+            "ie.span_id"
+        } else {
+            "NULL"
+        };
         let imported_events = connection.execute(
-            &format!("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
-             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,{parent_kind_projection},ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,{event_end_projection}
+            &format!("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
+             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,{parent_kind_projection},{span_projection},ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,{event_end_projection}
              FROM import_source.events ie
              WHERE NOT EXISTS (
                SELECT 1 FROM events e
@@ -281,6 +293,14 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
              )"),
             [],
         )? as u64;
+        if source_has_spans {
+            connection.execute(
+                "INSERT OR IGNORE INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
+                 SELECT session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
+                 FROM import_source.spans",
+                [],
+            )?;
+        }
         let source_events =
             connection.query_row("SELECT count(*) FROM import_source.events", [], |row| {
                 row.get::<_, u64>(0)
@@ -319,6 +339,7 @@ fn validate_import_compatibility(
     source_has_status: bool,
     source_has_event_end: bool,
     source_has_parent_kind: bool,
+    source_has_event_span: bool,
 ) -> Result<()> {
     let status_match = if source_has_status {
         "destination.status IS source.status AND"
@@ -352,24 +373,26 @@ fn validate_import_compatibility(
         .query_row(
             &format!("SELECT session_id FROM (
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},model,provider,usage_json,text,data_json,created_at_ms,{}
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},{},model,provider,usage_json,text,data_json,created_at_ms,{}
                  FROM import_source.events WHERE session_id IN (SELECT id FROM sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events
                )
                UNION ALL
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events WHERE session_id IN (SELECT id FROM import_source.sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},model,provider,usage_json,text,data_json,created_at_ms,{}
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},{},model,provider,usage_json,text,data_json,created_at_ms,{}
                  FROM import_source.events
                )
              ) LIMIT 1",
              if source_has_parent_kind { "parent_kind" } else { "NULL" },
+             if source_has_event_span { "span_id" } else { "NULL" },
              if source_has_event_end { "ended_at_ms" } else { "NULL" },
              if source_has_parent_kind { "parent_kind" } else { "NULL" },
+             if source_has_event_span { "span_id" } else { "NULL" },
              if source_has_event_end { "ended_at_ms" } else { "NULL" }),
             [],
             |row| row.get(0),
@@ -715,13 +738,21 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         idx INTEGER NOT NULL, kind TEXT NOT NULL, subtype TEXT, role TEXT, name TEXT,
-        call_id TEXT, is_error INTEGER, native_id TEXT, parent_id TEXT, parent_kind TEXT, model TEXT,
+        call_id TEXT, is_error INTEGER, native_id TEXT, parent_id TEXT, parent_kind TEXT, span_id TEXT, model TEXT,
         provider TEXT, usage_json TEXT, text TEXT NOT NULL, data_json TEXT, created_at_ms INTEGER,
         ended_at_ms INTEGER
       );
       CREATE INDEX IF NOT EXISTS events_session_idx ON events(session_id,idx);
       CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind);
       CREATE INDEX IF NOT EXISTS events_call_idx ON events(session_id,call_id);
+      CREATE TABLE IF NOT EXISTS spans (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        id TEXT NOT NULL, parent_span_id TEXT, kind TEXT NOT NULL, name TEXT,
+        native_id TEXT, call_id TEXT, status TEXT, started_at_ms INTEGER, ended_at_ms INTEGER,
+        start_event_idx INTEGER, end_event_idx INTEGER, data_json TEXT,
+        PRIMARY KEY(session_id,id)
+      );
+      CREATE INDEX IF NOT EXISTS spans_parent_idx ON spans(session_id,parent_span_id);
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, content='events', content_rowid='id', tokenize='TOKENIZER_PLACEHOLDER');
       CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events WHEN new.kind NOT IN ('tool_result','usage') BEGIN INSERT INTO events_fts(rowid,text) VALUES(new.id,new.text); END;
       CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events WHEN old.kind NOT IN ('tool_result','usage') BEGIN INSERT INTO events_fts(events_fts,rowid,text) VALUES('delete',old.id,old.text); END;
@@ -739,6 +770,9 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
     }
     if !table_has_column(conn, "events", "parent_kind")? {
         conn.execute_batch("ALTER TABLE events ADD COLUMN parent_kind TEXT;")?;
+    }
+    if !table_has_column(conn, "events", "span_id")? {
+        conn.execute_batch("ALTER TABLE events ADD COLUMN span_id TEXT;")?;
     }
     if previous_tokenizer
         .as_deref()
@@ -785,6 +819,14 @@ fn schema_has_column(conn: &Connection, schema: &str, table: &str, column: &str)
         schema.replace('"', "\"\"")
     );
     Ok(conn.query_row(&sql, params![table, column], |row| row.get::<_, i64>(0))? != 0)
+}
+
+fn schema_has_table(conn: &Connection, schema: &str, table: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM \"{}\".sqlite_master WHERE type='table' AND name=?1)",
+        schema.replace('"', "\"\"")
+    );
+    Ok(conn.query_row(&sql, [table], |row| row.get::<_, i64>(0))? != 0)
 }
 
 pub fn open_for_verification(path: &Path) -> Result<Connection> {
@@ -848,6 +890,50 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
         "foreign_keys",
         foreign_key_failures.len(),
         foreign_key_failures,
+    ));
+
+    let mut span_reference_failures = connection
+        .prepare(
+            "SELECT e.session_id,e.idx,e.span_id FROM events e
+             LEFT JOIN spans s ON s.session_id=e.session_id AND s.id=e.span_id
+             WHERE e.span_id IS NOT NULL AND s.id IS NULL",
+        )?
+        .query_map([], |row| {
+            Ok(VerificationFailure {
+                locator: format!(
+                    "{} event {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?
+                ),
+                message: format!("references missing span {}", row.get::<_, String>(2)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut missing_parents = connection
+        .prepare(
+            "SELECT s.session_id,s.id,s.parent_span_id FROM spans s
+             LEFT JOIN spans parent ON parent.session_id=s.session_id AND parent.id=s.parent_span_id
+             WHERE s.parent_span_id IS NOT NULL AND parent.id IS NULL",
+        )?
+        .query_map([], |row| {
+            Ok(VerificationFailure {
+                locator: format!(
+                    "{} span {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?
+                ),
+                message: format!(
+                    "references missing parent span {}",
+                    row.get::<_, String>(2)?
+                ),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    span_reference_failures.append(&mut missing_parents);
+    checks.push(VerifyCheck::new(
+        "span_references",
+        connection.query_row("SELECT count(*) FROM spans", [], |row| row.get(0))?,
+        span_reference_failures,
     ));
 
     let contract_failures = verify_contract(connection)?;
@@ -1063,6 +1149,7 @@ pub fn upsert_many(
     let tx = conn.transaction()?;
     for parsed in parsed_sessions {
         assign_indexes(&mut parsed.events);
+        let spans = derive_spans(&mut parsed.events);
         let old: Option<String> = tx
             .query_row(
                 "SELECT mode FROM sessions WHERE id=?1",
@@ -1071,7 +1158,7 @@ pub fn upsert_many(
             )
             .optional()?;
         let mode = requested.retain_full(old.and_then(|s| s.parse().ok()));
-        write_session(&tx, &parsed.session, &parsed.events, mode)?;
+        write_session(&tx, &parsed.session, &parsed.events, &spans, mode)?;
     }
     tx.commit()?;
     Ok(())
@@ -1112,6 +1199,7 @@ fn write_session(
     tx: &Transaction<'_>,
     session: &Session,
     events: &[Event],
+    spans: &[Span],
     mode: IngestMode,
 ) -> Result<()> {
     let previous_full_sources = if matches!(mode, IngestMode::Full) {
@@ -1166,8 +1254,30 @@ fn write_session(
         tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
         for e in events {
             let usage_json = e.usage.as_ref().map(serde_json::to_string).transpose()?;
-            tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.parent_kind.map(|kind| kind.to_string()),e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms,e.ended_at_ms])?;
+            tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.parent_kind.map(|kind| kind.to_string()),e.span_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms,e.ended_at_ms])?;
         }
+    }
+    tx.execute("DELETE FROM spans WHERE session_id=?1", [&session.id])?;
+    for span in spans {
+        tx.execute(
+            "INSERT INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![
+                session.id,
+                span.id,
+                span.parent_span_id,
+                span.kind.to_string(),
+                span.name,
+                span.native_id,
+                span.call_id,
+                span.status.map(|status| status.to_string()),
+                span.started_at_ms,
+                span.ended_at_ms,
+                span.start_event_idx,
+                span.end_event_idx,
+                span.data_json.as_ref().map(Value::to_string),
+            ],
+        )?;
     }
     Ok(())
 }
@@ -1175,7 +1285,7 @@ fn write_session(
 fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event]) -> Result<bool> {
     let mut statement = tx.prepare(
         "SELECT idx, kind, subtype, role, name, call_id, is_error, native_id,
-                parent_id, parent_kind, model, provider, usage_json, text, data_json, created_at_ms, ended_at_ms
+                parent_id, parent_kind, span_id, model, provider, usage_json, text, data_json, created_at_ms, ended_at_ms
          FROM events WHERE session_id=?1 ORDER BY idx",
     )?;
     let stored = statement
@@ -1194,10 +1304,11 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
                 row.get::<_, Option<String>>(10)?,
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, Option<String>>(15)?,
                 row.get::<_, Option<i64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1217,6 +1328,7 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
             native_id,
             parent_id,
             parent_kind,
+            span_id,
             model,
             provider,
             usage_json,
@@ -1237,6 +1349,7 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
             || event.native_id != native_id
             || event.parent_id != parent_id
             || event.parent_kind.map(|kind| kind.to_string()) != parent_kind
+            || event.span_id != span_id
             || event.model != model
             || event.provider != provider
             || event
@@ -1770,7 +1883,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
+    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
     let raw_events = event_stmt
         .query_map([session_id], |row| {
             Ok((
@@ -1787,14 +1900,15 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                 row.get::<_, Option<String>>(10)?,
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, Option<String>>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, Option<String>>(15)?,
                 row.get::<_, Option<i64>>(16)?,
+                row.get::<_, Option<i64>>(17)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let events = raw_events
+    let mut events = raw_events
         .into_iter()
         .map(
             |(
@@ -1808,6 +1922,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                 native_id,
                 parent_id,
                 parent_kind,
+                span_id,
                 model,
                 provider,
                 usage_json,
@@ -1830,6 +1945,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                         .map(|value| value.parse::<crate::EventParentKind>())
                         .transpose()
                         .map_err(anyhow::Error::msg)?,
+                    span_id,
                     model,
                     provider,
                     usage: usage_json
@@ -1845,6 +1961,71 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             },
         )
         .collect::<Result<Vec<_>>>()?;
+
+    let mut span_statement = conn.prepare(
+        "SELECT id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
+         FROM spans WHERE session_id=?1 ORDER BY id",
+    )?;
+    let raw_spans = span_statement
+        .query_map([session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut spans = raw_spans
+        .into_iter()
+        .map(
+            |(
+                id,
+                parent_span_id,
+                kind,
+                name,
+                native_id,
+                call_id,
+                status,
+                started_at_ms,
+                ended_at_ms,
+                start_event_idx,
+                end_event_idx,
+                data_json,
+            )| {
+                Ok(Span {
+                    id,
+                    parent_span_id,
+                    kind: kind.parse().map_err(anyhow::Error::msg)?,
+                    name,
+                    native_id,
+                    call_id,
+                    status: status
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(anyhow::Error::msg)?,
+                    started_at_ms,
+                    ended_at_ms,
+                    start_event_idx,
+                    end_event_idx,
+                    data_json: data_json
+                        .map(|value| serde_json::from_str(&value))
+                        .transpose()?,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+    if spans.is_empty() {
+        spans = derive_spans(&mut events);
+    }
 
     Ok(Some(SessionTrace {
         session: Session {
@@ -1869,6 +2050,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         },
         mode: mode.parse().map_err(anyhow::Error::msg)?,
         events,
+        spans,
     }))
 }
 

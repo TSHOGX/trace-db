@@ -6,7 +6,7 @@
 
 use crate::{
     proto as pb, Agent, ArchiveStats, Event, EventKind, IngestMode, IngestRequest, ListRequest,
-    NativeSource, ReconstructionOptions, SearchRequest, Session, SessionTrace, ShowRequest,
+    NativeSource, ReconstructionOptions, SearchRequest, Session, SessionTrace, ShowRequest, Span,
     TokenizerKind, TraceDb,
 };
 use anyhow::{bail, Context, Result};
@@ -607,6 +607,7 @@ fn trace_to_proto(trace: SessionTrace) -> Result<pb::ShowResponse> {
             .into_iter()
             .map(event_to_proto)
             .collect::<Result<Vec<_>, _>>()?,
+        spans: trace.spans.into_iter().map(span_to_proto).collect(),
     })
 }
 
@@ -654,6 +655,7 @@ fn event_to_proto(event: Event) -> Result<pb::Event> {
         native_id: event.native_id,
         parent_id: event.parent_id,
         parent_kind: event.parent_kind.map(|kind| kind.to_string()),
+        span_id: event.span_id,
         model: event.model,
         provider: event.provider,
         usage_json: event
@@ -666,6 +668,23 @@ fn event_to_proto(event: Event) -> Result<pb::Event> {
         created_at_ms: event.created_at_ms,
         ended_at_ms: event.ended_at_ms,
     })
+}
+
+fn span_to_proto(span: Span) -> pb::Span {
+    pb::Span {
+        id: span.id,
+        parent_span_id: span.parent_span_id,
+        kind: span.kind.to_string(),
+        name: span.name,
+        native_id: span.native_id,
+        call_id: span.call_id,
+        status: span.status.map(|status| status.to_string()),
+        started_at_ms: span.started_at_ms,
+        ended_at_ms: span.ended_at_ms,
+        start_event_idx: span.start_event_idx,
+        end_event_idx: span.end_event_idx,
+        data_json: span.data_json.map(|data| data.to_string()),
+    }
 }
 
 fn stats_to_proto(stats: ArchiveStats) -> pb::StatsResponse {

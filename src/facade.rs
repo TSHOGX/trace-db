@@ -1831,6 +1831,7 @@ pub struct SessionTrace {
     pub session: Session,
     pub mode: IngestMode,
     pub events: Vec<crate::model::Event>,
+    pub spans: Vec<crate::model::Span>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
