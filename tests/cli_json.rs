@@ -12,6 +12,7 @@ fn archive() -> (tempfile::TempDir, std::path::PathBuf) {
     let mut db = TraceDb::open(&path).unwrap();
     let mut tool = Event::new(EventKind::ToolCall, "{\"path\":\"README.md\"}");
     tool.name = Some("read_file".into());
+    tool.data_json = Some(json!({"vendor_key":"kept"}));
     db.ingest_session(
         ParsedSession {
             session: Session {
@@ -416,4 +417,65 @@ fn json_api_rejects_unknown_fields_instead_of_scanning_unfiltered() {
         .as_str()
         .unwrap()
         .contains("unknown field"));
+}
+
+#[test]
+fn json_api_v2_is_strict_and_uses_camel_case() {
+    let (_dir, path) = archive();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args(["--db", path.to_str().unwrap(), "api"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.as_mut().unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "version": 2,
+            "op": "list",
+            "sinceMs": 1,
+            "cwdExact": true
+        })
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "version": 2,
+            "op": "show",
+            "id": "codex:json-contract",
+            "fromIdx": 1,
+            "kinds": ["tool_call"]
+        })
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "version": 2,
+            "op": "list",
+            "since_ms": 1
+        })
+    )
+    .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let rows = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(rows[0]["ok"], true);
+    assert!(rows[0]["result"]["sessions"][0]
+        .get("startedAtMs")
+        .is_some());
+    assert_eq!(
+        rows[1]["result"]["events"][0]["dataJson"]["vendor_key"],
+        "kept"
+    );
+    assert!(rows[1]["result"]["events"][0].get("createdAtMs").is_some());
+    assert_eq!(rows[2]["error"]["code"], "invalid_argument");
 }

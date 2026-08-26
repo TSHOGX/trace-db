@@ -107,6 +107,13 @@ The line-oriented `trace-db api` rejects unknown request fields with an
 human-friendly `since` string, while an accidental `since_ms` field is rejected
 instead of silently turning into an unfiltered archive scan.
 
+Line API version 2 is selected with `"version":2`. Its operation requests are
+deserialized into strict typed structures with unknown-field rejection and
+consistent camelCase names (`sinceMs`, `cwdExact`, `fromIdx`, `toIdx`, `kinds`,
+`outDir`). Version 1 remains available for compatibility. V2 camel-cases only
+the normalized envelope/model; vendor keys inside `dataJson` and `meta` remain
+byte-for-byte semantic JSON keys.
+
 ## Concurrency semantics
 
 `Search`, `Show`, and `Stats` use a bounded pool of read-only WAL connections

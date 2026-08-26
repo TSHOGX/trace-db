@@ -252,6 +252,13 @@ line produces either `{"ok":true,"result":...}` or a stable
 malformed or invalid requests do not terminate the stream. The Rust crate is
 the preferred high-performance integration surface:
 
+The original request spelling remains available as API v1. New integrations
+should send `"version":2`; v2 requests are typed, reject unknown fields, and
+use camelCase consistently: `sinceMs` is an integer timestamp,
+`cwdExact`, `fromIdx`, `toIdx`, `kinds`, and `outDir`. V2 responses also use
+camelCase for normalized fields while preserving keys inside vendor
+`dataJson`/session `meta` payloads.
+
 ```rust,no_run
 use tracedb::{SearchRequest, TraceDb};
 

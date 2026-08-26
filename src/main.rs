@@ -1,6 +1,6 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
@@ -1118,6 +1118,77 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
 
 const API_OPERATIONS: [&str; 6] = ["stats", "search", "list", "show", "coverage", "reconstruct"];
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ApiKinds {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ApiV2Search {
+    version: u8,
+    op: String,
+    query: String,
+    limit: Option<usize>,
+    agent: Option<Agent>,
+    cwd: Option<String>,
+    since_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ApiV2List {
+    version: u8,
+    op: String,
+    limit: Option<usize>,
+    cursor: Option<String>,
+    agent: Option<Agent>,
+    cwd: Option<String>,
+    cwd_exact: Option<bool>,
+    since_ms: Option<i64>,
+    mode: Option<IngestMode>,
+    model: Option<String>,
+    provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ApiV2Show {
+    version: u8,
+    op: String,
+    id: String,
+    from_idx: Option<i64>,
+    to_idx: Option<i64>,
+    kinds: Option<ApiKinds>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiV2Id {
+    version: u8,
+    op: String,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ApiV2Reconstruct {
+    version: u8,
+    op: String,
+    id: String,
+    out_dir: String,
+    overwrite: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiV2Stats {
+    version: u8,
+    op: String,
+}
+
 fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<(), ApiFailure> {
     let allowed: &[&str] = match op {
         "stats" => &["op"],
@@ -1266,6 +1337,180 @@ fn run_api(db: &TraceDb) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn deserialize_api_v2<T: for<'de> Deserialize<'de>>(
+    request: &serde_json::Value,
+) -> Result<T, ApiFailure> {
+    serde_json::from_value(request.clone()).map_err(|error| ApiFailure::invalid(error.to_string()))
+}
+
+fn api_v2_kinds(kinds: Option<ApiKinds>) -> Result<Vec<EventKind>, ApiFailure> {
+    let values = match kinds {
+        None => return Ok(Vec::new()),
+        Some(ApiKinds::One(value)) => vec![value],
+        Some(ApiKinds::Many(values)) => values,
+    };
+    values
+        .into_iter()
+        .map(|value| value.parse().map_err(ApiFailure::invalid))
+        .collect()
+}
+
+fn camelize_api_v2(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => serde_json::Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| {
+                    let preserve_payload = matches!(key.as_str(), "data_json" | "meta");
+                    let key = snake_to_camel(&key);
+                    let value = if preserve_payload {
+                        value
+                    } else {
+                        camelize_api_v2(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(camelize_api_v2).collect())
+        }
+        value => value,
+    }
+}
+
+fn snake_to_camel(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut uppercase = false;
+    for character in value.chars() {
+        if character == '_' {
+            uppercase = true;
+        } else if uppercase {
+            output.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn execute_api_v2(
+    db: &TraceDb,
+    request: &serde_json::Value,
+    op: &str,
+) -> Result<serde_json::Value, ApiFailure> {
+    let result = match op {
+        "stats" => {
+            let typed: ApiV2Stats = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            serde_json::to_value(
+                db.stats()
+                    .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+        }
+        "search" => {
+            let typed: ApiV2Search = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            if typed.query.is_empty() {
+                return Err(ApiFailure::invalid("query must not be empty"));
+            }
+            serde_json::to_value(
+                db.search(SearchRequest {
+                    query: typed.query,
+                    limit: typed.limit.unwrap_or(20),
+                    agent: typed.agent,
+                    cwd: typed.cwd,
+                    since_ms: typed.since_ms,
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+        }
+        "list" => {
+            let typed: ApiV2List = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            serde_json::to_value(
+                db.list(ListRequest {
+                    limit: typed.limit.unwrap_or(50),
+                    cursor: typed.cursor,
+                    agent: typed.agent,
+                    cwd: typed.cwd,
+                    cwd_exact: typed.cwd_exact.unwrap_or(false),
+                    since_ms: typed.since_ms,
+                    mode: typed.mode,
+                    model: typed.model,
+                    provider: typed.provider,
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+        }
+        "show" => {
+            let typed: ApiV2Show = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            if typed.id.is_empty() {
+                return Err(ApiFailure::invalid("id must not be empty"));
+            }
+            serde_json::to_value(
+                db.show_with_options(ShowRequest {
+                    session_id: typed.id,
+                    from_idx: typed.from_idx,
+                    to_idx: typed.to_idx,
+                    kinds: api_v2_kinds(typed.kinds)?,
+                })
+                .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+        }
+        "coverage" => {
+            let typed: ApiV2Id = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            serde_json::to_value(
+                db.coverage(&typed.id)
+                    .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+        }
+        "reconstruct" => {
+            let typed: ApiV2Reconstruct = deserialize_api_v2(request)?;
+            validate_api_v2_header(typed.version, &typed.op, op)?;
+            serde_json::to_value(
+                db.reconstruct_with_options(
+                    &typed.id,
+                    PathBuf::from(typed.out_dir),
+                    tracedb::ReconstructionOptions {
+                        overwrite: typed.overwrite.unwrap_or(false),
+                    },
+                )
+                .map_err(|error| ApiFailure::operation(op, error))?
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+            )
+        }
+        _ => {
+            return Err(ApiFailure {
+                code: "unsupported_operation",
+                message: format!("unsupported operation: {op}"),
+                details: Some(serde_json::json!({"supported": API_OPERATIONS})),
+            })
+        }
+    }
+    .map_err(|error| ApiFailure::operation(op, error))?;
+    Ok(camelize_api_v2(result))
+}
+
+fn validate_api_v2_header(
+    version: u8,
+    actual_op: &str,
+    expected_op: &str,
+) -> Result<(), ApiFailure> {
+    if version != 2 {
+        return Err(ApiFailure::invalid("version must be 2"));
+    }
+    if actual_op != expected_op {
+        return Err(ApiFailure::invalid("operation mismatch"));
+    }
+    Ok(())
+}
+
 fn execute_api_request(
     db: &TraceDb,
     request: &serde_json::Value,
@@ -1274,6 +1519,17 @@ fn execute_api_request(
         return Err(ApiFailure::invalid("request must be a JSON object"));
     }
     let op = required_json_string(request, "op")?;
+    if let Some(version) = request.get("version") {
+        let version = version
+            .as_u64()
+            .ok_or_else(|| ApiFailure::invalid("version must be an integer"))?;
+        if version != 2 {
+            return Err(ApiFailure::invalid(format!(
+                "unsupported API version: {version}"
+            )));
+        }
+        return execute_api_v2(db, request, op);
+    }
     reject_unknown_api_fields(request, op)?;
     match op {
         "stats" => serde_json::to_value(
