@@ -20,6 +20,48 @@ pub enum Agent {
     Pi,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Active,
+    Completed,
+    Failed,
+    Interrupted,
+    Abandoned,
+}
+
+impl SessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+impl fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SessionStatus {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "active" => Ok(Self::Active),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "interrupted" => Ok(Self::Interrupted),
+            "abandoned" => Ok(Self::Abandoned),
+            _ => Err(format!("unknown session status: {value}")),
+        }
+    }
+}
+
 impl Agent {
     pub const ALL: [Agent; 5] = [
         Agent::Claude,
@@ -269,6 +311,7 @@ pub struct Session {
     pub cwd: Option<String>,
     pub started_at_ms: Option<i64>,
     pub ended_at_ms: Option<i64>,
+    pub status: Option<SessionStatus>,
     pub title: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,

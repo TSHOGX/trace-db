@@ -20,6 +20,7 @@ fn archive() -> (tempfile::TempDir, std::path::PathBuf) {
                 cwd: Some("/workspace/demo".into()),
                 started_at_ms: Some(10),
                 ended_at_ms: Some(20),
+                status: None,
                 title: Some("JSON contract".into()),
                 model: Some("gpt-test".into()),
                 provider: Some("openai".into()),

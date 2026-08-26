@@ -488,6 +488,7 @@ fn session(
             cwd: Some(cwd.into()),
             started_at_ms: Some(started_at_ms),
             ended_at_ms: Some(started_at_ms + 1_000),
+            status: None,
             title: Some(title.into()),
             model: Some(model.into()),
             provider: Some(provider.into()),

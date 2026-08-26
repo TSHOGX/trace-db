@@ -758,6 +758,7 @@ mod tests {
                     cwd: Some("/workspace".into()),
                     started_at_ms: Some(chrono::Utc::now().timestamp_millis() - 1000),
                     ended_at_ms: Some(chrono::Utc::now().timestamp_millis()),
+                    status: None,
                     title: None,
                     model: None,
                     provider: None,

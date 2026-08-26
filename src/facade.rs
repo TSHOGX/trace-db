@@ -1601,6 +1601,7 @@ pub struct SessionSummary {
     pub mode: IngestMode,
     pub events: i64,
     pub ingested_at_ms: i64,
+    pub status: Option<crate::SessionStatus>,
     /// Direct session lineage parent, if present.
     pub parent_session_id: Option<String>,
     /// Relationship to `parent_session_id` (`parent` or `fork`), when known.

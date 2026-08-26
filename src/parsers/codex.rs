@@ -239,6 +239,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
             cwd,
             started_at_ms: started,
             ended_at_ms: ended,
+            status: None,
             title: None,
             model,
             provider,

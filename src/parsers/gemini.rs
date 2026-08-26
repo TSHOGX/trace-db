@@ -211,6 +211,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             cwd: None,
             started_at_ms: start,
             ended_at_ms: end,
+            status: None,
             title: None,
             model,
             provider: Some("google".into()),

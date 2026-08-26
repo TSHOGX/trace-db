@@ -236,6 +236,10 @@ an explicit end boundary. TraceDB deliberately does not synthesize an end time
 from the next event, so historical records without producer interval data stay
 honestly open-ended.
 
+Sessions may expose `status` as `active`, `completed`, `failed`, `interrupted`,
+or `abandoned`. It remains null when the native producer supplies no explicit
+terminal evidence; timestamps alone are not treated as proof of completion.
+
 This protocol is intentionally simple and language-neutral for Python, Node.js,
 Go, and shell clients without exposing SQLite internals. Every non-empty input
 line produces either `{"ok":true,"result":...}` or a stable

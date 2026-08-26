@@ -143,6 +143,7 @@ message Session {
   string meta_json = 12;
   string fingerprint = 13;
   repeated NativeSource sources = 14;
+  optional string status = 15;
 }
 
 message NativeSource {
@@ -207,6 +208,7 @@ message SessionSummary {
   optional string parent_session_id = 12;
   optional string parent_relation = 13;
   int64 subagent_count = 14;
+  optional string status = 15;
 }
 
 message StatsResponse {

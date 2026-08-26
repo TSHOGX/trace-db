@@ -34,7 +34,8 @@ pub use facade::{
     WatchTrigger, RESTORE_MANIFEST_SCHEMA_VERSION,
 };
 pub use model::{
-    Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session, TokenUsage,
+    Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session,
+    SessionStatus, TokenUsage,
 };
 pub use parsers::SessionCandidate;
 pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};

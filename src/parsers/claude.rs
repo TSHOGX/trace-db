@@ -208,6 +208,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             cwd,
             started_at_ms: started,
             ended_at_ms: ended,
+            status: None,
             title,
             model,
             provider: None,

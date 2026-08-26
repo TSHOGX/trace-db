@@ -179,6 +179,7 @@ fn parse_session(
             cwd: directory,
             started_at_ms: ms(created),
             ended_at_ms: ms(updated).or(created),
+            status: None,
             title,
             model,
             provider: None,

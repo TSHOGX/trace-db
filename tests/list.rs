@@ -1,6 +1,9 @@
 use serde_json::json;
 use tempfile::tempdir;
-use tracedb::{Agent, Event, EventKind, IngestMode, ListRequest, ParsedSession, Session, TraceDb};
+use tracedb::{
+    Agent, Event, EventKind, IngestMode, ListRequest, ParsedSession, Session, SessionStatus,
+    TraceDb,
+};
 
 struct Fixture<'a> {
     id: &'a str,
@@ -31,6 +34,7 @@ fn insert(database: &mut TraceDb, fixture: Fixture<'_>) {
                     cwd: Some(cwd.into()),
                     started_at_ms: Some(time - 1),
                     ended_at_ms: Some(time),
+                    status: Some(SessionStatus::Completed),
                     title: Some(format!("Session {id}")),
                     model: Some(model.into()),
                     provider: Some(provider.into()),
@@ -257,6 +261,7 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
                     cwd: Some("/workspace/worktree".into()),
                     started_at_ms: Some(9),
                     ended_at_ms: Some(10),
+                    status: Some(SessionStatus::Completed),
                     title: None,
                     model: None,
                     provider: None,
@@ -301,4 +306,5 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
         .unwrap();
     assert_eq!(child.parent_session_id.as_deref(), Some("codex:parent"));
     assert_eq!(child.parent_relation.as_deref(), Some("parent"));
+    assert_eq!(child.status, Some(SessionStatus::Completed));
 }

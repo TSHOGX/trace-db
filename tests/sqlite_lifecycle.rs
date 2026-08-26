@@ -19,6 +19,7 @@ fn parsed_session(id: &str, sources: Vec<NativeSource>) -> ParsedSession {
             cwd: Some("/workspace".into()),
             started_at_ms: Some(1),
             ended_at_ms: Some(2),
+            status: None,
             title: Some("Lifecycle test".into()),
             model: None,
             provider: None,

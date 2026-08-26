@@ -17,7 +17,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 pub const ARCHIVE_CONTRACT: &str = "lossless-v1";
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
@@ -224,13 +224,17 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         "ATTACH DATABASE ?1 AS import_source",
         [source.to_string_lossy().as_ref()],
     )?;
+    let source_has_status = schema_has_column(connection, "import_source", "sessions", "status")?;
+    let source_has_event_end =
+        schema_has_column(connection, "import_source", "events", "ended_at_ms")?;
     let result = (|| -> Result<crate::ImportReport> {
         connection.execute_batch("BEGIN IMMEDIATE")?;
-        validate_import_compatibility(connection)?;
+        validate_import_compatibility(connection, source_has_status, source_has_event_end)?;
+        let status_projection = if source_has_status { "status" } else { "NULL" };
         let imported_sessions = connection.execute(
-            "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
-             SELECT id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms
-             FROM import_source.sessions",
+            &format!("INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
+             SELECT id,agent,cwd,started_at_ms,ended_at_ms,{status_projection},title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms
+             FROM import_source.sessions"),
             [],
         )? as u64;
         connection.execute(
@@ -249,15 +253,20 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
              SELECT hash,compression,bytes,payload,created_at_ms FROM import_source.objects",
             [],
         )? as u64;
+        let event_end_projection = if source_has_event_end {
+            "ie.ended_at_ms"
+        } else {
+            "NULL"
+        };
         let imported_events = connection.execute(
-            "INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
-             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,ie.ended_at_ms
+            &format!("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
+             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,{event_end_projection}
              FROM import_source.events ie
              WHERE NOT EXISTS (
                SELECT 1 FROM events e
                WHERE e.session_id=ie.session_id AND e.idx=ie.idx
                  AND COALESCE(e.native_id,'')=COALESCE(ie.native_id,'')
-             )",
+             )"),
             [],
         )? as u64;
         let source_events =
@@ -293,21 +302,31 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
     }
 }
 
-fn validate_import_compatibility(connection: &Connection) -> Result<()> {
+fn validate_import_compatibility(
+    connection: &Connection,
+    source_has_status: bool,
+    source_has_event_end: bool,
+) -> Result<()> {
+    let status_match = if source_has_status {
+        "destination.status IS source.status AND"
+    } else {
+        "destination.status IS NULL AND"
+    };
     let conflicting_session: Option<String> = connection
         .query_row(
-            "SELECT source.id
+            &format!("SELECT source.id
              FROM import_source.sessions source
              JOIN sessions destination ON destination.id=source.id
              WHERE NOT (
                destination.agent IS source.agent AND destination.cwd IS source.cwd AND
                destination.started_at_ms IS source.started_at_ms AND destination.ended_at_ms IS source.ended_at_ms AND
+               {status_match}
                destination.title IS source.title AND destination.model IS source.model AND
                destination.provider IS source.provider AND destination.git_branch IS source.git_branch AND
                destination.parent_session_id IS source.parent_session_id AND destination.forked_from IS source.forked_from AND
                destination.fingerprint IS source.fingerprint AND destination.meta_json IS source.meta_json
              )
-             LIMIT 1",
+             LIMIT 1"),
             [],
             |row| row.get(0),
         )
@@ -318,9 +337,9 @@ fn validate_import_compatibility(connection: &Connection) -> Result<()> {
 
     let conflicting_event_session: Option<String> = connection
         .query_row(
-            "SELECT session_id FROM (
+            &format!("SELECT session_id FROM (
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,{}
                  FROM import_source.events WHERE session_id IN (SELECT id FROM sessions)
                  EXCEPT
                  SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
@@ -331,10 +350,12 @@ fn validate_import_compatibility(connection: &Connection) -> Result<()> {
                  SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events WHERE session_id IN (SELECT id FROM import_source.sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,{}
                  FROM import_source.events
                )
              ) LIMIT 1",
+             if source_has_event_end { "ended_at_ms" } else { "NULL" },
+             if source_has_event_end { "ended_at_ms" } else { "NULL" }),
             [],
             |row| row.get(0),
         )
@@ -659,7 +680,7 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
     let schema = r#"
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, started_at_ms INTEGER,
-        ended_at_ms INTEGER, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
+        ended_at_ms INTEGER, status TEXT, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
         parent_session_id TEXT, forked_from TEXT, mode TEXT NOT NULL DEFAULT 'full',
         fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL
       );
@@ -695,6 +716,9 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       END;
     "#.replace("TOKENIZER_PLACEHOLDER", tokenizer);
     conn.execute_batch(&schema)?;
+    if !table_has_column(conn, "sessions", "status")? {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN status TEXT;")?;
+    }
     if !table_has_column(conn, "events", "ended_at_ms")? {
         conn.execute_batch("ALTER TABLE events ADD COLUMN ended_at_ms INTEGER;")?;
     }
@@ -735,6 +759,14 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
         }
     }
     Ok(false)
+}
+
+fn schema_has_column(conn: &Connection, schema: &str, table: &str, column: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM \"{}\".pragma_table_info(?1) WHERE name=?2)",
+        schema.replace('"', "\"\"")
+    );
+    Ok(conn.query_row(&sql, params![table, column], |row| row.get::<_, i64>(0))? != 0)
 }
 
 pub fn open_for_verification(path: &Path) -> Result<Connection> {
@@ -1087,10 +1119,10 @@ fn write_session(
     } else {
         Vec::new()
     };
-    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
-                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,mode=excluded.mode,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
-        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, mode.to_string(), session.fingerprint, session.meta.to_string(), now_ms()])?;
+    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,mode=excluded.mode,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
+        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, mode.to_string(), session.fingerprint, session.meta.to_string(), now_ms()])?;
     tx.execute("DELETE FROM raw_sources WHERE session_id=?1", [&session.id])?;
     let mut current_locators = Vec::with_capacity(session.sources.len());
     for src in &session.sources {
@@ -1500,7 +1532,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         .map(decode_list_cursor)
         .transpose()?;
     let mut sql = String::from(
-        "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.title,s.model,s.provider,s.mode,
+        "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.status,s.title,s.model,s.provider,s.mode,
                 coalesce(s.parent_session_id,
                          CASE WHEN instr(s.forked_from, '#') > 0
                               THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
@@ -1585,26 +1617,37 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                     cwd: row.get(2)?,
                     started_at_ms: row.get(3)?,
                     ended_at_ms: row.get(4)?,
-                    title: row.get(5)?,
-                    model: row.get(6)?,
-                    provider: row.get(7)?,
+                    status: row
+                        .get::<_, Option<String>>(5)?
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|error: String| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                5,
+                                rusqlite::types::Type::Text,
+                                error.into(),
+                            )
+                        })?,
+                    title: row.get(6)?,
+                    model: row.get(7)?,
+                    provider: row.get(8)?,
                     mode: row
-                        .get::<_, String>(8)?
+                        .get::<_, String>(9)?
                         .parse()
                         .map_err(|message: String| {
                             rusqlite::Error::FromSqlConversionFailure(
-                                8,
+                                9,
                                 rusqlite::types::Type::Text,
                                 message.into(),
                             )
                         })?,
-                    parent_session_id: row.get(9)?,
-                    parent_relation: row.get(10)?,
-                    subagent_count: row.get(11)?,
-                    events: row.get(12)?,
-                    ingested_at_ms: row.get(13)?,
+                    parent_session_id: row.get(10)?,
+                    parent_relation: row.get(11)?,
+                    subagent_count: row.get(12)?,
+                    events: row.get(13)?,
+                    ingested_at_ms: row.get(14)?,
                 },
-                row.get::<_, i64>(14)?,
+                row.get::<_, i64>(15)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1648,7 +1691,7 @@ fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
     let row = conn
         .query_row(
-            "SELECT agent,cwd,started_at_ms,ended_at_ms,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json FROM sessions WHERE id=?1",
+            "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json FROM sessions WHERE id=?1",
             [session_id],
             |row| {
                 Ok((
@@ -1662,9 +1705,10 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
                 ))
             },
         )
@@ -1674,6 +1718,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         cwd,
         started_at_ms,
         ended_at_ms,
+        status,
         title,
         model,
         provider,
@@ -1781,6 +1826,10 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             cwd,
             started_at_ms,
             ended_at_ms,
+            status: status
+                .map(|value: String| value.parse::<crate::SessionStatus>())
+                .transpose()
+                .map_err(anyhow::Error::msg)?,
             title,
             model,
             provider,
@@ -1837,6 +1886,7 @@ mod tests {
                 cwd: Some("/tmp".into()),
                 started_at_ms: Some(1),
                 ended_at_ms: Some(2),
+                status: None,
                 title: None,
                 model: None,
                 provider: None,

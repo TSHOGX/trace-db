@@ -356,6 +356,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     parent_session_id: row.parent_session_id,
                     parent_relation: row.parent_relation,
                     subagent_count: row.subagent_count,
+                    status: row.status.map(|status| status.to_string()),
                 })
                 .collect(),
             next_cursor: page.next_cursor,
@@ -616,6 +617,7 @@ fn session_to_proto(session: Session) -> pb::Session {
         cwd: session.cwd,
         started_at_ms: session.started_at_ms,
         ended_at_ms: session.ended_at_ms,
+        status: session.status.map(|status| status.to_string()),
         title: session.title,
         model: session.model,
         provider: session.provider,
@@ -705,6 +707,7 @@ mod tests {
                         cwd: Some("/workspace/parallel".into()),
                         started_at_ms: Some(1),
                         ended_at_ms: Some(2),
+                        status: None,
                         title: Some("parallel reads".into()),
                         model: None,
                         provider: None,
