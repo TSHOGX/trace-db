@@ -523,10 +523,14 @@ it; compatibility with future migrations is not implied.
 
 Search is bounded and session-oriented. It combines phrase and term recall,
 then scores normalized BM25 strength, hit and term coverage, event kind,
-recency, and title match. Parent, fork, and subagent results collapse to one
-lineage; results include an explainable score breakdown, strongest snippet,
-first request, and final outcome. Agent, cwd, and time filters are applied in
-SQL before aggregation. The algorithm is documented in
+recency, and title match. Retrieval runs in two phases: candidates are ranked
+without generating snippets, then snippet text is built only for the results
+that survive ranking. Term coverage is measured against complete event text, so
+a query term that matches outside the snippet window still counts. Parent, fork,
+and subagent results collapse to one lineage; results include an explainable
+score breakdown, strongest snippet, first request, and final outcome. Agent, cwd,
+and time filters are applied in SQL before aggregation. The algorithm is
+documented in
 [`references/search-algorithm.md`](references/search-algorithm.md).
 
 For Chinese segmentation and English stemming, build the optional tokenizer:

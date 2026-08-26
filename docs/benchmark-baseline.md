@@ -90,6 +90,42 @@ SEARCH events USING INDEX events_session_idx (session_id=? AND idx>? AND idx<?)
 The whole-session path is deliberately unchanged; it does the same work it
 always did.
 
+## Two-phase search
+
+Measured on the 10,000-session suite immediately before and after deferring
+snippet generation, same host and build mode:
+
+| Operation | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `search` operation | 4.65 s | 3.81 s | −18% |
+| `search` p95 | 103.2 ms | 85.5 ms | −17% |
+
+The standard suite understates this change, and it is worth stating why rather
+than quoting the −18% alone. Its synthetic events average 44 bytes, while
+`snippet()` cost scales with the text it must tokenize. Repeating the isolated
+candidate query against 60,000 events of roughly 1.6 KB each — representative of
+real transcript text — separates the two effects:
+
+| Candidate query (60,000 events, ~1.6 KB each) | Wall |
+| --- | ---: |
+| Snippet generated inside the candidate CTE | 851 ms |
+| Phase 1, no snippet | 272 ms |
+| Phase 2, snippets for 20 surviving results | 5 ms |
+
+So the snippet work that ranking never consumed accounted for roughly 3.1x of
+the candidate query on realistic text, and phase 2 returns it at a fixed cost
+proportional to the result limit. Phase 2 resolves its rowids through the FTS
+index as an equality lookup rather than a scan:
+
+```text
+SCAN events_fts VIRTUAL TABLE INDEX 0:=M1
+```
+
+Term coverage moved into the same phase-1 query via a registered scalar, which
+adds roughly 11 ms per candidate query on the 10k suite and replaces what would
+otherwise have been either per-term posting-list walks (22–25 ms) or transferring
+every candidate's full text into Rust.
+
 The current 1k run also wrote only 16 KiB during the unchanged pass. The
 streaming parser primarily reduces memory pressure for large native JSONL files;
 the synthetic benchmark's small files therefore show similar wall time to the

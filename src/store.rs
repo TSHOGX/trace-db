@@ -96,6 +96,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000i64)?;
+    crate::search::register_term_coverage(&conn)?;
     Ok(conn)
 }
 
@@ -106,6 +107,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection> {
     let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "busy_timeout", 5000i64)?;
+    crate::search::register_term_coverage(&connection)?;
     Ok(connection)
 }
 

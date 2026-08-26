@@ -5,22 +5,38 @@ not an isolated event, so retrieval is intentionally session-oriented.
 
 ## Pipeline
 
+Retrieval runs in two phases. Ranking needs BM25, event metadata, and term
+coverage; only the handful of results that survive ranking need snippet text.
+
+Phase 1 — rank:
+
 1. The planner combines an exact phrase arm with individual-term recall arms;
    explicit FTS5 syntax is passed through unchanged.
 2. FTS5 produces at most 50 hits per session and 5,000 total event candidates
-   in BM25 order.
+   in BM25 order. No snippet is generated in this phase.
 3. Agent, working-directory, and time filters are applied in SQL; time filters
    use the end time and fall back to the start time for active sessions.
-4. Candidates are aggregated by session while preserving the first and strongest
-   hit as the representative ordering signal.
-5. Explainable relevance, coverage, kind, recency, and title components are
+4. Per-candidate term coverage is computed in SQL against the event's full text
+   by the registered `tracedb_term_coverage` scalar, which returns a bitmask.
+5. Candidates are aggregated by session while preserving the first and strongest
+   hit as the representative ordering signal, along with its FTS rowid.
+6. Explainable relevance, coverage, kind, recency, and title components are
    calculated for each session.
-6. A recursive lineage query loads only the parent/fork closure reachable from
+7. A recursive lineage query loads only the parent/fork closure reachable from
    matched sessions, with cycle protection in the Rust walk.
-7. Related sessions collapse into one result and their hit counts are merged.
-8. First-user and last-assistant bookends are loaded for all top lineages in one
-   batch query, including bounded ancestor paths that did not themselves match
-   the query.
+8. Related sessions collapse into one result and their hit counts are merged,
+   then results are truncated to the requested limit.
+
+Phase 2 — present:
+
+9. Snippets are generated for the surviving results only, in one batch query
+   that re-issues the same planned `MATCH` constrained to the retained FTS
+   rowids. Delimiters and the token budget are shared constants, so deferring
+   generation cannot change snippet text; a regression test asserts byte
+   equality against single-phase generation.
+10. First-user and last-assistant bookends are read from materialized session
+    columns for all top lineages in one batch query, including bounded ancestor
+    paths that did not themselves match the query.
 
 Tool results and usage events remain available through `show` but are not
 included in FTS by default.
@@ -70,9 +86,26 @@ score = best_match
 
 `best_match` is min-max normalized within the candidate set after reversing
 FTS5's smaller-is-better BM25 direction. `hit_coverage` is normalized
-`log1p(hit_count)`. `term_coverage` is the fraction of plain query terms found
-across matched snippets and the title. Recency uses a 30-day exponential
-half-life. The kind bonus is `user > assistant > system > thinking > tool_call`.
+`log1p(hit_count)`. `term_coverage` is the fraction of plain query terms found in
+matched events' full text unioned with the session title. Recency uses a 30-day
+exponential half-life. The kind bonus is
+`user > assistant > system > thinking > tool_call`.
+
+### Term coverage
+
+Coverage is evaluated against complete event text, not a snippet excerpt. It was
+previously derived from the 24-token snippet window, so a term that matched the
+event but fell outside that window scored as uncovered — a ranking error at the
+second-heaviest weight in the model. Deferring snippets to phase 2 also makes the
+old derivation impossible, since no snippet exists when scoring runs.
+
+The comparison runs in a registered Rust scalar rather than SQL's `instr(lower(
+text),term)` for two reasons. Full event text never crosses the SQLite boundary,
+and SQLite's built-in `lower()` folds ASCII only — computing coverage in SQL
+would silently score accented and other non-ASCII terms as uncovered while the
+Rust path folds them correctly. One definition of "this term is present" serves
+event text and titles alike. Queries carrying more than 63 terms degrade
+gracefully: terms past the bitmask width simply contribute no coverage.
 
 The public result exposes the full score breakdown, strongest matched event and
 snippet, title and timestamps, lineage root and related members, the first user
@@ -97,6 +130,9 @@ and usage rows.
 ## Performance invariants
 
 - Candidate event count is bounded globally and per session before aggregation.
+- Snippet generation is proportional to returned results, not to candidates.
+  Building snippets inside the candidate query dominated its cost.
+- Term coverage adds no extra queries and transfers no event text.
 - Lineage loading is one recursive query rooted at matched sessions, not a
   full-archive scan or an N+1 walk.
 - Search never reads native trace files.

@@ -7,6 +7,19 @@ use std::collections::{HashMap, HashSet};
 const PER_SESSION_HIT_CAP: usize = 50;
 const MAX_CANDIDATE_HITS: usize = 5_000;
 const MAX_CONTEXT_SESSIONS: usize = 2_000;
+/// Highlight delimiters and token budget for `snippet()`. Phase 2 must pass
+/// these unchanged so deferring snippet generation cannot alter output text.
+const SNIPPET_OPEN: &str = "«";
+const SNIPPET_CLOSE: &str = "»";
+const SNIPPET_ELLIPSIS: &str = "…";
+const SNIPPET_TOKENS: i64 = 24;
+/// Name of the scalar registered on every connection by
+/// [`register_term_coverage`]. Coverage is computed inside the candidate query
+/// so full event text never crosses the SQLite boundary.
+const TERM_COVERAGE_FUNCTION: &str = "tracedb_term_coverage";
+/// Terms beyond this count cannot be represented in the coverage bitmask.
+/// Ranking degrades gracefully: extra terms simply do not contribute coverage.
+const MAX_COVERAGE_TERMS: usize = 63;
 type LineageEdges = HashMap<String, Option<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +66,11 @@ pub struct SearchResult {
     pub ask: Option<String>,
     pub outcome: Option<String>,
     pub related_session_ids: Vec<String>,
+    /// `events_fts.rowid` backing `best_match`, threaded from phase 1 so phase 2
+    /// can fetch this result's snippet. Internal: never crosses the wire, and
+    /// defaults on deserialize so the public shape is unchanged.
+    #[serde(skip)]
+    best_fts_rowid: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,7 +104,12 @@ struct Candidate {
     event_idx: i64,
     kind: EventKind,
     bm25: f64,
-    snippet: String,
+    /// `events_fts.rowid` of this hit, kept so phase 2 can address exactly the
+    /// surviving best matches. Never serialized.
+    fts_rowid: i64,
+    /// Bitmask of query terms present in this event's full text, computed in
+    /// SQL rather than inferred from a snippet excerpt.
+    covered_mask: u64,
 }
 
 struct SessionCandidate {
@@ -97,6 +120,7 @@ struct SessionCandidate {
     started_at_ms: Option<i64>,
     ended_at_ms: Option<i64>,
     best_match: SearchMatch,
+    best_fts_rowid: i64,
     hits: i64,
     covered_terms: HashSet<usize>,
 }
@@ -111,7 +135,13 @@ pub fn search(connection: &Connection, request: &SearchRequest) -> Result<Vec<Se
         .limit
         .saturating_mul(PER_SESSION_HIT_CAP)
         .clamp(500, MAX_CANDIDATE_HITS);
-    let candidates = load_candidates(connection, request, &planned_query, candidate_limit)?;
+    let candidates = load_candidates(
+        connection,
+        request,
+        &planned_query,
+        &query_terms,
+        candidate_limit,
+    )?;
     let mut sessions = group_candidates(candidates, &query_terms);
     if sessions.is_empty() {
         return Ok(Vec::new());
@@ -184,18 +214,75 @@ pub fn search(connection: &Connection, request: &SearchRequest) -> Result<Vec<Se
             .then_with(|| left.id.cmp(&right.id))
     });
     collapsed.truncate(request.limit);
+    // Phase 2: only the surviving results need snippet text. Building snippets
+    // for every bounded candidate dominated search latency.
+    attach_snippets(connection, &mut collapsed, &planned_query)?;
     attach_context(connection, &mut collapsed, &edges)?;
     Ok(collapsed)
+}
+
+/// Register the term-coverage scalar used by phase 1.
+///
+/// Coverage must agree with [`covered_terms`] exactly, including Unicode case
+/// folding. SQLite's built-in `lower()` folds ASCII only, so computing coverage
+/// with `instr(lower(text),term)` would silently score accented and other
+/// non-ASCII terms as uncovered. Evaluating it in Rust keeps one definition of
+/// "this term is present" and avoids transferring full event text to score it.
+pub fn register_term_coverage(connection: &Connection) -> Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    connection.create_scalar_function(
+        TERM_COVERAGE_FUNCTION,
+        2,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |context| {
+            let text = context.get_raw(0).as_str_or_null()?.unwrap_or_default();
+            let terms = context.get_raw(1).as_str_or_null()?.unwrap_or_default();
+            if terms.is_empty() {
+                return Ok(0i64);
+            }
+            let haystack = text.to_lowercase();
+            let mut mask = 0u64;
+            for (index, term) in terms.split('\u{1f}').enumerate().take(MAX_COVERAGE_TERMS) {
+                if !term.is_empty() && haystack.contains(term) {
+                    mask |= 1u64 << index;
+                }
+            }
+            Ok(mask as i64)
+        },
+    )?;
+    Ok(())
+}
+
+/// Terms are passed to SQL as one unit-separated string so the scalar keeps a
+/// fixed arity regardless of query length.
+fn encode_terms(terms: &[String]) -> String {
+    terms
+        .iter()
+        .take(MAX_COVERAGE_TERMS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
+}
+
+fn mask_to_terms(mask: u64) -> HashSet<usize> {
+    (0..MAX_COVERAGE_TERMS)
+        .filter(|index| mask & (1u64 << index) != 0)
+        .collect()
 }
 
 fn load_candidates(
     connection: &Connection,
     request: &SearchRequest,
     planned_query: &str,
+    query_terms: &[String],
     candidate_limit: usize,
 ) -> Result<Vec<Candidate>> {
     let mut filters = Vec::new();
     let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(planned_query.to_owned())];
+    values.push(Box::new(encode_terms(query_terms)));
+    let terms_parameter = values.len();
     if let Some(agent) = request.agent {
         values.push(Box::new(agent.as_str().to_owned()));
         filters.push(format!("s.agent=?{}", values.len()));
@@ -220,11 +307,16 @@ fn load_candidates(
     } else {
         format!(" AND {}", filters.join(" AND "))
     };
+    // Phase 1 selects only what ranking consumes. `snippet()` is deliberately
+    // absent: it was previously evaluated for every candidate row before the
+    // window function and LIMIT, and dominated the query's cost. Term coverage
+    // is computed here against full event text, which is already on the row.
     let sql = format!(
         "WITH hits AS (
-           SELECT e.session_id,s.agent,s.cwd,s.title,s.started_at_ms,s.ended_at_ms,
+           SELECT events_fts.rowid AS fts_rowid,
+                  e.session_id,s.agent,s.cwd,s.title,s.started_at_ms,s.ended_at_ms,
                   e.idx,e.kind,bm25(events_fts) AS score,
-                  snippet(events_fts,0,'«','»','…',24) AS snippet
+                  {TERM_COVERAGE_FUNCTION}(e.text,?{terms_parameter}) AS covered_mask
            FROM events_fts
            JOIN events e ON e.id=events_fts.rowid
            JOIN sessions s ON s.id=e.session_id
@@ -233,7 +325,7 @@ fn load_candidates(
            SELECT *,row_number() OVER (PARTITION BY session_id ORDER BY score ASC) AS session_rank
            FROM hits
          )
-         SELECT session_id,agent,cwd,title,started_at_ms,ended_at_ms,idx,kind,score,snippet
+         SELECT fts_rowid,session_id,agent,cwd,title,started_at_ms,ended_at_ms,idx,kind,score,covered_mask
          FROM ranked WHERE session_rank<=?{per_session_parameter}
          ORDER BY score ASC LIMIT ?{total_parameter}"
     );
@@ -242,21 +334,34 @@ fn load_candidates(
         rusqlite::params_from_iter(values.iter().map(|value| value.as_ref())),
         |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, f64>(8)?,
-                row.get::<_, String>(9)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, f64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         },
     )?;
     rows.map(|row| {
-        let (session_id, agent, cwd, title, started, ended, idx, kind, bm25, snippet) = row?;
+        let (
+            fts_rowid,
+            session_id,
+            agent,
+            cwd,
+            title,
+            started,
+            ended,
+            idx,
+            kind,
+            bm25,
+            covered_mask,
+        ) = row?;
         Ok(Candidate {
             session_id,
             agent: agent.parse().map_err(anyhow::Error::msg)?,
@@ -267,10 +372,65 @@ fn load_candidates(
             event_idx: idx,
             kind: kind.parse().map_err(anyhow::Error::msg)?,
             bm25,
-            snippet,
+            fts_rowid,
+            covered_mask: covered_mask as u64,
         })
     })
     .collect()
+}
+
+/// Phase 2: fetch snippets for the surviving results only.
+///
+/// `snippet()` needs the `events_fts` MATCH context, so this re-issues the same
+/// planned query constrained to the kept rowids. Delimiters and token budget are
+/// the shared constants, so text is identical to single-phase generation.
+fn attach_snippets(
+    connection: &Connection,
+    results: &mut [SearchResult],
+    planned_query: &str,
+) -> Result<()> {
+    if results.is_empty() {
+        return Ok(());
+    }
+    let rowids = results
+        .iter()
+        .map(|result| result.best_fts_rowid)
+        .collect::<Vec<_>>();
+    let placeholders = (0..rowids.len())
+        .map(|index| format!("?{}", index + 6))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT events_fts.rowid,snippet(events_fts,0,?2,?3,?4,?5)
+         FROM events_fts
+         WHERE events_fts MATCH ?1 AND events_fts.rowid IN ({placeholders})"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(planned_query.to_owned()),
+        Box::new(SNIPPET_OPEN),
+        Box::new(SNIPPET_CLOSE),
+        Box::new(SNIPPET_ELLIPSIS),
+        Box::new(SNIPPET_TOKENS),
+    ];
+    for rowid in &rowids {
+        values.push(Box::new(*rowid));
+    }
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(values.iter().map(|value| value.as_ref())),
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    let mut snippets = HashMap::new();
+    for row in rows {
+        let (rowid, snippet) = row?;
+        snippets.insert(rowid, snippet);
+    }
+    for result in results {
+        if let Some(snippet) = snippets.get(&result.best_fts_rowid) {
+            result.best_match.snippet = snippet.clone();
+        }
+    }
+    Ok(())
 }
 
 fn group_candidates(
@@ -279,7 +439,10 @@ fn group_candidates(
 ) -> HashMap<String, SessionCandidate> {
     let mut sessions = HashMap::new();
     for candidate in candidates {
-        let covered = covered_terms(&candidate.snippet, candidate.title.as_deref(), terms);
+        // Coverage comes from the event's full text (computed in SQL) unioned
+        // with the session title, not from a 24-token snippet excerpt.
+        let mut covered = mask_to_terms(candidate.covered_mask);
+        covered.extend(title_covered_terms(candidate.title.as_deref(), terms));
         sessions
             .entry(candidate.session_id.clone())
             .and_modify(|session: &mut SessionCandidate| {
@@ -297,8 +460,10 @@ fn group_candidates(
                     event_idx: candidate.event_idx,
                     kind: candidate.kind,
                     bm25: candidate.bm25,
-                    snippet: candidate.snippet,
+                    // Filled by phase 2 for surviving results only.
+                    snippet: String::new(),
                 },
+                best_fts_rowid: candidate.fts_rowid,
                 hits: 1,
                 covered_terms: covered,
             });
@@ -363,6 +528,7 @@ fn score_session(
         ask: None,
         outcome: None,
         related_session_ids: Vec::new(),
+        best_fts_rowid: session.best_fts_rowid,
     }
 }
 
@@ -556,15 +722,17 @@ fn plain_terms(query: &str) -> Vec<String> {
     }
 }
 
-fn covered_terms(text: &str, title: Option<&str>, terms: &[String]) -> HashSet<usize> {
-    let haystack = format!(
-        "{} {}",
-        text.to_lowercase(),
-        title.unwrap_or("").to_lowercase()
-    );
+/// Query terms present in a session title. Kept separate from event-text
+/// coverage so the two sources can be unioned per candidate.
+fn title_covered_terms(title: Option<&str>, terms: &[String]) -> HashSet<usize> {
+    let Some(title) = title else {
+        return HashSet::new();
+    };
+    let haystack = title.to_lowercase();
     terms
         .iter()
         .enumerate()
+        .take(MAX_COVERAGE_TERMS)
         .filter_map(|(index, term)| haystack.contains(term).then_some(index))
         .collect()
 }
@@ -641,6 +809,135 @@ mod tests {
         assert!(results[0].score_breakdown.lineage > 0.0);
         assert_eq!(results[1].id, "codex:partial");
         assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn internal_rowid_never_reaches_the_wire_contract() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        insert_session(
+            &mut connection,
+            "codex:one",
+            None,
+            vec![Event::new(EventKind::User, "deploy netlify")],
+        );
+        let results = search(&connection, &SearchRequest::new("deploy netlify")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].best_fts_rowid > 0, "rowid is tracked internally");
+
+        let json = serde_json::to_value(&results[0]).unwrap();
+        let object = json.as_object().unwrap();
+        assert!(
+            !object
+                .keys()
+                .any(|key| key.to_lowercase().contains("rowid")),
+            "serialized result leaked an internal rowid: {:?}",
+            object.keys().collect::<Vec<_>>()
+        );
+        assert!(object.contains_key("bestMatch"));
+        // Round-trips without the skipped field present.
+        let restored: SearchResult = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.best_fts_rowid, 0);
+        assert_eq!(restored.best_match.snippet, results[0].best_match.snippet);
+    }
+
+    #[test]
+    fn deferred_snippets_match_single_phase_generation() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        // Text long enough that the 24-token snippet window genuinely truncates,
+        // so an ellipsis/delimiter difference would surface.
+        insert_session(
+            &mut connection,
+            "codex:long",
+            None,
+            vec![
+                Event::new(
+                    EventKind::User,
+                    "preamble one two three four five six seven eight nine ten \
+                     eleven twelve thirteen fourteen fifteen sixteen seventeen \
+                     eighteen nineteen twenty deploy netlify trailing words here \
+                     that run past the snippet budget entirely",
+                ),
+                Event::new(EventKind::Assistant, "netlify deploy finished cleanly"),
+            ],
+        );
+        insert_session(
+            &mut connection,
+            "codex:short",
+            None,
+            vec![Event::new(EventKind::User, "deploy netlify quickly")],
+        );
+
+        let request = SearchRequest::new("deploy netlify");
+        let planned = plan_fts_query(&request.query);
+        let results = search(&connection, &request).unwrap();
+        assert!(!results.is_empty());
+
+        // Recompute each result's snippet the old way: single-phase, inside the
+        // candidate query, and assert byte equality.
+        for result in &results {
+            let expected: String = connection
+                .query_row(
+                    "SELECT snippet(events_fts,0,'«','»','…',24)
+                     FROM events_fts
+                     WHERE events_fts MATCH ?1 AND events_fts.rowid=?2",
+                    rusqlite::params![&planned, result.best_fts_rowid],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                result.best_match.snippet, expected,
+                "deferred snippet diverged for {}",
+                result.id
+            );
+            assert!(!result.best_match.snippet.is_empty());
+        }
+    }
+
+    #[test]
+    fn term_coverage_counts_matches_outside_the_snippet_window() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        // "netlify" sits far past the 24-token snippet window that starts at the
+        // "deploy" match, so excerpt-derived coverage used to miss it.
+        let filler = (0..60)
+            .map(|index| format!("filler{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        insert_session(
+            &mut connection,
+            "codex:distant",
+            None,
+            vec![Event::new(
+                EventKind::User,
+                format!("deploy {filler} netlify"),
+            )],
+        );
+
+        let results = search(&connection, &SearchRequest::new("deploy netlify")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].score_breakdown.term_coverage, 1.0,
+            "both query terms are present in the event text"
+        );
+    }
+
+    #[test]
+    fn term_coverage_folds_non_ascii_case_like_rust() {
+        let dir = tempdir().unwrap();
+        let mut connection = crate::store::open(dir.path().join("trace.db")).unwrap();
+        insert_session(
+            &mut connection,
+            "codex:accented",
+            None,
+            vec![Event::new(EventKind::User, "ÉCOLE deploy notes")],
+        );
+
+        // SQLite's lower() folds ASCII only; the registered scalar must not.
+        let results = search(&connection, &SearchRequest::new("école deploy")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].score_breakdown.term_coverage, 1.0);
     }
 
     #[test]
