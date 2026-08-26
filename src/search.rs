@@ -223,7 +223,7 @@ pub fn search(connection: &Connection, request: &SearchRequest) -> Result<Vec<Se
 
 /// Register the term-coverage scalar used by phase 1.
 ///
-/// Coverage must agree with [`covered_terms`] exactly, including Unicode case
+/// Coverage must agree with `title_covered_terms` exactly, including Unicode case
 /// folding. SQLite's built-in `lower()` folds ASCII only, so computing coverage
 /// with `instr(lower(text),term)` would silently score accented and other
 /// non-ASCII terms as uncovered. Evaluating it in Rust keeps one definition of
