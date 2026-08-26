@@ -223,7 +223,12 @@ archive-changing and verification commands; it never contaminates stdout.
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
 response per line. Supported operations are `stats`, `search`, `list`, `show`,
 and `reconstruct`. The `show` operation accepts optional inclusive `from`/`to`
-event indexes and a `kind` string or array:
+event indexes and a `kind` string or array. These filters are applied in SQL, so
+a windowed read never fetches the rest of the session; compare the returned
+`events` length with the session's `eventCount` to distinguish a window from a
+whole trace. A window also narrows `spans` to those whose event interval
+overlaps it, while a `kind` filter selects events only — the enclosing tool span
+is the context that makes a filtered slice interpretable:
 
 ```bash
 printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api

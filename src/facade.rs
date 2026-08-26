@@ -575,6 +575,11 @@ impl TraceDb {
     }
 
     /// Load one session and optionally filter its event stream by index and kind.
+    ///
+    /// The bounds are validated here, at the API boundary, and then applied in
+    /// SQL: a windowed read never fetches or deserializes the events outside
+    /// it. Compare `events.len()` with the session's `eventCount` to tell a
+    /// window from a whole session.
     pub fn show_with_options(&self, request: ShowRequest) -> Result<Option<SessionTrace>> {
         if request.from_idx.is_some_and(|value| value < 0)
             || request.to_idx.is_some_and(|value| value < 0)
@@ -588,17 +593,15 @@ impl TraceDb {
         {
             anyhow::bail!("show --from must not be greater than --to");
         }
-        let Some(mut trace) = store::show(&self.connection, &request.session_id)? else {
-            return Ok(None);
-        };
-        if request.from_idx.is_some() || request.to_idx.is_some() || !request.kinds.is_empty() {
-            trace.events.retain(|event| {
-                request.from_idx.is_none_or(|from| event.idx >= from)
-                    && request.to_idx.is_none_or(|to| event.idx <= to)
-                    && (request.kinds.is_empty() || request.kinds.contains(&event.kind))
-            });
-        }
-        Ok(Some(trace))
+        store::show(
+            &self.connection,
+            &request.session_id,
+            &store::EventWindow {
+                from_idx: request.from_idx,
+                to_idx: request.to_idx,
+                kinds: request.kinds,
+            },
+        )
     }
 
     /// List archived sessions with stable keyset pagination and metadata filters.

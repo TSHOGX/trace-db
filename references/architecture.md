@@ -152,6 +152,13 @@ Because these are projections, `reindex` repairs them and `verify` reports drift
 as the `session_aggregates` check. `import` recomputes them after a merge, since
 the counts describe the union rather than either input archive.
 
+`show` applies its `from`/`to`/`kind` filters in SQL rather than loading the
+session and discarding rows in memory, so the cost of a windowed read scales
+with the window instead of the session. Bounds are still validated at the API
+boundary. The window narrows spans by interval overlap, but an event-kind filter
+deliberately does not: it selects which events to read, not which trajectories
+exist.
+
 Spans obey the same rule. They are materialized during ingestion and are never
 re-derived on read: `show` returns exactly the persisted rows, so a direct SQL
 reader and the facade cannot disagree, and a span bug in a parser stays visible

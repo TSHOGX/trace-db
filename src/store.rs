@@ -1587,7 +1587,7 @@ pub fn rebuild_spans(conn: &mut Connection) -> Result<u64> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let tx = conn.transaction()?;
     for session_id in &session_ids {
-        let mut events = load_events(&tx, session_id)?;
+        let mut events = load_events(&tx, session_id, &EventWindow::default())?;
         let spans = derive_spans(&mut events);
         tx.execute("DELETE FROM spans WHERE session_id=?1", [session_id])?;
         for span in &spans {
@@ -2074,18 +2074,54 @@ fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
     Ok((sort_time, id))
 }
 
+/// The event slice a `show` call asks for.
+///
+/// Filtering lives in SQL so a windowed read never deserializes — or even
+/// fetches — the rest of the session. The API boundary validates the bounds;
+/// this type only carries them.
+#[derive(Debug, Clone, Default)]
+pub struct EventWindow {
+    pub from_idx: Option<i64>,
+    pub to_idx: Option<i64>,
+    pub kinds: Vec<crate::EventKind>,
+}
+
 /// Load a session's normalized event stream in index order.
 ///
 /// Shared by `show` and by `reindex`'s span repair so both observe exactly the
 /// same projection of the stored rows.
-fn load_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>> {
-    let mut statement = conn.prepare(
+fn load_events(conn: &Connection, session_id: &str, window: &EventWindow) -> Result<Vec<Event>> {
+    let mut sql = String::from(
         "SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,
                 model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
-         FROM events WHERE session_id=?1 ORDER BY idx",
-    )?;
+         FROM events WHERE session_id=?1",
+    );
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    values.push(session_id.to_owned().into());
+    if let Some(from) = window.from_idx {
+        values.push(from.into());
+        sql.push_str(&format!(" AND idx>=?{}", values.len()));
+    }
+    if let Some(to) = window.to_idx {
+        values.push(to.into());
+        sql.push_str(&format!(" AND idx<=?{}", values.len()));
+    }
+    if !window.kinds.is_empty() {
+        let placeholders = window
+            .kinds
+            .iter()
+            .map(|kind| {
+                values.push(kind.as_str().to_owned().into());
+                format!("?{}", values.len())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND kind IN ({placeholders})"));
+    }
+    sql.push_str(" ORDER BY idx");
+    let mut statement = conn.prepare(&sql)?;
     let raw = statement
-        .query_map([session_id], |row| {
+        .query_map(rusqlite::params_from_iter(values), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -2162,7 +2198,11 @@ fn load_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>> {
         .collect()
 }
 
-pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
+pub fn show(
+    conn: &Connection,
+    session_id: &str,
+    window: &EventWindow,
+) -> Result<Option<SessionTrace>> {
     let row = conn
         .query_row(
             "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json FROM sessions WHERE id=?1",
@@ -2223,14 +2263,38 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let events = load_events(conn, session_id)?;
+    let events = load_events(conn, session_id, window)?;
 
-    let mut span_statement = conn.prepare(
+    // A span whose interval overlaps the requested event range is context the
+    // caller needs; one entirely outside it is not. `kinds` deliberately does
+    // not constrain spans: an event-kind filter selects which events to read,
+    // not which trajectories exist, and a tool span is exactly the context that
+    // makes a `kinds=user` slice interpretable.
+    let mut span_sql = String::from(
         "SELECT id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
-         FROM spans WHERE session_id=?1 ORDER BY id",
-    )?;
+         FROM spans WHERE session_id=?1",
+    );
+    let mut span_values = Vec::<rusqlite::types::Value>::new();
+    span_values.push(session_id.to_owned().into());
+    if let Some(to) = window.to_idx {
+        span_values.push(to.into());
+        span_sql.push_str(&format!(
+            " AND (start_event_idx IS NULL OR start_event_idx<=?{})",
+            span_values.len()
+        ));
+    }
+    if let Some(from) = window.from_idx {
+        span_values.push(from.into());
+        span_sql.push_str(&format!(
+            " AND (coalesce(end_event_idx,start_event_idx) IS NULL
+                   OR coalesce(end_event_idx,start_event_idx)>=?{})",
+            span_values.len()
+        ));
+    }
+    span_sql.push_str(" ORDER BY id");
+    let mut span_statement = conn.prepare(&span_sql)?;
     let raw_spans = span_statement
-        .query_map([session_id], |row| {
+        .query_map(rusqlite::params_from_iter(span_values), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
@@ -2730,7 +2794,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, 1);
-        let trace = show(&conn, "codex:spans").unwrap().unwrap();
+        let trace = show(&conn, "codex:spans", &EventWindow::default())
+            .unwrap()
+            .unwrap();
         assert_eq!(trace.spans.len(), 1);
         assert_eq!(trace.spans[0].call_id.as_deref(), Some("call-1"));
         assert!(trace
@@ -2742,7 +2808,7 @@ mod tests {
         // over by the read path.
         conn.execute("DELETE FROM spans WHERE session_id='codex:spans'", [])
             .unwrap();
-        assert!(show(&conn, "codex:spans")
+        assert!(show(&conn, "codex:spans", &EventWindow::default())
             .unwrap()
             .unwrap()
             .spans
@@ -2755,11 +2821,69 @@ mod tests {
 
         // Reindex re-derives them from the stored events.
         rebuild_spans(&mut conn).unwrap();
-        assert_eq!(show(&conn, "codex:spans").unwrap().unwrap().spans.len(), 1);
+        assert_eq!(
+            show(&conn, "codex:spans", &EventWindow::default())
+                .unwrap()
+                .unwrap()
+                .spans
+                .len(),
+            1
+        );
         let report = verify(&conn, &path).unwrap();
         assert!(report
             .checks
             .iter()
             .any(|check| check.name == "spans" && check.failures.is_empty()));
+    }
+
+    /// A windowed `show` must return only the events in range, plus the spans
+    /// whose interval overlaps that range — a tool span is the context that
+    /// makes a slice interpretable, so `kinds` filters events, not spans.
+    #[test]
+    fn show_windows_events_and_intersecting_spans() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+
+        let mut parsed = named_session("codex:window", "start");
+        for group in 0..4 {
+            let mut call = Event::new(EventKind::ToolCall, format!("call {group}"));
+            call.name = Some("Bash".into());
+            call.call_id = Some(format!("c{group}"));
+            let mut result = Event::new(EventKind::ToolResult, format!("done {group}"));
+            result.call_id = Some(format!("c{group}"));
+            parsed.events.push(call);
+            parsed.events.push(result);
+        }
+        upsert(&mut conn, parsed).unwrap();
+
+        // Events 1..=2 are the first call/result pair, so only span c0 overlaps.
+        let window = EventWindow {
+            from_idx: Some(1),
+            to_idx: Some(2),
+            kinds: Vec::new(),
+        };
+        let trace = show(&conn, "codex:window", &window).unwrap().unwrap();
+        assert_eq!(trace.events.len(), 2);
+        assert!(trace.events.iter().all(|e| (1..=2).contains(&e.idx)));
+        assert_eq!(trace.spans.len(), 1);
+        assert_eq!(trace.spans[0].call_id.as_deref(), Some("c0"));
+
+        // A kind filter narrows events without hiding the spans that explain them.
+        let kinded = EventWindow {
+            from_idx: Some(1),
+            to_idx: Some(4),
+            kinds: vec![EventKind::ToolCall],
+        };
+        let trace = show(&conn, "codex:window", &kinded).unwrap().unwrap();
+        assert!(trace.events.iter().all(|e| e.kind == EventKind::ToolCall));
+        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.spans.len(), 2);
+
+        // An unfiltered read is unchanged: every event and every span.
+        let all = show(&conn, "codex:window", &EventWindow::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(all.events.len(), 9);
+        assert_eq!(all.spans.len(), 4);
     }
 }

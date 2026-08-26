@@ -66,6 +66,30 @@ contract: `reindex` now repairs every materialized aggregate in addition to
 rebuilding the FTS index, and `verify` gained a drift check that recomputes the
 aggregates it validates.
 
+## Windowed show
+
+The standard suite's sessions hold roughly six events each, which cannot show
+the cost of a windowed read. A 20,000-event single session, measured over 20
+iterations after warmup on the same arm64 macOS class of host:
+
+| `show` call | Before | After |
+| --- | ---: | ---: |
+| Whole session (20,000 events) | 33.7 ms | 33.5 ms |
+| 10-event window (`--from 1000 --to 1009`) | 33.2 ms | 0.35 ms |
+
+Before the change a 10-event window cost the same as the whole session, because
+every row was fetched and fully deserialized — including `data_json` and
+`usage_json` — and then discarded in memory. Pushing the bounds into SQL makes
+the window cost proportional to the window. `events_session_idx` serves it as a
+two-bounded `SEARCH`, so nothing scans:
+
+```text
+SEARCH events USING INDEX events_session_idx (session_id=? AND idx>? AND idx<?)
+```
+
+The whole-session path is deliberately unchanged; it does the same work it
+always did.
+
 The current 1k run also wrote only 16 KiB during the unchanged pass. The
 streaming parser primarily reduces memory pressure for large native JSONL files;
 the synthetic benchmark's small files therefore show similar wall time to the
