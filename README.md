@@ -225,6 +225,12 @@ event indexes and a `kind` string or array:
 printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api
 ```
 
+`list` accepts `cwd_exact: true` for normalized exact-path matching and returns
+direct lineage metadata (`parentSessionId`, `parentRelation`, and
+`subagentCount`). API requests with unknown fields are rejected as invalid
+arguments; this prevents typos such as `since_ms` from silently disabling the
+intended `since` filter.
+
 This protocol is intentionally simple and language-neutral for Python, Node.js,
 Go, and shell clients without exposing SQLite internals. Every non-empty input
 line produces either `{"ok":true,"result":...}` or a stable

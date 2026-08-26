@@ -1558,6 +1558,9 @@ pub struct ListRequest {
     pub cursor: Option<String>,
     pub agent: Option<Agent>,
     pub cwd: Option<String>,
+    /// When true, match cwd as a normalized exact path instead of a substring.
+    #[serde(default)]
+    pub cwd_exact: bool,
     pub since_ms: Option<i64>,
     pub mode: Option<IngestMode>,
     pub model: Option<String>,
@@ -1575,6 +1578,7 @@ impl Default for ListRequest {
             cursor: None,
             agent: None,
             cwd: None,
+            cwd_exact: false,
             since_ms: None,
             mode: None,
             model: None,
@@ -1597,6 +1601,12 @@ pub struct SessionSummary {
     pub mode: IngestMode,
     pub events: i64,
     pub ingested_at_ms: i64,
+    /// Direct session lineage parent, if present.
+    pub parent_session_id: Option<String>,
+    /// Relationship to `parent_session_id` (`parent` or `fork`), when known.
+    pub parent_relation: Option<String>,
+    /// Number of sessions that directly reference this session as a parent.
+    pub subagent_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

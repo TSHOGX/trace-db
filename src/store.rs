@@ -1480,6 +1480,17 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         .transpose()?;
     let mut sql = String::from(
         "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.title,s.model,s.provider,s.mode,
+                coalesce(s.parent_session_id,
+                         CASE WHEN instr(s.forked_from, '#') > 0
+                              THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
+                              ELSE s.forked_from END),
+                CASE WHEN s.parent_session_id IS NOT NULL THEN 'parent'
+                     WHEN s.forked_from IS NOT NULL THEN 'fork' END,
+                (SELECT count(*) FROM sessions child
+                 WHERE coalesce(child.parent_session_id,
+                                CASE WHEN instr(child.forked_from, '#') > 0
+                                     THEN substr(child.forked_from, 1, instr(child.forked_from, '#') - 1)
+                                     ELSE child.forked_from END)=s.id),
                 (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,
                 coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms) AS sort_time
          FROM sessions s WHERE 1=1",
@@ -1494,7 +1505,15 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         bind(" AND s.agent=?", agent.as_str().to_owned().into());
     }
     if let Some(cwd) = &request.cwd {
-        bind(" AND s.cwd LIKE '%' || ? || '%'", cwd.clone().into());
+        if request.cwd_exact {
+            let normalized = normalize_cwd(cwd);
+            bind(
+                " AND (CASE WHEN s.cwd='/' THEN '/' ELSE rtrim(s.cwd,'/') END)=?",
+                normalized.into(),
+            );
+        } else {
+            bind(" AND s.cwd LIKE '%' || ? || '%'", cwd.clone().into());
+        }
     }
     if let Some(since_ms) = request.since_ms {
         bind(
@@ -1558,10 +1577,13 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                                 message.into(),
                             )
                         })?,
-                    events: row.get(9)?,
-                    ingested_at_ms: row.get(10)?,
+                    parent_session_id: row.get(9)?,
+                    parent_relation: row.get(10)?,
+                    subagent_count: row.get(11)?,
+                    events: row.get(12)?,
+                    ingested_at_ms: row.get(13)?,
                 },
-                row.get::<_, i64>(11)?,
+                row.get::<_, i64>(14)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1577,6 +1599,13 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         sessions: rows.drain(..).map(|(session, _)| session).collect(),
         next_cursor,
     })
+}
+
+fn normalize_cwd(cwd: &str) -> String {
+    if cwd == "/" {
+        return cwd.to_owned();
+    }
+    cwd.trim_end_matches('/').to_owned()
 }
 
 fn encode_list_cursor(sort_time: i64, id: &str) -> String {

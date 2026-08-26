@@ -380,3 +380,32 @@ fn json_lines_api_returns_structured_errors_and_continues() {
     assert_eq!(rows[3]["ok"], true);
     assert_eq!(rows[3]["result"]["totalSessions"], 1);
 }
+
+#[test]
+fn json_api_rejects_unknown_fields_instead_of_scanning_unfiltered() {
+    let (_dir, path) = archive();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trace-db"))
+        .args(["--db", path.to_str().unwrap(), "api"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        child.stdin.as_mut().unwrap(),
+        "{}",
+        json!({
+            "op": "list",
+            "since_ms": 1
+        })
+    )
+    .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let row: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    assert_eq!(row["ok"], false);
+    assert_eq!(row["error"]["code"], "invalid_argument");
+    assert!(row["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unknown field"));
+}

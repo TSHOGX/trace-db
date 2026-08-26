@@ -108,6 +108,7 @@ fn parse_session(
             e.native_id = Some(mid.clone());
             e.parent_id = s(md.get("parentID"));
             e.created_at_ms = t;
+            e.data_json = Some(p.clone());
             evs.push(e)
         }
     }

@@ -47,10 +47,17 @@ fn epoch(v: Option<&Value>) -> Option<i64> {
 fn payload(r: &Value) -> &Value {
     r.get("payload").unwrap_or(&Value::Null)
 }
-fn event(kind: EventKind, text: String, native: Option<String>, ts: Option<i64>) -> Event {
+fn event(
+    kind: EventKind,
+    text: String,
+    native: Option<String>,
+    ts: Option<i64>,
+    payload: &Value,
+) -> Event {
     let mut e = Event::new(kind, text);
     e.native_id = native;
     e.created_at_ms = ts;
+    e.data_json = Some(payload.clone());
     e
 }
 
@@ -97,7 +104,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         .unwrap_or_default();
                     let key = format!("{}:{}", sha(text.as_bytes()), ts.unwrap_or_default());
                     if seen_user.insert(key) {
-                        events.push(event(EventKind::User, text, None, ts));
+                        events.push(event(EventKind::User, text, None, ts, p));
                     }
                 }
                 "token_count" => {
@@ -106,6 +113,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         compact(p.get("info").unwrap_or(p)),
                         None,
                         ts,
+                        p,
                     );
                     e.subtype = Some("token_count".into());
                     let u = p
@@ -120,7 +128,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                 }
                 "agent_message" | "item_completed" => {}
                 other if !other.is_empty() => {
-                    let mut e = event(EventKind::System, compact(p), None, ts);
+                    let mut e = event(EventKind::System, compact(p), None, ts, p);
                     e.subtype = Some(other.into());
                     events.push(e);
                 }
@@ -135,6 +143,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                             flatten(p.get("content").unwrap_or(&Value::Null)),
                             strv(p.get("id")),
                             ts,
+                            p,
                         );
                         e.role = Some(role);
                         events.push(e);
@@ -142,7 +151,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         let text = flatten(p.get("content").unwrap_or(&Value::Null));
                         let key = format!("{}:{}", sha(text.as_bytes()), ts.unwrap_or_default());
                         if seen_user.insert(key) {
-                            events.push(event(EventKind::User, text, strv(p.get("id")), ts));
+                            events.push(event(EventKind::User, text, strv(p.get("id")), ts, p));
                         }
                     }
                 }
@@ -152,6 +161,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         compact(p.get("summary").unwrap_or(p)),
                         strv(p.get("id")),
                         ts,
+                        p,
                     );
                     e.subtype = Some("summary".into());
                     events.push(e);
@@ -167,6 +177,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         ),
                         strv(p.get("id")),
                         ts,
+                        p,
                     );
                     e.name = strv(p.get("name"))
                         .or_else(|| p.get("type").and_then(Value::as_str).map(str::to_owned));
@@ -180,6 +191,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                         compact(p.get("output").unwrap_or(p)),
                         strv(p.get("id")),
                         ts,
+                        p,
                     );
                     e.call_id = strv(p.get("call_id"));
                     e.subtype = p.get("type").and_then(Value::as_str).map(str::to_owned);
@@ -188,7 +200,7 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
                 _ => {}
             },
             "compacted" | "world_state" => {
-                let mut e = event(EventKind::System, compact(p), None, ts);
+                let mut e = event(EventKind::System, compact(p), None, ts, p);
                 e.subtype = Some(typ.into());
                 events.push(e);
             }
@@ -196,6 +208,14 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
         }
         Ok(())
     })?;
+    // Codex keeps the lossless rollout as a native source. Populate the
+    // structured projection as well so consumers do not have to reconstruct
+    // the source just to inspect an event payload.
+    for event in &mut events {
+        if event.data_json.is_none() {
+            event.data_json = Some(json!({"kind": event.kind.as_str(), "text": event.text}));
+        }
+    }
     let id = id.ok_or_else(|| {
         UnsupportedFormat(format!("rollout missing session id: {}", path.display()))
     })?;

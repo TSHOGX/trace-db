@@ -219,3 +219,86 @@ fn list_rejects_invalid_cursors() {
         .unwrap_err();
     assert!(error.to_string().contains("invalid list cursor"));
 }
+
+#[test]
+fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
+    let dir = tempdir().unwrap();
+    let mut database = TraceDb::open(dir.path().join("trace.db")).unwrap();
+    insert(
+        &mut database,
+        Fixture {
+            id: "codex:parent",
+            agent: Agent::Codex,
+            cwd: "/workspace/app",
+            time: 30,
+            mode: IngestMode::Full,
+            model: "gpt",
+            provider: "openai",
+        },
+    );
+    insert(
+        &mut database,
+        Fixture {
+            id: "codex:app-old",
+            agent: Agent::Codex,
+            cwd: "/workspace/app-old",
+            time: 29,
+            mode: IngestMode::Full,
+            model: "gpt",
+            provider: "openai",
+        },
+    );
+    database
+        .ingest_session(
+            ParsedSession {
+                session: Session {
+                    id: "codex:child".into(),
+                    agent: Agent::Codex,
+                    cwd: Some("/workspace/worktree".into()),
+                    started_at_ms: Some(9),
+                    ended_at_ms: Some(10),
+                    title: None,
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: Some("codex:parent".into()),
+                    forked_from: None,
+                    meta: json!({}),
+                    fingerprint: "child".into(),
+                    sources: Vec::new(),
+                },
+                events: vec![Event::new(EventKind::Assistant, "child")],
+            },
+            IngestMode::Full,
+        )
+        .unwrap();
+
+    let page = database
+        .list(ListRequest {
+            cwd: Some("/workspace/app/".into()),
+            cwd_exact: true,
+            limit: 10,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(page.sessions.len(), 1);
+    let parent = &page.sessions[0];
+    assert_eq!(parent.id, "codex:parent");
+    assert_eq!(parent.parent_session_id, None);
+    assert_eq!(parent.parent_relation, None);
+    assert_eq!(parent.subagent_count, 1);
+
+    let all = database
+        .list(ListRequest {
+            limit: 10,
+            ..Default::default()
+        })
+        .unwrap();
+    let child = all
+        .sessions
+        .iter()
+        .find(|session| session.id == "codex:child")
+        .unwrap();
+    assert_eq!(child.parent_session_id.as_deref(), Some("codex:parent"));
+    assert_eq!(child.parent_relation.as_deref(), Some("parent"));
+}

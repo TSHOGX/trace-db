@@ -92,6 +92,7 @@ impl NodeTraceDb {
                     cursor,
                     agent,
                     cwd,
+                    cwd_exact: false,
                     since_ms,
                     mode,
                     model,

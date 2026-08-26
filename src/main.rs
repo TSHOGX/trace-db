@@ -124,6 +124,9 @@ enum Command {
         agent: Option<Agent>,
         #[arg(long)]
         cwd: Option<String>,
+        /// Match cwd exactly after removing a trailing slash.
+        #[arg(long)]
+        cwd_exact: bool,
         #[arg(long)]
         since: Option<String>,
         #[arg(long)]
@@ -743,6 +746,7 @@ fn main() -> anyhow::Result<()> {
             cursor,
             agent,
             cwd,
+            cwd_exact,
             since,
             mode,
             model,
@@ -755,6 +759,7 @@ fn main() -> anyhow::Result<()> {
                 cursor,
                 agent,
                 cwd,
+                cwd_exact,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
                 mode,
                 model,
@@ -1113,6 +1118,37 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
 
 const API_OPERATIONS: [&str; 5] = ["stats", "search", "list", "show", "reconstruct"];
 
+fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<(), ApiFailure> {
+    let allowed: &[&str] = match op {
+        "stats" => &["op"],
+        "search" => &["op", "query", "limit", "agent", "cwd", "since"],
+        "list" => &[
+            "op",
+            "limit",
+            "cursor",
+            "agent",
+            "cwd",
+            "cwd_exact",
+            "since",
+            "mode",
+            "model",
+            "provider",
+        ],
+        "show" => &["op", "id", "from", "to", "kind"],
+        "reconstruct" => &["op", "id", "out", "overwrite"],
+        _ => return Ok(()),
+    };
+    if let Some(key) = request
+        .as_object()
+        .and_then(|object| object.keys().find(|key| !allowed.contains(&key.as_str())))
+    {
+        return Err(ApiFailure::invalid(format!(
+            "unknown field {key:?} for operation {op}"
+        )));
+    }
+    Ok(())
+}
+
 struct ApiFailure {
     code: &'static str,
     message: String,
@@ -1237,6 +1273,7 @@ fn execute_api_request(
         return Err(ApiFailure::invalid("request must be a JSON object"));
     }
     let op = required_json_string(request, "op")?;
+    reject_unknown_api_fields(request, op)?;
     match op {
         "stats" => serde_json::to_value(
             db.stats()
@@ -1284,6 +1321,7 @@ fn execute_api_request(
                     cursor: optional_json_string(request, "cursor")?.map(str::to_owned),
                     agent,
                     cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
+                    cwd_exact: optional_json_bool(request, "cwd_exact")?.unwrap_or(false),
                     since_ms,
                     mode,
                     model: optional_json_string(request, "model")?.map(str::to_owned),

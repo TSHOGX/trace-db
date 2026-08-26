@@ -25,6 +25,9 @@ fn ev(k: EventKind, text: String, r: &Value, t: i64) -> Event {
     e.native_id = s(r.get("uuid"));
     e.parent_id = s(r.get("parentUuid"));
     e.created_at_ms = Some(t);
+    // Keep the original vendor record alongside the normalized projection so
+    // fields such as Claude's parent_tool_use_id remain queryable.
+    e.data_json = Some(r.clone());
     e
 }
 fn rel(root: &Path, p: &Path) -> String {

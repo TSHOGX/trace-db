@@ -327,6 +327,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             cursor: request.cursor,
             agent,
             cwd: request.cwd,
+            cwd_exact: false,
             since_ms: request.since_ms,
             mode,
             model: request.model,
@@ -352,6 +353,9 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     mode: row.mode.to_string(),
                     events: row.events,
                     ingested_at_ms: row.ingested_at_ms,
+                    parent_session_id: row.parent_session_id,
+                    parent_relation: row.parent_relation,
+                    subagent_count: row.subagent_count,
                 })
                 .collect(),
             next_cursor: page.next_cursor,

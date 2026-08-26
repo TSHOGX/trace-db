@@ -109,6 +109,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     let mut e = Event::new(EventKind::User, txt);
                     e.native_id = id;
                     e.created_at_ms = t;
+                    e.data_json = Some(r.clone());
                     events.push(e)
                 }
             }
@@ -124,6 +125,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.native_id = id.clone();
                 e.created_at_ms = t;
                 e.model = s(r.get("model"));
+                e.data_json = Some(r.clone());
                 model = model.or(e.model.clone());
                 events.push(e);
                 if let Some(arr) = r.get("thoughts").and_then(Value::as_array) {
@@ -131,6 +133,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         let mut q = Event::new(EventKind::Thinking, compact(x));
                         q.native_id = id.clone();
                         q.created_at_ms = t;
+                        q.data_json = Some(x.clone());
                         events.push(q)
                     }
                 }
@@ -142,6 +145,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         q.call_id = s(x.get("callId").or_else(|| x.get("id")));
                         q.native_id = id.clone();
                         q.created_at_ms = t;
+                        q.data_json = Some(x.clone());
                         let qname = q.name.clone();
                         let qcall = q.call_id.clone();
                         events.push(q);
@@ -154,6 +158,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                             z.name = qname;
                             z.native_id = id.clone();
                             z.created_at_ms = t;
+                            z.data_json = Some(x.clone());
                             events.push(z)
                         }
                     }
@@ -171,6 +176,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.subtype = Some(typ.into());
                 e.native_id = id;
                 e.created_at_ms = t;
+                e.data_json = Some(r.clone());
                 events.push(e)
             }
             _ => {}

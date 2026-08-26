@@ -73,7 +73,7 @@ they are not part of the `tracedb.v1` wire service.
 |---|---|
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures plus a durable monotonic `ack` sequence. Consumers should persist the ack instead of deriving a watermark from `endedAtMs`. |
 | `Search` | Returns lineage-collapsed session hits. |
-| `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, and provider filters. |
+| `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, provider, and direct lineage metadata (`parentSessionId`, `parentRelation`, `subagentCount`). The Rust/JSON facade also supports `cwdExact` to avoid substring-prefix collisions. |
 | `Show` | Returns session metadata, sources, and normalized events. |
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |
@@ -83,6 +83,11 @@ they are not part of the `tracedb.v1` wire service.
 
 Messages are capped at 64 MiB by the bundled server. Generated clients may
 need their receive limit raised to the same value when reading large sessions.
+
+The line-oriented `trace-db api` rejects unknown request fields with an
+`invalid_argument` error. This is deliberate: for example, `list` accepts the
+human-friendly `since` string, while an accidental `since_ms` field is rejected
+instead of silently turning into an unfiltered archive scan.
 
 ## Concurrency semantics
 

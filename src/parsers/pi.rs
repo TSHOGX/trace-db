@@ -51,6 +51,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
                 e.created_at_ms = t;
+                e.data_json = Some(r.clone());
                 events.push(e)
             }
             "thinking_level_change" => {
@@ -59,6 +60,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                 e.native_id = s(r.get("id"));
                 e.parent_id = s(r.get("parentId"));
                 e.created_at_ms = t;
+                e.data_json = Some(r.clone());
                 events.push(e)
             }
             "message" => {
@@ -78,6 +80,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                     e.native_id = base_id;
                     e.parent_id = parent;
                     e.created_at_ms = mt;
+                    e.data_json = Some(r.clone());
                     events.push(e)
                 } else {
                     let kind = if role == "user" {
@@ -108,6 +111,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                             e.native_id = base_id.clone();
                             e.parent_id = parent.clone();
                             e.created_at_ms = mt;
+                            e.data_json = Some(b.clone());
                             events.push(e)
                         }
                     } else {
@@ -115,6 +119,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
                         e.native_id = base_id;
                         e.parent_id = parent;
                         e.created_at_ms = mt;
+                        e.data_json = Some(r.clone());
                         events.push(e)
                     }
                 }
@@ -123,6 +128,11 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
         }
         Ok(())
     })?;
+    for event in &mut events {
+        if event.data_json.is_none() {
+            event.data_json = Some(json!({"kind": event.kind.as_str(), "text": event.text}));
+        }
+    }
     let id = id.ok_or_else(|| {
         UnsupportedFormat(format!(
             "Pi JSONL missing session header: {}",
