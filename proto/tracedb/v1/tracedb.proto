@@ -10,6 +10,8 @@ service TraceDbService {
   rpc Search(SearchRequest) returns (SearchResponse);
   // List archived sessions with stable cursor pagination and metadata filters.
   rpc List(ListRequest) returns (ListResponse);
+  // Read one session's archive coverage without loading its event stream.
+  rpc Coverage(CoverageRequest) returns (CoverageResponse);
   // Read one session and an optional normalized event range/kind subset.
   rpc Show(ShowRequest) returns (ShowResponse);
   // Read archive-wide and per-agent counts.
@@ -227,6 +229,23 @@ message SessionSummary {
   optional string parent_relation = 13;
   int64 subagent_count = 14;
   optional string status = 15;
+  string fingerprint = 16;
+}
+
+message CoverageRequest { string id = 1; }
+
+message CoverageResponse {
+  optional SessionCoverage coverage = 1;
+}
+
+message SessionCoverage {
+  string id = 1;
+  string fingerprint = 2;
+  int64 ingested_at_ms = 3;
+  string mode = 4;
+  int64 events = 5;
+  int64 sources = 6;
+  optional int64 latest_source_mtime_ns = 7;
 }
 
 message StatsResponse {

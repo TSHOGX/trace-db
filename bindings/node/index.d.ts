@@ -104,6 +104,9 @@ export class TraceDb {
   statsJson(): string;
   stats(): ArchiveStats;
 
+  coverageJson(sessionId: string): string;
+  coverage(sessionId: string): Record<string, unknown> | null;
+
   searchJson(
     query: string,
     limit?: number,

@@ -357,6 +357,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     parent_relation: row.parent_relation,
                     subagent_count: row.subagent_count,
                     status: row.status.map(|status| status.to_string()),
+                    fingerprint: row.fingerprint,
                 })
                 .collect(),
             next_cursor: page.next_cursor,
@@ -411,6 +412,30 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .map_err(internal)?
             .unwrap_or_default();
         Ok(Response::new(response))
+    }
+
+    async fn coverage(
+        &self,
+        request: Request<pb::CoverageRequest>,
+    ) -> Result<Response<pb::CoverageResponse>, Status> {
+        let id = request.into_inner().id;
+        if id.is_empty() {
+            return Err(Status::invalid_argument("id must not be empty"));
+        }
+        let coverage = self
+            .read(move |database| database.coverage(&id))
+            .await
+            .map_err(internal)?
+            .map(|row| pb::SessionCoverage {
+                id: row.id,
+                fingerprint: row.fingerprint,
+                ingested_at_ms: row.ingested_at_ms,
+                mode: row.mode.to_string(),
+                events: row.events,
+                sources: row.sources,
+                latest_source_mtime_ns: row.latest_source_mtime_ns,
+            });
+        Ok(Response::new(pb::CoverageResponse { coverage }))
     }
 
     async fn stats(

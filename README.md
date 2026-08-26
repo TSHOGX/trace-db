@@ -263,10 +263,15 @@ for row in rows {
 # Ok::<(), anyhow::Error>(())
 ```
 
-`TraceDb` also provides typed `ingest`, `ingest_session`, `list`, `show`,
+`TraceDb` also provides typed `ingest`, `ingest_session`, `list`, `coverage`, `show`,
 `stats`, `reindex`, `backup`, and `reconstruct` methods. Lower-level `model`,
 `parsers`, and `store` modules remain public for custom importers and
 specialized SQL access.
+
+`coverage(sessionId)` is the cheap per-session ingestion watermark: it returns
+the stored fingerprint, `ingestedAtMs`, capture mode, normalized event/source
+counts, and latest source mtime without loading the event stream or consulting
+native agent stores. List rows include the same fingerprint for bulk scans.
 
 Every mutating `ingest` response includes a durable monotonic `ack` containing
 `sequence` and `committedAtMs`. Persist this acknowledgement as the ingestion

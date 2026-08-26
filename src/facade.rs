@@ -607,6 +607,11 @@ impl TraceDb {
         store::list(&self.connection, &request)
     }
 
+    /// Read one session's archive coverage without loading events or sources.
+    pub fn coverage(&self, session_id: &str) -> Result<Option<SessionCoverage>> {
+        store::coverage(&self.connection, session_id)
+    }
+
     /// Return per-agent and archive-wide counts.
     pub fn stats(&self) -> Result<ArchiveStats> {
         let agents = store::stats(&self.connection)?
@@ -1601,6 +1606,7 @@ pub struct SessionSummary {
     pub mode: IngestMode,
     pub events: i64,
     pub ingested_at_ms: i64,
+    pub fingerprint: String,
     pub status: Option<crate::SessionStatus>,
     /// Direct session lineage parent, if present.
     pub parent_session_id: Option<String>,
@@ -1608,6 +1614,18 @@ pub struct SessionSummary {
     pub parent_relation: Option<String>,
     /// Number of sessions that directly reference this session as a parent.
     pub subagent_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCoverage {
+    pub id: String,
+    pub fingerprint: String,
+    pub ingested_at_ms: i64,
+    pub mode: IngestMode,
+    pub events: i64,
+    pub sources: i64,
+    pub latest_source_mtime_ns: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

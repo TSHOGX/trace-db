@@ -22,6 +22,11 @@ pub struct NodeTraceDb {
 
 #[napi]
 impl NodeTraceDb {
+    /// Read one session's archive coverage without loading events.
+    #[napi]
+    pub fn coverage_json(&self, id: String) -> Result<String> {
+        json(self.db.coverage(&id).map_err(native_error)?)
+    }
     /// Open an archive path, or the default path when omitted.
     #[napi(factory)]
     pub fn open(path: Option<String>) -> Result<Self> {

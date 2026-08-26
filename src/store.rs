@@ -4,8 +4,8 @@ use crate::{
         assign_indexes, derive_spans, Event, IngestMode, NativeSource, ParsedSession, Session,
         Span, TokenUsage,
     },
-    IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionSummary,
-    SessionTrace,
+    IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionCoverage,
+    SessionSummary, SessionTrace,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -1678,7 +1678,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                                 CASE WHEN instr(child.forked_from, '#') > 0
                                      THEN substr(child.forked_from, 1, instr(child.forked_from, '#') - 1)
                                      ELSE child.forked_from END)=s.id),
-                (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,s.fingerprint,
                 coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms) AS sort_time
          FROM sessions s WHERE 1=1",
     );
@@ -1780,8 +1780,9 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                     subagent_count: row.get(12)?,
                     events: row.get(13)?,
                     ingested_at_ms: row.get(14)?,
+                    fingerprint: row.get(15)?,
                 },
-                row.get::<_, i64>(15)?,
+                row.get::<_, i64>(16)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1797,6 +1798,37 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         sessions: rows.drain(..).map(|(session, _)| session).collect(),
         next_cursor,
     })
+}
+
+pub fn coverage(conn: &Connection, session_id: &str) -> Result<Option<SessionCoverage>> {
+    conn.query_row(
+        "SELECT s.id,s.fingerprint,s.ingested_at_ms,s.mode,
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id),
+                (SELECT count(*) FROM raw_sources r WHERE r.session_id=s.id),
+                (SELECT max(r.mtime_ns) FROM raw_sources r WHERE r.session_id=s.id)
+         FROM sessions s WHERE s.id=?1",
+        [session_id],
+        |row| {
+            let mode = row.get::<_, String>(3)?.parse().map_err(|error: String| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    error.into(),
+                )
+            })?;
+            Ok(SessionCoverage {
+                id: row.get(0)?,
+                fingerprint: row.get(1)?,
+                ingested_at_ms: row.get(2)?,
+                mode,
+                events: row.get(4)?,
+                sources: row.get(5)?,
+                latest_source_mtime_ns: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn normalize_cwd(cwd: &str) -> String {

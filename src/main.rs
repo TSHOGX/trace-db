@@ -1116,7 +1116,7 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
         })
 }
 
-const API_OPERATIONS: [&str; 5] = ["stats", "search", "list", "show", "reconstruct"];
+const API_OPERATIONS: [&str; 6] = ["stats", "search", "list", "show", "coverage", "reconstruct"];
 
 fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<(), ApiFailure> {
     let allowed: &[&str] = match op {
@@ -1135,6 +1135,7 @@ fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<()
             "provider",
         ],
         "show" => &["op", "id", "from", "to", "kind"],
+        "coverage" => &["op", "id"],
         "reconstruct" => &["op", "id", "out", "overwrite"],
         _ => return Ok(()),
     };
@@ -1378,6 +1379,14 @@ fn execute_api_request(
                     kinds,
                 })
                 .map_err(|error| ApiFailure::operation(op, error))?,
+            )
+            .map_err(|error| ApiFailure::operation(op, error))
+        }
+        "coverage" => {
+            let id = required_json_string(request, "id")?;
+            serde_json::to_value(
+                db.coverage(id)
+                    .map_err(|error| ApiFailure::operation(op, error))?,
             )
             .map_err(|error| ApiFailure::operation(op, error))
         }

@@ -31,6 +31,14 @@ class TraceDb:
         """Return archive statistics as a Python dictionary."""
         return json.loads(self.stats_json())
 
+    def coverage_json(self, session_id: str) -> str:
+        """Return one session's archive coverage as raw JSON."""
+        return self._native.coverage_json(session_id)
+
+    def coverage(self, session_id: str) -> dict[str, Any] | None:
+        """Return one session's archive coverage without loading events."""
+        return json.loads(self.coverage_json(session_id))
+
     def search_json(
         self,
         query: str,

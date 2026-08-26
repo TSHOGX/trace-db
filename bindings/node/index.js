@@ -19,6 +19,14 @@ class TraceDb {
     return JSON.parse(this.statsJson());
   }
 
+  coverageJson(sessionId) {
+    return this._native.coverageJson(sessionId);
+  }
+
+  coverage(sessionId) {
+    return JSON.parse(this.coverageJson(sessionId));
+  }
+
   searchJson(query, limit = 20, agent, cwd, sinceMs) {
     return this._native.searchJson(query, limit, agent, cwd, sinceMs);
   }

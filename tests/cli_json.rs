@@ -325,6 +325,12 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
     .unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"codex:json-contract"})).unwrap();
     writeln!(stdin, "{}", json!({"op":"show","id":"missing"})).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"op":"coverage","id":"codex:json-contract"})
+    )
+    .unwrap();
     let output = child.wait_with_output().unwrap();
 
     assert!(output.status.success());
@@ -343,6 +349,7 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
     assert_eq!(rows[2]["result"]["session"]["id"], "codex:json-contract");
     assert_eq!(rows[2]["result"]["events"].as_array().unwrap().len(), 2);
     assert!(rows[3]["result"].is_null());
+    assert_eq!(rows[4]["result"]["fingerprint"], "json-v1");
 }
 
 #[test]

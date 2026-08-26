@@ -21,6 +21,10 @@ struct PyTraceDb {
 
 #[pymethods]
 impl PyTraceDb {
+    /// Read one session's archive coverage without loading events.
+    fn coverage_json(&self, id: String) -> PyResult<String> {
+        json(self.db.coverage(&id).map_err(runtime_error)?)
+    }
     /// Open an archive path, or the default path when omitted.
     #[staticmethod]
     #[pyo3(signature = (path=None))]

@@ -590,4 +590,7 @@ fn tool_spans_round_trip_through_the_archive() {
     assert_eq!(trace.spans[0].started_at_ms, Some(10));
     assert_eq!(trace.spans[0].ended_at_ms, Some(20));
     assert_eq!(trace.events[0].span_id.as_deref(), Some("call:call-1"));
+    let coverage = database.coverage("codex:spans").unwrap().unwrap();
+    assert_eq!(coverage.fingerprint, "spans");
+    assert_eq!(coverage.events, 2);
 }
