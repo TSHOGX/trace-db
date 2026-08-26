@@ -15,6 +15,10 @@ export interface ListOptions {
   sinceMs?: number;
   model?: string;
   provider?: string;
+  /** Match `cwd` as a normalized exact path instead of a substring. */
+  cwdExact?: boolean;
+  /** Hide a child whose direct parent satisfies the same filters. */
+  collapseLineage?: boolean;
 }
 
 export interface IngestOptions {
@@ -60,6 +64,23 @@ export interface IngestAck {
   committedAtMs: number;
 }
 
+export interface ScoreBreakdown {
+  bestMatch: number;
+  hitCoverage: number;
+  termCoverage: number;
+  kind: number;
+  recency: number;
+  title: number;
+  lineage: number;
+}
+
+export interface SearchMatch {
+  eventIdx: number;
+  kind: string;
+  bm25: number;
+  snippet: string;
+}
+
 export interface SearchResult {
   id: string;
   lineageRootId: string;
@@ -69,7 +90,9 @@ export interface SearchResult {
   startedAtMs: number | null;
   endedAtMs: number | null;
   score: number;
+  scoreBreakdown: ScoreBreakdown;
   hits: number;
+  bestMatch: SearchMatch;
   ask: string | null;
   outcome: string | null;
   relatedSessionIds: string[];
@@ -90,6 +113,8 @@ export interface ArchiveStats {
 export interface SessionTrace {
   session: Record<string, unknown>;
   events: Array<Record<string, unknown>>;
+  /** Turn-internal tool and delegation trajectories. */
+  spans: Array<Record<string, unknown>>;
 }
 
 export class TraceDb {
@@ -118,6 +143,8 @@ export class TraceDb {
     sinceMs?: number,
     model?: string,
     provider?: string,
+    cwdExact?: boolean,
+    collapseLineage?: boolean,
   ): string;
   list(options?: ListOptions): {
     sessions: Array<Record<string, unknown>>;

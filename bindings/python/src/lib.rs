@@ -68,7 +68,7 @@ impl PyTraceDb {
 
     /// List archived sessions with cursor pagination and metadata filters.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (limit=50, cursor=None, agent=None, cwd=None, since_ms=None, model=None, provider=None))]
+    #[pyo3(signature = (limit=50, cursor=None, agent=None, cwd=None, since_ms=None, model=None, provider=None, cwd_exact=false, collapse_lineage=false))]
     fn list_json(
         &self,
         limit: usize,
@@ -78,6 +78,8 @@ impl PyTraceDb {
         since_ms: Option<i64>,
         model: Option<String>,
         provider: Option<String>,
+        cwd_exact: bool,
+        collapse_lineage: bool,
     ) -> PyResult<String> {
         let agent = agent
             .map(|value| value.parse::<Agent>().map_err(runtime_error))
@@ -89,8 +91,8 @@ impl PyTraceDb {
                     cursor,
                     agent,
                     cwd,
-                    cwd_exact: false,
-                    collapse_lineage: false,
+                    cwd_exact,
+                    collapse_lineage,
                     since_ms,
                     model,
                     provider,

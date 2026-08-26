@@ -1097,8 +1097,71 @@ fn parse_since(value: &str) -> anyhow::Result<i64> {
         })
 }
 
-const API_OPERATIONS: [&str; 6] = ["stats", "search", "list", "show", "coverage", "reconstruct"];
+/// One request per line, one response per line.
+///
+/// Requests are typed and reject unknown fields, so a misspelled filter is an
+/// error rather than a silently ignored constraint. Dispatch is an internally
+/// tagged enum, which makes the compiler — not a string match with a
+/// fallthrough — responsible for handling every operation.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
+enum ApiRequest {
+    #[serde(rename_all = "camelCase")]
+    Stats {
+        #[serde(default)]
+        version: Option<u8>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Search {
+        #[serde(default)]
+        version: Option<u8>,
+        query: String,
+        limit: Option<usize>,
+        agent: Option<Agent>,
+        cwd: Option<String>,
+        since_ms: Option<i64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    List {
+        #[serde(default)]
+        version: Option<u8>,
+        limit: Option<usize>,
+        cursor: Option<String>,
+        agent: Option<Agent>,
+        cwd: Option<String>,
+        cwd_exact: Option<bool>,
+        collapse_lineage: Option<bool>,
+        since_ms: Option<i64>,
+        model: Option<String>,
+        provider: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Show {
+        #[serde(default)]
+        version: Option<u8>,
+        id: String,
+        from_idx: Option<i64>,
+        to_idx: Option<i64>,
+        kinds: Option<ApiKinds>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Coverage {
+        #[serde(default)]
+        version: Option<u8>,
+        id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Reconstruct {
+        #[serde(default)]
+        version: Option<u8>,
+        id: String,
+        out_dir: String,
+        overwrite: Option<bool>,
+    },
+}
 
+/// `kinds` accepts one kind or a list, since both spellings are natural for
+/// shell and library callers alike.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ApiKinds {
@@ -1106,101 +1169,32 @@ enum ApiKinds {
     Many(Vec<String>),
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ApiV2Search {
-    version: u8,
-    op: String,
-    query: String,
-    limit: Option<usize>,
-    agent: Option<Agent>,
-    cwd: Option<String>,
-    since_ms: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ApiV2List {
-    version: u8,
-    op: String,
-    limit: Option<usize>,
-    cursor: Option<String>,
-    agent: Option<Agent>,
-    cwd: Option<String>,
-    cwd_exact: Option<bool>,
-    collapse_lineage: Option<bool>,
-    since_ms: Option<i64>,
-    model: Option<String>,
-    provider: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ApiV2Show {
-    version: u8,
-    op: String,
-    id: String,
-    from_idx: Option<i64>,
-    to_idx: Option<i64>,
-    kinds: Option<ApiKinds>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiV2Id {
-    version: u8,
-    op: String,
-    id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ApiV2Reconstruct {
-    version: u8,
-    op: String,
-    id: String,
-    out_dir: String,
-    overwrite: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApiV2Stats {
-    version: u8,
-    op: String,
-}
-
-fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<(), ApiFailure> {
-    let allowed: &[&str] = match op {
-        "stats" => &["op"],
-        "search" => &["op", "query", "limit", "agent", "cwd", "since"],
-        "list" => &[
-            "op",
-            "limit",
-            "cursor",
-            "agent",
-            "cwd",
-            "cwd_exact",
-            "collapse_lineage",
-            "since",
-            "model",
-            "provider",
-        ],
-        "show" => &["op", "id", "from", "to", "kind"],
-        "coverage" => &["op", "id"],
-        "reconstruct" => &["op", "id", "out", "overwrite"],
-        _ => return Ok(()),
-    };
-    if let Some(key) = request
-        .as_object()
-        .and_then(|object| object.keys().find(|key| !allowed.contains(&key.as_str())))
-    {
-        return Err(ApiFailure::invalid(format!(
-            "unknown field {key:?} for operation {op}"
-        )));
+impl ApiRequest {
+    /// The declared protocol version, absent when the caller omitted it.
+    fn version(&self) -> Option<u8> {
+        match self {
+            Self::Stats { version }
+            | Self::Search { version, .. }
+            | Self::List { version, .. }
+            | Self::Show { version, .. }
+            | Self::Coverage { version, .. }
+            | Self::Reconstruct { version, .. } => *version,
+        }
     }
-    Ok(())
+
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Stats { .. } => "stats",
+            Self::Search { .. } => "search",
+            Self::List { .. } => "list",
+            Self::Show { .. } => "show",
+            Self::Coverage { .. } => "coverage",
+            Self::Reconstruct { .. } => "reconstruct",
+        }
+    }
 }
+
+const API_VERSION: u8 = 2;
 
 struct ApiFailure {
     code: &'static str,
@@ -1237,94 +1231,52 @@ impl ApiFailure {
     }
 }
 
-fn optional_json_i64(request: &serde_json::Value, field: &str) -> Result<Option<i64>, ApiFailure> {
-    match request.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value
-            .as_i64()
-            .map(Some)
-            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be an integer"))),
-    }
-}
-
-fn optional_json_u64(request: &serde_json::Value, field: &str) -> Result<Option<u64>, ApiFailure> {
-    match request.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a non-negative integer"))),
-    }
-}
-
-fn optional_json_bool(
-    request: &serde_json::Value,
-    field: &str,
-) -> Result<Option<bool>, ApiFailure> {
-    match request.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value
-            .as_bool()
-            .map(Some)
-            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a boolean"))),
-    }
-}
-
-fn optional_json_string<'a>(
-    request: &'a serde_json::Value,
-    field: &str,
-) -> Result<Option<&'a str>, ApiFailure> {
-    match request.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value
-            .as_str()
-            .map(Some)
-            .ok_or_else(|| ApiFailure::invalid(format!("{field} must be a string"))),
-    }
-}
-
-fn required_json_string<'a>(
-    request: &'a serde_json::Value,
-    field: &str,
-) -> Result<&'a str, ApiFailure> {
-    let value = optional_json_string(request, field)?
-        .ok_or_else(|| ApiFailure::invalid(format!("{field} is required")))?;
-    if value.is_empty() {
-        return Err(ApiFailure::invalid(format!("{field} must not be empty")));
-    }
-    Ok(value)
-}
-
 fn run_api(db: &TraceDb) -> anyhow::Result<()> {
     for line in io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(request) => match execute_api_request(db, &request) {
+        let response = match serde_json::from_str::<ApiRequest>(&line) {
+            Ok(request) => match execute_api_request(db, request) {
                 Ok(result) => serde_json::json!({"ok": true, "result": result}),
                 Err(error) => error.response(),
             },
-            Err(error) => ApiFailure {
-                code: "invalid_json",
-                message: error.to_string(),
-                details: None,
-            }
-            .response(),
+            Err(error) => api_parse_failure(&line, error).response(),
         };
         println!("{}", serde_json::to_string(&response)?);
     }
     Ok(())
 }
 
-fn deserialize_api_v2<T: for<'de> Deserialize<'de>>(
-    request: &serde_json::Value,
-) -> Result<T, ApiFailure> {
-    serde_json::from_value(request.clone()).map_err(|error| ApiFailure::invalid(error.to_string()))
+/// Distinguish malformed JSON from a well-formed request the schema rejects, so
+/// a caller can tell a transport problem from a contract problem.
+fn api_parse_failure(line: &str, error: serde_json::Error) -> ApiFailure {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return ApiFailure {
+            code: "invalid_json",
+            message: error.to_string(),
+            details: None,
+        };
+    };
+    if !value.is_object() {
+        return ApiFailure::invalid("request must be a JSON object");
+    }
+    let operation = value.get("op").and_then(serde_json::Value::as_str);
+    match operation {
+        None => ApiFailure::invalid("op is required"),
+        Some(operation) if !API_OPERATIONS.contains(&operation) => ApiFailure {
+            code: "unsupported_operation",
+            message: format!("unsupported operation: {operation}"),
+            details: Some(serde_json::json!({"supported": API_OPERATIONS})),
+        },
+        Some(_) => ApiFailure::invalid(error.to_string()),
+    }
 }
 
-fn api_v2_kinds(kinds: Option<ApiKinds>) -> Result<Vec<EventKind>, ApiFailure> {
+const API_OPERATIONS: [&str; 6] = ["stats", "search", "list", "show", "coverage", "reconstruct"];
+
+fn api_kinds(kinds: Option<ApiKinds>) -> Result<Vec<EventKind>, ApiFailure> {
     let values = match kinds {
         None => return Ok(Vec::new()),
         Some(ApiKinds::One(value)) => vec![value],
@@ -1336,303 +1288,114 @@ fn api_v2_kinds(kinds: Option<ApiKinds>) -> Result<Vec<EventKind>, ApiFailure> {
         .collect()
 }
 
-fn camelize_api_v2(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(object) => serde_json::Value::Object(
-            object
-                .into_iter()
-                .map(|(key, value)| {
-                    let preserve_payload = matches!(key.as_str(), "data_json" | "meta");
-                    let key = snake_to_camel(&key);
-                    let value = if preserve_payload {
-                        value
-                    } else {
-                        camelize_api_v2(value)
-                    };
-                    (key, value)
-                })
-                .collect(),
-        ),
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.into_iter().map(camelize_api_v2).collect())
-        }
-        value => value,
-    }
-}
-
-fn snake_to_camel(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut uppercase = false;
-    for character in value.chars() {
-        if character == '_' {
-            uppercase = true;
-        } else if uppercase {
-            output.extend(character.to_uppercase());
-            uppercase = false;
-        } else {
-            output.push(character);
-        }
-    }
-    output
-}
-
-fn execute_api_v2(
-    db: &TraceDb,
-    request: &serde_json::Value,
-    op: &str,
-) -> Result<serde_json::Value, ApiFailure> {
-    let result = match op {
-        "stats" => {
-            let typed: ApiV2Stats = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            serde_json::to_value(
-                db.stats()
-                    .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-        }
-        "search" => {
-            let typed: ApiV2Search = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            if typed.query.is_empty() {
-                return Err(ApiFailure::invalid("query must not be empty"));
-            }
-            serde_json::to_value(
-                db.search(SearchRequest {
-                    query: typed.query,
-                    limit: typed.limit.unwrap_or(20),
-                    agent: typed.agent,
-                    cwd: typed.cwd,
-                    since_ms: typed.since_ms,
-                })
-                .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-        }
-        "list" => {
-            let typed: ApiV2List = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            serde_json::to_value(
-                db.list(ListRequest {
-                    limit: typed.limit.unwrap_or(50),
-                    cursor: typed.cursor,
-                    agent: typed.agent,
-                    cwd: typed.cwd,
-                    cwd_exact: typed.cwd_exact.unwrap_or(false),
-                    collapse_lineage: typed.collapse_lineage.unwrap_or(false),
-                    since_ms: typed.since_ms,
-                    model: typed.model,
-                    provider: typed.provider,
-                })
-                .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-        }
-        "show" => {
-            let typed: ApiV2Show = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            if typed.id.is_empty() {
-                return Err(ApiFailure::invalid("id must not be empty"));
-            }
-            serde_json::to_value(
-                db.show_with_options(ShowRequest {
-                    session_id: typed.id,
-                    from_idx: typed.from_idx,
-                    to_idx: typed.to_idx,
-                    kinds: api_v2_kinds(typed.kinds)?,
-                })
-                .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-        }
-        "coverage" => {
-            let typed: ApiV2Id = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            serde_json::to_value(
-                db.coverage(&typed.id)
-                    .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-        }
-        "reconstruct" => {
-            let typed: ApiV2Reconstruct = deserialize_api_v2(request)?;
-            validate_api_v2_header(typed.version, &typed.op, op)?;
-            serde_json::to_value(
-                db.reconstruct_with_options(
-                    &typed.id,
-                    PathBuf::from(typed.out_dir),
-                    tracedb::ReconstructionOptions {
-                        overwrite: typed.overwrite.unwrap_or(false),
-                    },
-                )
-                .map_err(|error| ApiFailure::operation(op, error))?
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>(),
-            )
-        }
-        _ => {
-            return Err(ApiFailure {
-                code: "unsupported_operation",
-                message: format!("unsupported operation: {op}"),
-                details: Some(serde_json::json!({"supported": API_OPERATIONS})),
-            })
-        }
-    }
-    .map_err(|error| ApiFailure::operation(op, error))?;
-    Ok(camelize_api_v2(result))
-}
-
-fn validate_api_v2_header(
-    version: u8,
-    actual_op: &str,
-    expected_op: &str,
-) -> Result<(), ApiFailure> {
-    if version != 2 {
-        return Err(ApiFailure::invalid("version must be 2"));
-    }
-    if actual_op != expected_op {
-        return Err(ApiFailure::invalid("operation mismatch"));
-    }
-    Ok(())
-}
-
-fn execute_api_request(
-    db: &TraceDb,
-    request: &serde_json::Value,
-) -> Result<serde_json::Value, ApiFailure> {
-    if !request.is_object() {
-        return Err(ApiFailure::invalid("request must be a JSON object"));
-    }
-    let op = required_json_string(request, "op")?;
-    if let Some(version) = request.get("version") {
-        let version = version
-            .as_u64()
-            .ok_or_else(|| ApiFailure::invalid("version must be an integer"))?;
-        if version != 2 {
+fn execute_api_request(db: &TraceDb, request: ApiRequest) -> Result<serde_json::Value, ApiFailure> {
+    let op = request.operation();
+    if let Some(version) = request.version() {
+        if version != API_VERSION {
             return Err(ApiFailure::invalid(format!(
                 "unsupported API version: {version}"
             )));
         }
-        return execute_api_v2(db, request, op);
     }
-    reject_unknown_api_fields(request, op)?;
-    match op {
-        "stats" => serde_json::to_value(
+    let result = match request {
+        ApiRequest::Stats { .. } => serde_json::to_value(
             db.stats()
                 .map_err(|error| ApiFailure::operation(op, error))?,
-        )
-        .map_err(|error| ApiFailure::operation(op, error)),
-        "search" => {
-            let query = required_json_string(request, "query")?;
-            let agent = optional_json_string(request, "agent")?
-                .map(str::parse::<Agent>)
-                .transpose()
-                .map_err(ApiFailure::invalid)?;
-            let since_ms = optional_json_string(request, "since")?
-                .map(parse_since)
-                .transpose()
-                .map_err(|error| ApiFailure::invalid(error.to_string()))?;
+        ),
+        ApiRequest::Search {
+            query,
+            limit,
+            agent,
+            cwd,
+            since_ms,
+            ..
+        } => {
+            if query.is_empty() {
+                return Err(ApiFailure::invalid("query must not be empty"));
+            }
             serde_json::to_value(
                 db.search(SearchRequest {
-                    query: query.to_owned(),
-                    limit: optional_json_u64(request, "limit")?.unwrap_or(20) as usize,
+                    query,
+                    limit: limit.unwrap_or(20),
                     agent,
-                    cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
+                    cwd,
                     since_ms,
                 })
                 .map_err(|error| ApiFailure::operation(op, error))?,
             )
-            .map_err(|error| ApiFailure::operation(op, error))
         }
-        "list" => {
-            let agent = optional_json_string(request, "agent")?
-                .map(str::parse::<Agent>)
-                .transpose()
-                .map_err(ApiFailure::invalid)?;
-            let since_ms = optional_json_string(request, "since")?
-                .map(parse_since)
-                .transpose()
-                .map_err(|error| ApiFailure::invalid(error.to_string()))?;
-            serde_json::to_value(
-                db.list(ListRequest {
-                    limit: optional_json_u64(request, "limit")?.unwrap_or(50) as usize,
-                    cursor: optional_json_string(request, "cursor")?.map(str::to_owned),
-                    agent,
-                    cwd: optional_json_string(request, "cwd")?.map(str::to_owned),
-                    cwd_exact: optional_json_bool(request, "cwd_exact")?.unwrap_or(false),
-                    collapse_lineage: optional_json_bool(request, "collapse_lineage")?
-                        .unwrap_or(false),
-                    since_ms,
-                    model: optional_json_string(request, "model")?.map(str::to_owned),
-                    provider: optional_json_string(request, "provider")?.map(str::to_owned),
-                })
-                .map_err(|error| ApiFailure::operation(op, error))?,
-            )
-            .map_err(|error| ApiFailure::operation(op, error))
-        }
-        "show" => {
-            let id = required_json_string(request, "id")?;
-            let from_idx = optional_json_i64(request, "from")?;
-            let to_idx = optional_json_i64(request, "to")?;
-            if from_idx.is_some_and(|value| value < 0) || to_idx.is_some_and(|value| value < 0) {
-                return Err(ApiFailure::invalid(
-                    "show event indexes must not be negative",
-                ));
+        ApiRequest::List {
+            limit,
+            cursor,
+            agent,
+            cwd,
+            cwd_exact,
+            collapse_lineage,
+            since_ms,
+            model,
+            provider,
+            ..
+        } => serde_json::to_value(
+            db.list(ListRequest {
+                limit: limit.unwrap_or(50),
+                cursor,
+                agent,
+                cwd,
+                cwd_exact: cwd_exact.unwrap_or(false),
+                collapse_lineage: collapse_lineage.unwrap_or(false),
+                since_ms,
+                model,
+                provider,
+            })
+            .map_err(|error| ApiFailure::operation(op, error))?,
+        ),
+        ApiRequest::Show {
+            id,
+            from_idx,
+            to_idx,
+            kinds,
+            ..
+        } => {
+            if id.is_empty() {
+                return Err(ApiFailure::invalid("id must not be empty"));
             }
-            if from_idx.zip(to_idx).is_some_and(|(from, to)| from > to) {
-                return Err(ApiFailure::invalid("show from must not be greater than to"));
-            }
-            let kinds = match request.get("kind") {
-                Some(value) if value.is_array() => value
-                    .as_array()
-                    .ok_or_else(|| ApiFailure::invalid("show kind must be an array"))?
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .ok_or_else(|| ApiFailure::invalid("show kind must be a string"))?
-                            .parse::<EventKind>()
-                            .map_err(ApiFailure::invalid)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                Some(value) if value.is_string() => value
-                    .as_str()
-                    .ok_or_else(|| ApiFailure::invalid("show kind must be a string"))?
-                    .split(',')
-                    .filter(|kind| !kind.trim().is_empty())
-                    .map(|kind| {
-                        kind.trim()
-                            .parse::<EventKind>()
-                            .map_err(ApiFailure::invalid)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                Some(_) => return Err(ApiFailure::invalid("show kind must be a string or array")),
-                None => Vec::new(),
-            };
             serde_json::to_value(
                 db.show_with_options(ShowRequest {
-                    session_id: id.to_owned(),
+                    session_id: id,
                     from_idx,
                     to_idx,
-                    kinds,
+                    kinds: api_kinds(kinds)?,
                 })
                 .map_err(|error| ApiFailure::operation(op, error))?,
             )
-            .map_err(|error| ApiFailure::operation(op, error))
         }
-        "coverage" => {
-            let id = required_json_string(request, "id")?;
+        ApiRequest::Coverage { id, .. } => {
+            if id.is_empty() {
+                return Err(ApiFailure::invalid("id must not be empty"));
+            }
             serde_json::to_value(
-                db.coverage(id)
+                db.coverage(&id)
                     .map_err(|error| ApiFailure::operation(op, error))?,
             )
-            .map_err(|error| ApiFailure::operation(op, error))
         }
-        "reconstruct" => {
-            let id = required_json_string(request, "id")?;
-            let out = required_json_string(request, "out")?;
+        ApiRequest::Reconstruct {
+            id,
+            out_dir,
+            overwrite,
+            ..
+        } => {
+            if id.is_empty() {
+                return Err(ApiFailure::invalid("id must not be empty"));
+            }
+            if out_dir.is_empty() {
+                return Err(ApiFailure::invalid("outDir must not be empty"));
+            }
             serde_json::to_value(
                 db.reconstruct_with_options(
-                    id,
-                    PathBuf::from(out),
+                    &id,
+                    PathBuf::from(out_dir),
                     tracedb::ReconstructionOptions {
-                        overwrite: optional_json_bool(request, "overwrite")?.unwrap_or(false),
+                        overwrite: overwrite.unwrap_or(false),
                     },
                 )
                 .map_err(|error| ApiFailure::operation(op, error))?
@@ -1640,14 +1403,9 @@ fn execute_api_request(
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>(),
             )
-            .map_err(|error| ApiFailure::operation(op, error))
         }
-        _ => Err(ApiFailure {
-            code: "unsupported_operation",
-            message: format!("unsupported operation: {op}"),
-            details: Some(serde_json::json!({"supported": API_OPERATIONS})),
-        }),
-    }
+    };
+    result.map_err(|error| ApiFailure::operation(op, error))
 }
 
 #[cfg(test)]

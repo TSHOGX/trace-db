@@ -80,7 +80,7 @@ they are not part of the `tracedb.v1` wire service.
 | `Coverage` | Returns one session's fingerprint, archive commit time, event/source counts, `sourceBytes`, and latest source mtime without loading its trace. Every value is a materialized column, so the call is a single indexed row read. |
 | `Show` | Returns session metadata, sources, normalized events, and first-class turn-internal spans. Events may include producer-supplied `createdAtMs` and `endedAtMs`; absent end times remain null rather than being inferred. `parentKind` discriminates overloaded native parent links. |
 | `Stats` | Returns archive-wide and per-agent counts. |
-| `Reindex` | Rebuilds the gated FTS index. |
+| `Reindex` | Rebuilds the gated FTS index and repairs every derived projection: session aggregates and turn-internal spans. It is the one command that recomputes derived state. |
 | `Backup` | Exposed by the CLI and Rust facade; creates a verified archive snapshot. |
 | `Gc` | Exposed by the CLI and Rust facade as a non-destructive orphan-object dry run. |
 | `Reconstruct` | Writes full-capture native sources below a server-local output directory. |
@@ -105,17 +105,39 @@ metadata. They do not require a corresponding child session. Events that
 participate in a trajectory expose `spanId`; multiplexed delegates can exist as
 child spans even when the source emitted them inside one host event.
 
-The line-oriented `trace-db api` rejects unknown request fields with an
-`invalid_argument` error. This is deliberate: for example, `list` accepts the
-human-friendly `since` string, while an accidental `since_ms` field is rejected
-instead of silently turning into an unfiltered archive scan.
+## The line protocol
 
-Line API version 2 is selected with `"version":2`. Its operation requests are
-deserialized into strict typed structures with unknown-field rejection and
-consistent camelCase names (`sinceMs`, `cwdExact`, `fromIdx`, `toIdx`, `kinds`,
-`collapseLineage`, `outDir`). Version 1 remains available for compatibility. V2 camel-cases only
-the normalized envelope/model; vendor keys inside `dataJson` and `meta` remain
-byte-for-byte semantic JSON keys.
+`trace-db api` reads one JSON request per line and writes one JSON response per
+line. There is exactly one protocol version, and it is the only one: the
+earlier unversioned spelling was removed rather than frozen, because it was
+internally inconsistent — `search` returned `endedAtMs` while `show` returned
+`ended_at_ms` for the same concept — and preserving it would have meant
+preserving that defect. `"version":2` may be sent explicitly and is validated;
+omitting it selects the same protocol.
+
+Every key the archive owns is `camelCase`, in requests and responses alike:
+`sinceMs`, `cwdExact`, `collapseLineage`, `fromIdx`, `toIdx`, `kinds`,
+`outDir`. The rule is enforced at the source — the Rust model and facade types
+serialize `camelCase` directly — so no serialization step rewrites keys, and no
+response can disagree with another about how a field is spelled.
+
+Requests are typed and reject unknown fields with `invalid_argument`. This is
+deliberate: a misspelled `since_ms` is an error rather than a silently dropped
+constraint that would turn a filtered query into an unfiltered archive scan.
+Dispatch is an internally tagged enum, so adding an operation is a compile
+error until it is handled.
+
+Vendor-opaque payloads are the one exception to the casing rule. The `dataJson`
+and `meta` *keys* follow it, but their values are producer JSON and pass
+through byte-for-byte — a `vendor_key` written by an agent is still
+`vendor_key` on the way out. Consumers can therefore always recover exactly
+what the producer wrote.
+
+Errors use a stable envelope. `invalid_json` means the line was not JSON;
+`invalid_argument` means the request was JSON but violated the schema;
+`unsupported_operation` names the operations that exist; `operation_failed`
+carries an archive or filesystem failure. A malformed line never terminates the
+stream.
 
 ## Concurrency semantics
 

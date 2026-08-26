@@ -36,7 +36,17 @@ class TraceDb {
     return JSON.parse(this.searchJson(query, limit, agent, cwd, sinceMs));
   }
 
-  listJson(limit = 50, cursor, agent, cwd, sinceMs, model, provider) {
+  listJson(
+    limit = 50,
+    cursor,
+    agent,
+    cwd,
+    sinceMs,
+    model,
+    provider,
+    cwdExact = false,
+    collapseLineage = false,
+  ) {
     return this._native.listJson(
       limit,
       cursor,
@@ -45,13 +55,35 @@ class TraceDb {
       sinceMs,
       model,
       provider,
+      cwdExact,
+      collapseLineage,
     );
   }
 
   list(options = {}) {
-    const { limit = 50, cursor, agent, cwd, sinceMs, model, provider } = options;
+    const {
+      limit = 50,
+      cursor,
+      agent,
+      cwd,
+      sinceMs,
+      model,
+      provider,
+      cwdExact = false,
+      collapseLineage = false,
+    } = options;
     return JSON.parse(
-      this.listJson(limit, cursor, agent, cwd, sinceMs, model, provider),
+      this.listJson(
+        limit,
+        cursor,
+        agent,
+        cwd,
+        sinceMs,
+        model,
+        provider,
+        cwdExact,
+        collapseLineage,
+      ),
     );
   }
 

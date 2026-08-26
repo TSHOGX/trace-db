@@ -80,6 +80,8 @@ impl NodeTraceDb {
         since_ms: Option<i64>,
         model: Option<String>,
         provider: Option<String>,
+        cwd_exact: Option<bool>,
+        collapse_lineage: Option<bool>,
     ) -> Result<String> {
         let agent = agent
             .map(|value| value.parse::<Agent>().map_err(native_error))
@@ -91,8 +93,8 @@ impl NodeTraceDb {
                     cursor,
                     agent,
                     cwd,
-                    cwd_exact: false,
-                    collapse_lineage: false,
+                    cwd_exact: cwd_exact.unwrap_or(false),
+                    collapse_lineage: collapse_lineage.unwrap_or(false),
                     since_ms,
                     model,
                     provider,

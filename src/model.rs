@@ -5,6 +5,12 @@
 //! `data_json`; every ingest additionally keeps the original native source as a
 //! content-addressed object, so normalization can never become the source of
 //! truth.
+//!
+//! Every type here that crosses the wire serializes `camelCase`, matching the
+//! facade's request/result types. One casing rule for the whole JSON surface
+//! means no serialization step ever rewrites keys. Vendor-opaque payloads are
+//! the deliberate exception: the `dataJson` and `meta` *keys* follow the rule,
+//! but their values are producer JSON and pass through byte-for-byte.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -239,6 +245,7 @@ impl FromStr for SpanStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Span {
     pub id: String,
     pub parent_span_id: Option<String>,
@@ -333,6 +340,7 @@ impl FromStr for EventKind {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input: Option<i64>,
     pub output: Option<i64>,
@@ -364,6 +372,7 @@ impl TokenUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     pub idx: i64,
     pub kind: EventKind,
@@ -425,6 +434,7 @@ pub enum Capture {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeSource {
     pub locator: String,
     pub kind: String,
@@ -439,6 +449,7 @@ pub struct NativeSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub agent: Agent,

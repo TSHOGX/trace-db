@@ -193,6 +193,24 @@ use `delegation` kind. Structured payloads containing multiple `task_id`
 objects create child delegation spans under the host call. Missing end/status
 evidence remains null rather than being inferred.
 
+## One serialization contract
+
+Every type that crosses the JSON surface — the `model` layer and the facade's
+request/result types alike — serializes `camelCase`. The rule is enforced where
+the types are defined, so no step in the pipeline rewrites keys and two
+operations can never disagree about how one concept is spelled. Requests are
+typed with unknown-field rejection and dispatched through an internally tagged
+enum, which makes handling every operation a compile-time obligation rather
+than a runtime string match.
+
+Vendor-opaque payloads are the deliberate exception: the `dataJson` and `meta`
+keys follow the casing rule, but their values are producer JSON and pass
+through byte-for-byte. A consumer can always recover exactly what the agent
+wrote.
+
+The gRPC surface is a separate versioned contract (`tracedb.v1`) with its own
+mapping layer, so JSON casing decisions do not perturb it.
+
 ## Compatibility and extension policy
 
 The repository contains only the Rust implementation. New agent support should

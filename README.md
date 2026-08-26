@@ -222,8 +222,10 @@ archive-changing and verification commands; it never contaminates stdout.
 
 `trace-db api` reads one JSON request per line from stdin and writes one JSON
 response per line. Supported operations are `stats`, `search`, `list`, `show`,
-and `reconstruct`. The `show` operation accepts optional inclusive `from`/`to`
-event indexes and a `kind` string or array. These filters are applied in SQL, so
+`coverage`, and `reconstruct`. Every key the archive owns is camelCase in both
+directions, and requests reject unknown fields. The `show` operation accepts
+optional inclusive `fromIdx`/`toIdx`
+event indexes and a `kinds` string or array. These filters are applied in SQL, so
 a windowed read never fetches the rest of the session; compare the returned
 `events` length with the session's `eventCount` to distinguish a window from a
 whole trace. A window also narrows `spans` to those whose event interval
@@ -234,11 +236,11 @@ is the context that makes a filtered slice interpretable:
 printf '%s\n' '{"op":"search","query":"deploy","limit":5}' | trace-db api
 ```
 
-`list` accepts `cwd_exact: true` for normalized exact-path matching and returns
+`list` accepts `cwdExact: true` for normalized exact-path matching and returns
 direct lineage metadata (`parentSessionId`, `parentRelation`, and
-`subagentCount`). API requests with unknown fields are rejected as invalid
-arguments; this prevents typos such as `since_ms` from silently disabling the
-intended `since` filter.
+`subagentCount`). Requests with unknown fields are rejected as invalid
+arguments; this prevents a typo such as `since_ms` from silently disabling the
+intended `sinceMs` filter instead of scanning the whole archive.
 
 Event records expose an optional `endedAtMs` when the native producer provides
 an explicit end boundary. TraceDB deliberately does not synthesize an end time
@@ -261,12 +263,14 @@ line produces either `{"ok":true,"result":...}` or a stable
 malformed or invalid requests do not terminate the stream. The Rust crate is
 the preferred high-performance integration surface:
 
-The original request spelling remains available as API v1. New integrations
-should send `"version":2`; v2 requests are typed, reject unknown fields, and
-use camelCase consistently: `sinceMs` is an integer timestamp,
-`cwdExact`, `fromIdx`, `toIdx`, `kinds`, and `outDir`. V2 responses also use
-camelCase for normalized fields while preserving keys inside vendor
-`dataJson`/session `meta` payloads.
+There is one protocol version. `"version":2` may be sent explicitly and is
+validated; omitting it selects the same protocol. Requests and responses agree
+on camelCase — `sinceMs`, `cwdExact`, `collapseLineage`, `fromIdx`, `toIdx`,
+`kinds`, `outDir` — because the Rust types serialize that way at the source
+rather than being rewritten on the way out. The one exception is vendor-opaque
+payloads: the `dataJson` and `meta` keys follow the rule, but their values are
+producer JSON and pass through byte-for-byte, so a `vendor_key` an agent wrote
+is still `vendor_key` when you read it back.
 
 ```rust,no_run
 use tracedb::{SearchRequest, TraceDb};
@@ -298,8 +302,9 @@ producer reported no usage, which stays distinct from a measured zero. Because
 these are stored columns rather than per-row subqueries, `list` cost is
 proportional to the page size rather than to archive size.
 
-List inventory remains expanded by default. `--collapse-lineage` (or API v2
-`collapseLineage`) applies scope-preserving collapse: a child is hidden only
+List inventory remains expanded by default. `--collapse-lineage` (or
+`collapseLineage` over the JSON protocol and both language bindings) applies
+scope-preserving collapse: a child is hidden only
 when its direct parent also satisfies the same agent/cwd/time/model/provider
 filters. A worktree child therefore remains visible in its own cwd scope
 instead of being folded into an out-of-scope parent.
@@ -393,9 +398,12 @@ const rows = db.search("deploy", { limit: 10 });
 const trace = db.show(rows[0].id);
 ```
 
-Both bindings cover ingest, search, show, stats, reindex, and full-capture
-reconstruction. Methods ending in `Json`/`_json` remain available when callers
-prefer to avoid an intermediate object conversion.
+Both bindings cover ingest, search, list, coverage, show, stats, reindex, and
+full-capture reconstruction, including the `cwdExact` and `collapseLineage` list
+filters. Methods ending in `Json`/`_json` remain available when callers prefer
+to avoid an intermediate object conversion. Because both return the facade's
+own JSON, the camelCase contract and the vendor-payload guarantee hold there
+too.
 
 ## Long-running watch
 

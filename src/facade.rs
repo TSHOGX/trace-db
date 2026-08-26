@@ -962,11 +962,9 @@ pub struct ReconstructionOptions {
 #[serde(rename_all = "camelCase")]
 pub struct ShowRequest {
     pub session_id: String,
-    #[serde(rename = "from")]
     pub from_idx: Option<i64>,
-    #[serde(rename = "to")]
     pub to_idx: Option<i64>,
-    #[serde(default, rename = "kind")]
+    #[serde(default)]
     pub kinds: Vec<EventKind>,
 }
 

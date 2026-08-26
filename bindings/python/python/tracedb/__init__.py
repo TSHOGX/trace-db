@@ -70,10 +70,20 @@ class TraceDb:
         since_ms: int | None = None,
         model: str | None = None,
         provider: str | None = None,
+        cwd_exact: bool = False,
+        collapse_lineage: bool = False,
     ) -> str:
         """List archived sessions and return the cursor page as raw JSON."""
         return self._native.list_json(
-            limit, cursor, agent, cwd, since_ms, model, provider
+            limit,
+            cursor,
+            agent,
+            cwd,
+            since_ms,
+            model,
+            provider,
+            cwd_exact,
+            collapse_lineage,
         )
 
     def list(self, **kwargs: Any) -> dict[str, Any]:
