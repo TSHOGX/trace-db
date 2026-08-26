@@ -17,7 +17,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 pub const ARCHIVE_CONTRACT: &str = "lossless-v1";
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
@@ -250,8 +250,8 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
             [],
         )? as u64;
         let imported_events = connection.execute(
-            "INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms)
-             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms
+            "INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
+             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,ie.ended_at_ms
              FROM import_source.events ie
              WHERE NOT EXISTS (
                SELECT 1 FROM events e
@@ -320,18 +320,18 @@ fn validate_import_compatibility(connection: &Connection) -> Result<()> {
         .query_row(
             "SELECT session_id FROM (
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM import_source.events WHERE session_id IN (SELECT id FROM sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events
                )
                UNION ALL
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events WHERE session_id IN (SELECT id FROM import_source.sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM import_source.events
                )
              ) LIMIT 1",
@@ -680,7 +680,8 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
         id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         idx INTEGER NOT NULL, kind TEXT NOT NULL, subtype TEXT, role TEXT, name TEXT,
         call_id TEXT, is_error INTEGER, native_id TEXT, parent_id TEXT, model TEXT,
-        provider TEXT, usage_json TEXT, text TEXT NOT NULL, data_json TEXT, created_at_ms INTEGER
+        provider TEXT, usage_json TEXT, text TEXT NOT NULL, data_json TEXT, created_at_ms INTEGER,
+        ended_at_ms INTEGER
       );
       CREATE INDEX IF NOT EXISTS events_session_idx ON events(session_id,idx);
       CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind);
@@ -694,6 +695,9 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       END;
     "#.replace("TOKENIZER_PLACEHOLDER", tokenizer);
     conn.execute_batch(&schema)?;
+    if !table_has_column(conn, "events", "ended_at_ms")? {
+        conn.execute_batch("ALTER TABLE events ADD COLUMN ended_at_ms INTEGER;")?;
+    }
     if previous_tokenizer
         .as_deref()
         .is_some_and(|value| value != tokenizer)
@@ -717,6 +721,20 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
         [ARCHIVE_CONTRACT],
     )?;
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = conn.prepare(&format!(
+        "PRAGMA table_info(\"{}\")",
+        table.replace('"', "\"\"")
+    ))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in columns {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn open_for_verification(path: &Path) -> Result<Connection> {
@@ -1098,7 +1116,7 @@ fn write_session(
         tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
         for e in events {
             let usage_json = e.usage.as_ref().map(serde_json::to_string).transpose()?;
-            tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms])?;
+            tx.execute("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![session.id,e.idx,e.kind.as_str(),e.subtype,e.role,e.name,e.call_id,e.is_error.map(i64::from),e.native_id,e.parent_id,e.model,e.provider,usage_json,e.text,e.data_json.as_ref().map(Value::to_string),e.created_at_ms,e.ended_at_ms])?;
         }
     }
     Ok(())
@@ -1107,7 +1125,7 @@ fn write_session(
 fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event]) -> Result<bool> {
     let mut statement = tx.prepare(
         "SELECT idx, kind, subtype, role, name, call_id, is_error, native_id,
-                parent_id, model, provider, usage_json, text, data_json, created_at_ms
+                parent_id, model, provider, usage_json, text, data_json, created_at_ms, ended_at_ms
          FROM events WHERE session_id=?1 ORDER BY idx",
     )?;
     let stored = statement
@@ -1128,6 +1146,7 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
                 row.get::<_, String>(12)?,
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1152,6 +1171,7 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
             text,
             data_json,
             created_at_ms,
+            ended_at_ms,
         ),
     ) in events.iter().zip(stored)
     {
@@ -1175,6 +1195,7 @@ fn events_match_stored(tx: &Transaction<'_>, session_id: &str, events: &[Event])
             || event.text != text
             || event.data_json.as_ref().map(ToString::to_string) != data_json
             || event.created_at_ms != created_at_ms
+            || event.ended_at_ms != ended_at_ms
         {
             return Ok(false);
         }
@@ -1683,7 +1704,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
+    let mut event_stmt = conn.prepare("SELECT idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms FROM events WHERE session_id=?1 ORDER BY idx")?;
     let raw_events = event_stmt
         .query_map([session_id], |row| {
             Ok((
@@ -1702,6 +1723,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                 row.get::<_, String>(12)?,
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<i64>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1724,6 +1746,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                 text,
                 data_json,
                 created_at_ms,
+                ended_at_ms,
             )| {
                 Ok(Event {
                     idx,
@@ -1745,6 +1768,7 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                         .map(|json| serde_json::from_str::<Value>(&json))
                         .transpose()?,
                     created_at_ms,
+                    ended_at_ms,
                 })
             },
         )

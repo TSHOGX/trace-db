@@ -171,6 +171,7 @@ message Event {
   string text = 13;
   optional string data_json = 14;
   optional int64 created_at_ms = 15;
+  optional int64 ended_at_ms = 16;
 }
 
 message StatsRequest {}

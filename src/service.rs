@@ -661,6 +661,7 @@ fn event_to_proto(event: Event) -> Result<pb::Event> {
         text: event.text,
         data_json: event.data_json.map(|data| data.to_string()),
         created_at_ms: event.created_at_ms,
+        ended_at_ms: event.ended_at_ms,
     })
 }
 

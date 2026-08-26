@@ -231,6 +231,11 @@ direct lineage metadata (`parentSessionId`, `parentRelation`, and
 arguments; this prevents typos such as `since_ms` from silently disabling the
 intended `since` filter.
 
+Event records expose an optional `endedAtMs` when the native producer provides
+an explicit end boundary. TraceDB deliberately does not synthesize an end time
+from the next event, so historical records without producer interval data stay
+honestly open-ended.
+
 This protocol is intentionally simple and language-neutral for Python, Node.js,
 Go, and shell clients without exposing SQLite internals. Every non-empty input
 line produces either `{"ok":true,"result":...}` or a stable

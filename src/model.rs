@@ -211,6 +211,9 @@ pub struct Event {
     /// reasonably bounded. Full native bytes are still the lossless copy.
     pub data_json: Option<Value>,
     pub created_at_ms: Option<i64>,
+    /// Explicit event end time when the native producer provides one.
+    /// This is never inferred from the next event's timestamp.
+    pub ended_at_ms: Option<i64>,
 }
 
 impl Event {
@@ -231,6 +234,7 @@ impl Event {
             text: text.into(),
             data_json: None,
             created_at_ms: None,
+            ended_at_ms: None,
         }
     }
 }

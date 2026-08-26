@@ -74,7 +74,7 @@ they are not part of the `tracedb.v1` wire service.
 | `Ingest` | Discovers native stores and transactionally ingests sessions, returning structured per-locator warnings and failures plus a durable monotonic `ack` sequence. Consumers should persist the ack instead of deriving a watermark from `endedAtMs`. |
 | `Search` | Returns lineage-collapsed session hits. |
 | `List` | Returns stable cursor-paginated session summaries with agent, cwd, time, mode, model, provider, and direct lineage metadata (`parentSessionId`, `parentRelation`, `subagentCount`). The Rust/JSON facade also supports `cwdExact` to avoid substring-prefix collisions. |
-| `Show` | Returns session metadata, sources, and normalized events. |
+| `Show` | Returns session metadata, sources, and normalized events. Events may include producer-supplied `createdAtMs` and `endedAtMs`; absent end times remain null rather than being inferred. |
 | `Stats` | Returns archive-wide and per-agent counts. |
 | `Reindex` | Rebuilds the gated FTS index. |
 | `Backup` | Exposed by the CLI and Rust facade; creates a verified archive snapshot. |
