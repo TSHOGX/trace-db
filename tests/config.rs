@@ -3,11 +3,10 @@ use std::{path::Path, process::Command};
 use tempfile::tempdir;
 use tracedb::TraceDb;
 
-const TRACEDB_ENV: [&str; 9] = [
+const TRACEDB_ENV: [&str; 8] = [
     "TRACEDB_CONFIG",
     "TRACEDB_PATH",
     "TRACEDB_AGENTS",
-    "TRACEDB_CAPTURE_MODE",
     "TRACEDB_EXCLUDE",
     "TRACEDB_TOKENIZER",
     "TRACEDB_JIEBA_EXT",
@@ -49,7 +48,6 @@ fn config_resolves_file_paths_and_all_layers_of_precedence() {
         r#"
 database_path = "archive/trace.db"
 default_agents = ["claude", "codex"]
-capture_mode = "full"
 exclude = ["**/from-file/**"]
 tokenizer = "jieba"
 tokenizer_extension = "extensions/jieba.so"
@@ -75,7 +73,6 @@ watch_debounce_ms = 250
         file_config["defaultAgents"],
         serde_json::json!(["claude", "codex"])
     );
-    assert_eq!(file_config["captureMode"], "full");
     assert_eq!(
         file_config["exclude"],
         serde_json::json!(["**/from-file/**"])
@@ -108,7 +105,6 @@ watch_debounce_ms = 250
         ])
         .env("TRACEDB_PATH", &environment_db)
         .env("TRACEDB_AGENTS", "gemini,pi,gemini")
-        .env("TRACEDB_CAPTURE_MODE", "partial")
         .env("TRACEDB_EXCLUDE", "**/from-env/**")
         .env("TRACEDB_JIEBA_EXT", &environment_extension)
         .env("TRACEDB_OUTPUT_FORMAT", "json")
@@ -120,7 +116,6 @@ watch_debounce_ms = 250
         layered["defaultAgents"],
         serde_json::json!(["gemini", "pi"])
     );
-    assert_eq!(layered["captureMode"], "full");
     assert_eq!(layered["exclude"], serde_json::json!(["**/from-env/**"]));
     assert_eq!(layered["tokenizer"], "unicode61");
     assert!(layered["tokenizerExtension"].is_null());
@@ -138,7 +133,6 @@ fn ingest_cli_overrides_environment_and_config_defaults() {
         r#"
 database_path = "from-config.db"
 default_agents = ["claude"]
-capture_mode = "partial"
 exclude = ["**/rollout-good.jsonl"]
 output_format = "json"
 "#,
@@ -169,8 +163,6 @@ output_format = "json"
             "ingest",
             "--agent",
             "codex",
-            "--mode",
-            "full",
             "--exclude",
             "**/rollout-secret.jsonl",
             "--root",
@@ -178,7 +170,6 @@ output_format = "json"
         ])
         .env("TRACEDB_PATH", &environment_db)
         .env("TRACEDB_AGENTS", "gemini")
-        .env("TRACEDB_CAPTURE_MODE", "partial")
         .env("TRACEDB_EXCLUDE", "**/rollout-good.jsonl");
     let report = json_output(ingest);
     assert_eq!(report["agents"][0]["agent"], "codex");
@@ -190,10 +181,7 @@ output_format = "json"
     assert!(!dir.path().join("from-config.db").exists());
 
     let db = TraceDb::open_read_only(&cli_db).unwrap();
-    assert_eq!(
-        db.show("codex:good").unwrap().unwrap().mode.to_string(),
-        "full"
-    );
+    assert!(db.show("codex:good").unwrap().is_some());
     assert!(db.show("codex:secret").unwrap().is_none());
 }
 

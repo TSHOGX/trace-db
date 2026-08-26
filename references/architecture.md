@@ -27,7 +27,7 @@ src/
     trace-db-relevance.rs  standalone labeled search evaluator
   service.rs      tracedb.v1 gRPC adapter and local transports
   main.rs         clap CLI and JSON protocol server
-  model.rs        agents, capture modes, events, sessions, provenance
+  model.rs        agents, events, spans, sessions, provenance
   store.rs        SQLite schema, upsert, FTS, search, reconstruction
   parsers/
     mod.rs        parser trait and registry
@@ -48,8 +48,12 @@ by SHA-256; objects are deduplicated across sessions and restored only through
 validated relative paths. The archive never treats the normalized projection as
 the source of truth.
 
-The `mode` column is monotonic: new writes are always stored as `full`, while
-legacy `partial` rows remain identifiable for migration and verification.
+Capture is unconditional, so there is no ingest-mode column and no lossy
+record to reason about. Because the normalized tables are a rebuildable
+projection, TraceDB carries no per-column schema upgrades either: an archive
+whose stored `schema_version` differs from the running build is refused with
+guidance to delete it and re-ingest. `trace-db import` requires the same exact
+version match instead of probing the source for individual columns.
 
 `TraceDb::backup` uses SQLite's consistent `VACUUM INTO` snapshot mechanism in
 a sibling staging directory, refuses existing destinations, atomically publishes
@@ -97,7 +101,7 @@ only after the metadata transaction succeeds, so callers do not need to infer
 an ingestion boundary from source `endedAtMs` values. Doctor reads this metadata without migrating
 the archive, compares the newest native candidate with the last ingest time,
 probes watcher and permission readiness, and derives backup guidance from the
-number of legacy partial and lossless full sessions.
+number of archived sessions.
 
 The gRPC adapter keeps one serialized writer for ingest, reindex, and
 reconstruction, plus a bounded pool of read-only SQLite connections for search,

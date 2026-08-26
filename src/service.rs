@@ -5,9 +5,9 @@
 //! blocking workers instead of tonic runtime threads.
 
 use crate::{
-    proto as pb, Agent, ArchiveStats, Event, EventKind, IngestMode, IngestRequest, ListRequest,
-    NativeSource, ReconstructionOptions, SearchRequest, Session, SessionTrace, ShowRequest, Span,
-    TokenizerKind, TraceDb,
+    proto as pb, Agent, ArchiveStats, Event, EventKind, IngestRequest, ListRequest, NativeSource,
+    ReconstructionOptions, SearchRequest, Session, SessionTrace, ShowRequest, Span, TokenizerKind,
+    TraceDb,
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -187,17 +187,8 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .map(|agent| agent.parse::<Agent>())
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Status::invalid_argument)?;
-        let mode = if request.mode.is_empty() {
-            IngestMode::Full
-        } else {
-            request
-                .mode
-                .parse::<IngestMode>()
-                .map_err(Status::invalid_argument)?
-        };
         let ingest = IngestRequest {
             agents,
-            mode,
             root: request.root.map(PathBuf::from),
             since_ms: request.since_ms,
             exclude: Vec::new(),
@@ -312,12 +303,6 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             .map(|agent| agent.parse::<Agent>())
             .transpose()
             .map_err(Status::invalid_argument)?;
-        let mode = request
-            .mode
-            .filter(|mode| !mode.is_empty())
-            .map(|mode| mode.parse::<IngestMode>())
-            .transpose()
-            .map_err(Status::invalid_argument)?;
         let list = ListRequest {
             limit: if request.limit == 0 {
                 50
@@ -330,7 +315,6 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
             cwd_exact: false,
             collapse_lineage: request.collapse_lineage,
             since_ms: request.since_ms,
-            mode,
             model: request.model,
             provider: request.provider,
         };
@@ -351,7 +335,6 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     title: row.title,
                     model: row.model,
                     provider: row.provider,
-                    mode: row.mode.to_string(),
                     events: row.events,
                     ingested_at_ms: row.ingested_at_ms,
                     parent_session_id: row.parent_session_id,
@@ -431,7 +414,6 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                 id: row.id,
                 fingerprint: row.fingerprint,
                 ingested_at_ms: row.ingested_at_ms,
-                mode: row.mode.to_string(),
                 events: row.events,
                 sources: row.sources,
                 latest_source_mtime_ns: row.latest_source_mtime_ns,
@@ -627,7 +609,6 @@ fn internal(error: anyhow::Error) -> Status {
 fn trace_to_proto(trace: SessionTrace) -> Result<pb::ShowResponse> {
     Ok(pb::ShowResponse {
         session: Some(session_to_proto(trace.session)),
-        mode: trace.mode.to_string(),
         events: trace
             .events
             .into_iter()
@@ -718,7 +699,6 @@ fn stats_to_proto(stats: ArchiveStats) -> pb::StatsResponse {
         path: stats.path.display().to_string(),
         total_sessions: stats.total_sessions,
         total_events: stats.total_events,
-        total_full_sessions: stats.total_full_sessions,
         agents: stats
             .agents
             .into_iter()
@@ -726,7 +706,6 @@ fn stats_to_proto(stats: ArchiveStats) -> pb::StatsResponse {
                 agent: row.agent.to_string(),
                 sessions: row.sessions,
                 events: row.events,
-                full_sessions: row.full_sessions,
             })
             .collect(),
     }
@@ -735,7 +714,7 @@ fn stats_to_proto(stats: ArchiveStats) -> pb::StatsResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agent, Event, EventKind, IngestMode, ParsedSession, Session};
+    use crate::{Agent, Event, EventKind, ParsedSession, Session};
     use serde_json::json;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
@@ -745,29 +724,26 @@ mod tests {
         let directory = tempdir().unwrap();
         let mut database = TraceDb::open(directory.path().join("trace.db")).unwrap();
         database
-            .ingest_session(
-                ParsedSession {
-                    session: Session {
-                        id: "codex:parallel".into(),
-                        agent: Agent::Codex,
-                        cwd: Some("/workspace/parallel".into()),
-                        started_at_ms: Some(1),
-                        ended_at_ms: Some(2),
-                        status: None,
-                        title: Some("parallel reads".into()),
-                        model: None,
-                        provider: None,
-                        git_branch: None,
-                        parent_session_id: None,
-                        forked_from: None,
-                        meta: json!({}),
-                        fingerprint: "parallel-v1".into(),
-                        sources: Vec::new(),
-                    },
-                    events: vec![Event::new(EventKind::User, "parallel read")],
+            .ingest_session(ParsedSession {
+                session: Session {
+                    id: "codex:parallel".into(),
+                    agent: Agent::Codex,
+                    cwd: Some("/workspace/parallel".into()),
+                    started_at_ms: Some(1),
+                    ended_at_ms: Some(2),
+                    status: None,
+                    title: Some("parallel reads".into()),
+                    model: None,
+                    provider: None,
+                    git_branch: None,
+                    parent_session_id: None,
+                    forked_from: None,
+                    meta: json!({}),
+                    fingerprint: "parallel-v1".into(),
+                    sources: Vec::new(),
                 },
-                IngestMode::Partial,
-            )
+                events: vec![Event::new(EventKind::User, "parallel read")],
+            })
             .unwrap();
         let service = TraceDbGrpc::new(database);
         let barrier = Arc::new(Barrier::new(2));

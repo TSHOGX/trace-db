@@ -23,8 +23,9 @@ service TraceDbService {
 }
 
 message IngestRequest {
+  reserved 2;
+  reserved "mode";
   repeated string agents = 1;
-  string mode = 2;
   optional string root = 3;
   optional int64 since_ms = 4;
 }
@@ -125,8 +126,9 @@ message ShowRequest {
 }
 
 message ShowResponse {
+  reserved 2;
+  reserved "mode";
   optional Session session = 1;
-  string mode = 2;
   repeated Event events = 3;
   repeated Span spans = 4;
 }
@@ -198,12 +200,13 @@ message Span {
 message StatsRequest {}
 
 message ListRequest {
+  reserved 6;
+  reserved "mode";
   uint32 limit = 1;
   optional string cursor = 2;
   optional string agent = 3;
   optional string cwd = 4;
   optional int64 since_ms = 5;
-  optional string mode = 6;
   optional string model = 7;
   optional string provider = 8;
   bool collapse_lineage = 9;
@@ -215,6 +218,8 @@ message ListResponse {
 }
 
 message SessionSummary {
+  reserved 9;
+  reserved "mode";
   string id = 1;
   string agent = 2;
   optional string cwd = 3;
@@ -223,7 +228,6 @@ message SessionSummary {
   optional string title = 6;
   optional string model = 7;
   optional string provider = 8;
-  string mode = 9;
   int64 events = 10;
   int64 ingested_at_ms = 11;
   optional string parent_session_id = 12;
@@ -240,28 +244,31 @@ message CoverageResponse {
 }
 
 message SessionCoverage {
+  reserved 4;
+  reserved "mode";
   string id = 1;
   string fingerprint = 2;
   int64 ingested_at_ms = 3;
-  string mode = 4;
   int64 events = 5;
   int64 sources = 6;
   optional int64 latest_source_mtime_ns = 7;
 }
 
 message StatsResponse {
+  reserved 4;
+  reserved "total_full_sessions";
   string path = 1;
   int64 total_sessions = 2;
   int64 total_events = 3;
-  int64 total_full_sessions = 4;
   repeated AgentStats agents = 5;
 }
 
 message AgentStats {
+  reserved 4;
+  reserved "full_sessions";
   string agent = 1;
   int64 sessions = 2;
   int64 events = 3;
-  int64 full_sessions = 4;
 }
 
 message ReindexRequest {}

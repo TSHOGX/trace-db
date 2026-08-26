@@ -31,7 +31,7 @@ trace-db daemon install --agent codex,claude
 trace-db daemon install --db /path/to/custom/trace.db
 
 # 指定捕获模式
-trace-db daemon install --mode full
+trace-db daemon install --agent claude,codex
 ```
 
 安装后，daemon 会立即启动并在系统启动时自动运行。

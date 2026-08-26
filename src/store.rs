@@ -1,8 +1,7 @@
 use crate::{
     config::TokenizerKind,
     model::{
-        assign_indexes, derive_spans, Event, IngestMode, NativeSource, ParsedSession, Session,
-        Span, TokenUsage,
+        assign_indexes, derive_spans, Event, NativeSource, ParsedSession, Session, Span, TokenUsage,
     },
     IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionCoverage,
     SessionSummary, SessionTrace,
@@ -20,15 +19,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 5;
-pub const ARCHIVE_CONTRACT: &str = "lossless-v1";
+pub const SCHEMA_VERSION: i64 = 6;
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateState {
     pub fingerprint: String,
-    pub mode: IngestMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,37 +224,25 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         "ATTACH DATABASE ?1 AS import_source",
         [source.to_string_lossy().as_ref()],
     )?;
-    let source_has_status = schema_has_column(connection, "import_source", "sessions", "status")?;
-    let source_has_event_end =
-        schema_has_column(connection, "import_source", "events", "ended_at_ms")?;
-    let source_has_parent_kind =
-        schema_has_column(connection, "import_source", "events", "parent_kind")?;
-    let source_has_event_span =
-        schema_has_column(connection, "import_source", "events", "span_id")?;
-    let source_has_spans = schema_has_table(connection, "import_source", "spans")?;
+    let source_version = schema_version(connection, "import_source")?;
     let result = (|| -> Result<crate::ImportReport> {
+        if source_version != Some(SCHEMA_VERSION) {
+            anyhow::bail!(
+                "import source has schema version {} but this build requires exactly {SCHEMA_VERSION}; \
+                 re-ingest the source archive with a matching TraceDB build before importing",
+                source_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
+            );
+        }
         connection.execute_batch("BEGIN IMMEDIATE")?;
-        validate_import_compatibility(
-            connection,
-            source_has_status,
-            source_has_event_end,
-            source_has_parent_kind,
-            source_has_event_span,
-        )?;
-        let status_projection = if source_has_status { "status" } else { "NULL" };
+        validate_import_compatibility(connection)?;
         let imported_sessions = connection.execute(
-            &format!("INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
-             SELECT id,agent,cwd,started_at_ms,ended_at_ms,{status_projection},title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms
-             FROM import_source.sessions"),
+            "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms)
+             SELECT id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms
+             FROM import_source.sessions",
             [],
         )? as u64;
-        connection.execute(
-            "UPDATE sessions
-             SET mode='full'
-             WHERE mode <> 'full'
-               AND id IN (SELECT id FROM import_source.sessions WHERE mode='full')",
-            [],
-        )?;
         let source_sessions =
             connection.query_row("SELECT count(*) FROM import_source.sessions", [], |row| {
                 row.get::<_, u64>(0)
@@ -267,40 +252,23 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
              SELECT hash,compression,bytes,payload,created_at_ms FROM import_source.objects",
             [],
         )? as u64;
-        let event_end_projection = if source_has_event_end {
-            "ie.ended_at_ms"
-        } else {
-            "NULL"
-        };
-        let parent_kind_projection = if source_has_parent_kind {
-            "ie.parent_kind"
-        } else {
-            "NULL"
-        };
-        let span_projection = if source_has_event_span {
-            "ie.span_id"
-        } else {
-            "NULL"
-        };
         let imported_events = connection.execute(
-            &format!("INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
-             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,{parent_kind_projection},{span_projection},ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,{event_end_projection}
+            "INSERT INTO events(session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms)
+             SELECT ie.session_id,ie.idx,ie.kind,ie.subtype,ie.role,ie.name,ie.call_id,ie.is_error,ie.native_id,ie.parent_id,ie.parent_kind,ie.span_id,ie.model,ie.provider,ie.usage_json,ie.text,ie.data_json,ie.created_at_ms,ie.ended_at_ms
              FROM import_source.events ie
              WHERE NOT EXISTS (
                SELECT 1 FROM events e
                WHERE e.session_id=ie.session_id AND e.idx=ie.idx
                  AND COALESCE(e.native_id,'')=COALESCE(ie.native_id,'')
-             )"),
+             )",
             [],
         )? as u64;
-        if source_has_spans {
-            connection.execute(
-                "INSERT OR IGNORE INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
-                 SELECT session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
-                 FROM import_source.spans",
-                [],
-            )?;
-        }
+        connection.execute(
+            "INSERT OR IGNORE INTO spans(session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json)
+             SELECT session_id,id,parent_span_id,kind,name,native_id,call_id,status,started_at_ms,ended_at_ms,start_event_idx,end_event_idx,data_json
+             FROM import_source.spans",
+            [],
+        )?;
         let source_events =
             connection.query_row("SELECT count(*) FROM import_source.events", [], |row| {
                 row.get::<_, u64>(0)
@@ -334,33 +302,22 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
     }
 }
 
-fn validate_import_compatibility(
-    connection: &Connection,
-    source_has_status: bool,
-    source_has_event_end: bool,
-    source_has_parent_kind: bool,
-    source_has_event_span: bool,
-) -> Result<()> {
-    let status_match = if source_has_status {
-        "destination.status IS source.status AND"
-    } else {
-        "destination.status IS NULL AND"
-    };
+fn validate_import_compatibility(connection: &Connection) -> Result<()> {
     let conflicting_session: Option<String> = connection
         .query_row(
-            &format!("SELECT source.id
+            "SELECT source.id
              FROM import_source.sessions source
              JOIN sessions destination ON destination.id=source.id
              WHERE NOT (
                destination.agent IS source.agent AND destination.cwd IS source.cwd AND
                destination.started_at_ms IS source.started_at_ms AND destination.ended_at_ms IS source.ended_at_ms AND
-               {status_match}
+               destination.status IS source.status AND
                destination.title IS source.title AND destination.model IS source.model AND
                destination.provider IS source.provider AND destination.git_branch IS source.git_branch AND
                destination.parent_session_id IS source.parent_session_id AND destination.forked_from IS source.forked_from AND
                destination.fingerprint IS source.fingerprint AND destination.meta_json IS source.meta_json
              )
-             LIMIT 1"),
+             LIMIT 1",
             [],
             |row| row.get(0),
         )
@@ -371,9 +328,9 @@ fn validate_import_compatibility(
 
     let conflicting_event_session: Option<String> = connection
         .query_row(
-            &format!("SELECT session_id FROM (
+            "SELECT session_id FROM (
                SELECT * FROM (
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},{},model,provider,usage_json,text,data_json,created_at_ms,{}
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM import_source.events WHERE session_id IN (SELECT id FROM sessions)
                  EXCEPT
                  SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
@@ -384,16 +341,10 @@ fn validate_import_compatibility(
                  SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM events WHERE session_id IN (SELECT id FROM import_source.sessions)
                  EXCEPT
-                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,{},{},model,provider,usage_json,text,data_json,created_at_ms,{}
+                 SELECT session_id,idx,kind,subtype,role,name,call_id,is_error,native_id,parent_id,parent_kind,span_id,model,provider,usage_json,text,data_json,created_at_ms,ended_at_ms
                  FROM import_source.events
                )
              ) LIMIT 1",
-             if source_has_parent_kind { "parent_kind" } else { "NULL" },
-             if source_has_event_span { "span_id" } else { "NULL" },
-             if source_has_event_end { "ended_at_ms" } else { "NULL" },
-             if source_has_parent_kind { "parent_kind" } else { "NULL" },
-             if source_has_event_span { "span_id" } else { "NULL" },
-             if source_has_event_end { "ended_at_ms" } else { "NULL" }),
             [],
             |row| row.get(0),
         )
@@ -698,15 +649,19 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    let version = stored_version
-        .as_deref()
-        .unwrap_or("0")
-        .parse::<i64>()
-        .context("invalid TraceDB schema version")?;
-    if version > SCHEMA_VERSION {
-        anyhow::bail!(
-            "TraceDB schema version {version} is newer than supported version {SCHEMA_VERSION}"
-        );
+    // The normalized layer is a deterministic, rebuildable projection of the
+    // native stores, so TraceDB does not carry per-column upgrade paths. An
+    // archive either already speaks the current schema or is re-ingested.
+    if let Some(stored) = stored_version.as_deref() {
+        let version = stored
+            .parse::<i64>()
+            .context("invalid TraceDB schema version")?;
+        if version != SCHEMA_VERSION {
+            anyhow::bail!(
+                "TraceDB archive uses schema version {version} but this build requires {SCHEMA_VERSION}; \
+                 delete the archive and re-run `trace-db ingest` to rebuild it from the native stores"
+            );
+        }
     }
     let previous_tokenizer: Option<String> = conn
         .query_row(
@@ -719,7 +674,7 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, started_at_ms INTEGER,
         ended_at_ms INTEGER, status TEXT, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
-        parent_session_id TEXT, forked_from TEXT, mode TEXT NOT NULL DEFAULT 'full',
+        parent_session_id TEXT, forked_from TEXT,
         fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS sessions_agent_idx ON sessions(agent);
@@ -762,18 +717,6 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       END;
     "#.replace("TOKENIZER_PLACEHOLDER", tokenizer);
     conn.execute_batch(&schema)?;
-    if !table_has_column(conn, "sessions", "status")? {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN status TEXT;")?;
-    }
-    if !table_has_column(conn, "events", "ended_at_ms")? {
-        conn.execute_batch("ALTER TABLE events ADD COLUMN ended_at_ms INTEGER;")?;
-    }
-    if !table_has_column(conn, "events", "parent_kind")? {
-        conn.execute_batch("ALTER TABLE events ADD COLUMN parent_kind TEXT;")?;
-    }
-    if !table_has_column(conn, "events", "span_id")? {
-        conn.execute_batch("ALTER TABLE events ADD COLUMN span_id TEXT;")?;
-    }
     if previous_tokenizer
         .as_deref()
         .is_some_and(|value| value != tokenizer)
@@ -792,41 +735,28 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
         "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('tokenizer',?1)",
         [tokenizer],
     )?;
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('archive_contract',?1)",
-        [ARCHIVE_CONTRACT],
-    )?;
     Ok(())
 }
 
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut statement = conn.prepare(&format!(
-        "PRAGMA table_info(\"{}\")",
-        table.replace('"', "\"\"")
-    ))?;
-    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-    for name in columns {
-        if name? == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn schema_has_column(conn: &Connection, schema: &str, table: &str, column: &str) -> Result<bool> {
-    let sql = format!(
-        "SELECT EXISTS(SELECT 1 FROM \"{}\".pragma_table_info(?1) WHERE name=?2)",
-        schema.replace('"', "\"\"")
-    );
-    Ok(conn.query_row(&sql, params![table, column], |row| row.get::<_, i64>(0))? != 0)
-}
-
-fn schema_has_table(conn: &Connection, schema: &str, table: &str) -> Result<bool> {
-    let sql = format!(
-        "SELECT EXISTS(SELECT 1 FROM \"{}\".sqlite_master WHERE type='table' AND name=?1)",
-        schema.replace('"', "\"\"")
-    );
-    Ok(conn.query_row(&sql, [table], |row| row.get::<_, i64>(0))? != 0)
+/// Read the stored schema version of an attached (or the main) database.
+fn schema_version(conn: &Connection, schema: &str) -> Result<Option<i64>> {
+    let stored: Option<String> = conn
+        .query_row(
+            &format!(
+                "SELECT value FROM \"{}\".schema_meta WHERE key='schema_version'",
+                schema.replace('"', "\"\"")
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    stored
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .context("invalid TraceDB schema version")
+        })
+        .transpose()
 }
 
 pub fn open_for_verification(path: &Path) -> Result<Connection> {
@@ -937,7 +867,7 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     ));
 
     let contract_failures = verify_contract(connection)?;
-    checks.push(VerifyCheck::new("archive_contract", 3, contract_failures));
+    checks.push(VerifyCheck::new("schema_contract", 3, contract_failures));
 
     // Rank 0 checks the FTS shadow tables without comparing every row in the
     // external content table. TraceDB intentionally indexes only searchable
@@ -1073,22 +1003,19 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
 
 fn verify_contract(connection: &Connection) -> Result<Vec<crate::VerificationFailure>> {
     let mut failures = Vec::new();
-    let expected = [
-        ("schema_version", SCHEMA_VERSION.to_string()),
-        ("archive_contract", ARCHIVE_CONTRACT.to_owned()),
-    ];
-    for (key, expected_value) in expected {
-        let actual = connection
-            .query_row("SELECT value FROM schema_meta WHERE key=?1", [key], |row| {
-                row.get::<_, String>(0)
-            })
-            .optional()?;
-        if actual.as_deref() != Some(expected_value.as_str()) {
-            failures.push(crate::VerificationFailure {
-                locator: format!("schema_meta.{key}"),
-                message: format!("expected {expected_value:?}, found {actual:?}"),
-            });
-        }
+    let expected_version = SCHEMA_VERSION.to_string();
+    let actual_version = connection
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key='schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if actual_version.as_deref() != Some(expected_version.as_str()) {
+        failures.push(crate::VerificationFailure {
+            locator: "schema_meta.schema_version".into(),
+            message: format!("expected {expected_version:?}, found {actual_version:?}"),
+        });
     }
     let tokenizer = connection
         .query_row(
@@ -1106,16 +1033,18 @@ fn verify_contract(connection: &Connection) -> Result<Vec<crate::VerificationFai
             message: format!("unsupported tokenizer contract {tokenizer:?}"),
         });
     }
-    let legacy_partial: i64 = connection.query_row(
-        "SELECT count(*) FROM sessions WHERE mode='partial'",
+    let unsnapshotted: i64 = connection.query_row(
+        "SELECT count(*) FROM sessions s
+         WHERE EXISTS (SELECT 1 FROM raw_sources r WHERE r.session_id=s.id)
+           AND NOT EXISTS (SELECT 1 FROM raw_sources r WHERE r.session_id=s.id AND r.object_hash IS NOT NULL)",
         [],
         |row| row.get(0),
     )?;
-    if legacy_partial != 0 {
+    if unsnapshotted != 0 {
         failures.push(crate::VerificationFailure {
-            locator: "sessions.mode".into(),
+            locator: "raw_sources.object_hash".into(),
             message: format!(
-                "archive contains {legacy_partial} legacy partial session(s) without guaranteed native snapshots"
+                "archive contains {unsnapshotted} session(s) whose native sources have no captured snapshot"
             ),
         });
     }
@@ -1129,36 +1058,20 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-pub fn upsert(
-    conn: &mut Connection,
-    mut parsed: ParsedSession,
-    requested: IngestMode,
-) -> Result<()> {
-    upsert_many(conn, std::slice::from_mut(&mut parsed), requested)
+pub fn upsert(conn: &mut Connection, mut parsed: ParsedSession) -> Result<()> {
+    upsert_many(conn, std::slice::from_mut(&mut parsed))
 }
 
 /// Upsert a batch in one transaction. Ingest callers use this as the normal
 /// path so SQLite pays one WAL/fsync boundary per agent rather than one per
 /// session. Callers that need per-candidate best-effort isolation can fall
 /// back to [`upsert`] when the batch transaction fails.
-pub fn upsert_many(
-    conn: &mut Connection,
-    parsed_sessions: &mut [ParsedSession],
-    requested: IngestMode,
-) -> Result<()> {
+pub fn upsert_many(conn: &mut Connection, parsed_sessions: &mut [ParsedSession]) -> Result<()> {
     let tx = conn.transaction()?;
     for parsed in parsed_sessions {
         assign_indexes(&mut parsed.events);
         let spans = derive_spans(&mut parsed.events);
-        let old: Option<String> = tx
-            .query_row(
-                "SELECT mode FROM sessions WHERE id=?1",
-                [&parsed.session.id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let mode = requested.retain_full(old.and_then(|s| s.parse().ok()));
-        write_session(&tx, &parsed.session, &parsed.events, &spans, mode)?;
+        write_session(&tx, &parsed.session, &parsed.events, &spans)?;
     }
     tx.commit()?;
     Ok(())
@@ -1169,28 +1082,18 @@ pub fn candidate_states(
     agent: crate::model::Agent,
 ) -> Result<HashMap<String, CandidateState>> {
     let mut statement = conn.prepare(
-        "SELECT r.locator,s.fingerprint,s.mode
+        "SELECT r.locator,s.fingerprint
          FROM raw_sources r
          JOIN sessions s ON s.id=r.session_id
          WHERE s.agent=?1",
     )?;
     let rows = statement.query_map([agent.as_str()], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let mut states = HashMap::new();
     for row in rows {
-        let (locator, fingerprint, mode) = row?;
-        states.insert(
-            locator,
-            CandidateState {
-                fingerprint,
-                mode: mode.parse().map_err(anyhow::Error::msg)?,
-            },
-        );
+        let (locator, fingerprint) = row?;
+        states.insert(locator, CandidateState { fingerprint });
     }
     Ok(states)
 }
@@ -1200,48 +1103,39 @@ fn write_session(
     session: &Session,
     events: &[Event],
     spans: &[Span],
-    mode: IngestMode,
 ) -> Result<()> {
-    let previous_full_sources = if matches!(mode, IngestMode::Full) {
-        let mut statement = tx.prepare(
-            "SELECT locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash
-             FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL",
-        )?;
-        let rows = statement
-            .query_map([&session.id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, String>(7)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    } else {
-        Vec::new()
-    };
-    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json,ingested_at_ms)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,mode=excluded.mode,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
-        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, mode.to_string(), session.fingerprint, session.meta.to_string(), now_ms()])?;
+    let mut statement = tx.prepare(
+        "SELECT locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash
+         FROM raw_sources WHERE session_id=?1 AND object_hash IS NOT NULL",
+    )?;
+    let previous_captured_sources = statement
+        .query_map([&session.id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
+        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, session.fingerprint, session.meta.to_string(), now_ms()])?;
     tx.execute("DELETE FROM raw_sources WHERE session_id=?1", [&session.id])?;
     let mut current_locators = Vec::with_capacity(session.sources.len());
     for src in &session.sources {
         current_locators.push(src.locator.clone());
-        let object_hash = if matches!(mode, IngestMode::Full) {
-            capture_source(tx, src)?
-        } else {
-            None
-        };
+        let object_hash = capture_source(tx, src)?;
         tx.execute("INSERT INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![session.id,src.locator,src.kind,src.restore_path,src.role,src.bytes,src.mtime_ns,src.mode.map(|v|v as i64),object_hash])?;
     }
     for (locator, kind, restore_path, role, bytes, mtime_ns, source_mode, object_hash) in
-        previous_full_sources
+        previous_captured_sources
     {
         if !current_locators.iter().any(|current| current == &locator) {
             tx.execute(
@@ -1650,10 +1544,10 @@ pub fn reconstruct(
         .collect())
 }
 
-pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64, i64)>> {
-    let mut stmt=conn.prepare("SELECT agent,count(*),coalesce(sum((SELECT count(*) FROM events e WHERE e.session_id=s.id)),0),coalesce(sum(mode='full'),0) FROM sessions s GROUP BY agent ORDER BY agent")?;
+pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64)>> {
+    let mut stmt=conn.prepare("SELECT agent,count(*),coalesce(sum((SELECT count(*) FROM events e WHERE e.session_id=s.id)),0) FROM sessions s GROUP BY agent ORDER BY agent")?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -1666,7 +1560,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         .map(decode_list_cursor)
         .transpose()?;
     let mut sql = String::from(
-        "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.status,s.title,s.model,s.provider,s.mode,
+        "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.status,s.title,s.model,s.provider,
                 coalesce(s.parent_session_id,
                          CASE WHEN instr(s.forked_from, '#') > 0
                               THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
@@ -1683,7 +1577,6 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
          FROM sessions s WHERE 1=1",
     );
     let mut values = Vec::<rusqlite::types::Value>::new();
-    let mode_filter = request.mode;
     let mut bind = |fragment: &str, value: rusqlite::types::Value| {
         sql.push_str(fragment);
         values.push(value);
@@ -1713,13 +1606,6 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
     }
     if let Some(provider) = &request.provider {
         bind(" AND s.provider=?", provider.clone().into());
-    }
-    if let Some(mode) = mode_filter {
-        if matches!(mode, IngestMode::Partial) {
-            sql.push_str(" AND s.mode IN ('partial','full')");
-        } else {
-            bind(" AND s.mode=?", mode.to_string().into());
-        }
     }
     if request.collapse_lineage {
         sql.push_str(
@@ -1756,13 +1642,6 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         }
         if request.provider.is_some() {
             sql.push_str(" AND parent.provider=s.provider");
-        }
-        if let Some(mode) = mode_filter {
-            if matches!(mode, IngestMode::Partial) {
-                sql.push_str(" AND parent.mode IN ('partial','full')");
-            } else {
-                sql.push_str(" AND parent.mode=s.mode");
-            }
         }
         sql.push(')');
     }
@@ -1810,24 +1689,14 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                     title: row.get(6)?,
                     model: row.get(7)?,
                     provider: row.get(8)?,
-                    mode: row
-                        .get::<_, String>(9)?
-                        .parse()
-                        .map_err(|message: String| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                9,
-                                rusqlite::types::Type::Text,
-                                message.into(),
-                            )
-                        })?,
-                    parent_session_id: row.get(10)?,
-                    parent_relation: row.get(11)?,
-                    subagent_count: row.get(12)?,
-                    events: row.get(13)?,
-                    ingested_at_ms: row.get(14)?,
-                    fingerprint: row.get(15)?,
+                    parent_session_id: row.get(9)?,
+                    parent_relation: row.get(10)?,
+                    subagent_count: row.get(11)?,
+                    events: row.get(12)?,
+                    ingested_at_ms: row.get(13)?,
+                    fingerprint: row.get(14)?,
                 },
-                row.get::<_, i64>(16)?,
+                row.get::<_, i64>(15)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1847,28 +1716,20 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
 
 pub fn coverage(conn: &Connection, session_id: &str) -> Result<Option<SessionCoverage>> {
     conn.query_row(
-        "SELECT s.id,s.fingerprint,s.ingested_at_ms,s.mode,
+        "SELECT s.id,s.fingerprint,s.ingested_at_ms,
                 (SELECT count(*) FROM events e WHERE e.session_id=s.id),
                 (SELECT count(*) FROM raw_sources r WHERE r.session_id=s.id),
                 (SELECT max(r.mtime_ns) FROM raw_sources r WHERE r.session_id=s.id)
          FROM sessions s WHERE s.id=?1",
         [session_id],
         |row| {
-            let mode = row.get::<_, String>(3)?.parse().map_err(|error: String| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    3,
-                    rusqlite::types::Type::Text,
-                    error.into(),
-                )
-            })?;
             Ok(SessionCoverage {
                 id: row.get(0)?,
                 fingerprint: row.get(1)?,
                 ingested_at_ms: row.get(2)?,
-                mode,
-                events: row.get(4)?,
-                sources: row.get(5)?,
-                latest_source_mtime_ns: row.get(6)?,
+                events: row.get(3)?,
+                sources: row.get(4)?,
+                latest_source_mtime_ns: row.get(5)?,
             })
         },
     )
@@ -1902,7 +1763,7 @@ fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
     let row = conn
         .query_row(
-            "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,mode,fingerprint,meta_json FROM sessions WHERE id=?1",
+            "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json FROM sessions WHERE id=?1",
             [session_id],
             |row| {
                 Ok((
@@ -1919,7 +1780,6 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, String>(12)?,
-                    row.get::<_, String>(13)?,
                 ))
             },
         )
@@ -1936,7 +1796,6 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         git_branch,
         parent_session_id,
         forked_from,
-        mode,
         fingerprint,
         meta_json,
     )) = row
@@ -2125,7 +1984,6 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             fingerprint,
             sources,
         },
-        mode: mode.parse().map_err(anyhow::Error::msg)?,
         events,
         spans,
     }))
@@ -2158,9 +2016,7 @@ fn canonicalize_with_missing(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession, Session,
-    };
+    use crate::model::{Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session};
     use crate::{search, SearchRequest};
     use tempfile::tempdir;
 
@@ -2211,20 +2067,14 @@ mod tests {
     }
 
     #[test]
-    fn full_is_sticky_and_reconstructs_byte_identical_source() {
+    fn every_ingest_reconstructs_a_byte_identical_source() {
         let dir = tempdir().unwrap();
         let src = dir.path().join("native.jsonl");
         fs::write(&src, "原始\n").unwrap();
         let db_path = dir.path().join("trace.db");
         let mut conn = open(&db_path).unwrap();
-        upsert(&mut conn, session(&src), IngestMode::Full).unwrap();
-        upsert(&mut conn, session(&src), IngestMode::Partial).unwrap();
-        assert_eq!(
-            conn.query_row("SELECT mode FROM sessions WHERE id='codex:test'", [], |r| r
-                .get::<_, String>(0))
-                .unwrap(),
-            "full"
-        );
+        upsert(&mut conn, session(&src)).unwrap();
+        upsert(&mut conn, session(&src)).unwrap();
         assert_eq!(
             conn.query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
@@ -2264,7 +2114,7 @@ mod tests {
     }
 
     #[test]
-    fn full_reingest_preserves_a_previous_snapshot_when_a_source_disappears() {
+    fn reingest_preserves_a_previous_snapshot_when_a_source_disappears() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("first.jsonl");
         let second = dir.path().join("second.json");
@@ -2285,8 +2135,8 @@ mod tests {
                 path: second.display().to_string(),
             }),
         });
-        upsert(&mut conn, initial, IngestMode::Full).unwrap();
-        upsert(&mut conn, session(&first), IngestMode::Full).unwrap();
+        upsert(&mut conn, initial).unwrap();
+        upsert(&mut conn, session(&first)).unwrap();
 
         let out = dir.path().join("out");
         reconstruct(&conn, "codex:test", &out, ReconstructionOptions::default()).unwrap();
@@ -2301,7 +2151,7 @@ mod tests {
         let mut invalid = session(&dir.path().join("missing.jsonl"));
         invalid.session.id = "codex:invalid".into();
         let mut batch = vec![named_session("codex:valid", "hello"), invalid];
-        assert!(upsert_many(&mut conn, &mut batch, IngestMode::Full).is_err());
+        assert!(upsert_many(&mut conn, &mut batch).is_err());
         assert_eq!(
             conn.query_row("SELECT count(*) FROM sessions", [], |row| row
                 .get::<_, i64>(0))
@@ -2311,16 +2161,21 @@ mod tests {
     }
 
     #[test]
-    fn migration_rejects_an_archive_from_a_newer_schema() {
-        let dir = tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("future.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             INSERT INTO schema_meta VALUES ('schema_version','99');",
-        )
-        .unwrap();
-        let error = migrate(&conn).unwrap_err().to_string();
-        assert!(error.contains("newer than supported version"));
+    fn migration_refuses_any_archive_whose_schema_version_differs() {
+        for stored in ["4", "99"] {
+            let dir = tempdir().unwrap();
+            let conn = Connection::open(dir.path().join("other.db")).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO schema_meta VALUES ('schema_version','{stored}');"
+            ))
+            .unwrap();
+            let error = migrate(&conn).unwrap_err().to_string();
+            assert!(
+                error.contains("re-run `trace-db ingest`"),
+                "unexpected error for stored version {stored}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -2339,7 +2194,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = open(dir.path().join("tokenizer.db")).unwrap();
         conn.execute(
-            "INSERT INTO sessions(id,agent,mode,fingerprint,meta_json,ingested_at_ms) VALUES ('codex:tokenizer','codex','partial','v1','{}',0)",
+            "INSERT INTO sessions(id,agent,fingerprint,meta_json,ingested_at_ms) VALUES ('codex:tokenizer','codex','v1','{}',0)",
             [],
         )
         .unwrap();
@@ -2378,16 +2233,10 @@ mod tests {
     fn search_orders_stronger_bm25_hit_first() {
         let dir = tempdir().unwrap();
         let mut conn = open(dir.path().join("trace.db")).unwrap();
-        upsert(
-            &mut conn,
-            named_session("codex:weak", "deploy"),
-            IngestMode::Partial,
-        )
-        .unwrap();
+        upsert(&mut conn, named_session("codex:weak", "deploy")).unwrap();
         upsert(
             &mut conn,
             named_session("codex:strong", "deploy netlify production deploy"),
-            IngestMode::Partial,
         )
         .unwrap();
         let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
@@ -2401,15 +2250,10 @@ mod tests {
     fn search_collapses_parent_and_child_lineage() {
         let dir = tempdir().unwrap();
         let mut conn = open(dir.path().join("trace.db")).unwrap();
-        upsert(
-            &mut conn,
-            named_session("codex:parent", "deploy netlify"),
-            IngestMode::Partial,
-        )
-        .unwrap();
+        upsert(&mut conn, named_session("codex:parent", "deploy netlify")).unwrap();
         let mut child = named_session("codex:child", "deploy netlify deploy");
         child.session.parent_session_id = Some("codex:parent".into());
-        upsert(&mut conn, child, IngestMode::Partial).unwrap();
+        upsert(&mut conn, child).unwrap();
         let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].hits, 2);

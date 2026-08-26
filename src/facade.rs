@@ -1,6 +1,6 @@
 use crate::{
     config::{ExcludeMatcher, DEFAULT_WATCH_DEBOUNCE_MS, DEFAULT_WATCH_INTERVAL_SECONDS},
-    model::{Agent, Capture, EventKind, IngestMode, ParsedSession, Session},
+    model::{Agent, Capture, EventKind, ParsedSession, Session},
     parsers::{parser, DiscoveryHints, SessionCandidate},
     search, store, ConfigOverrides, SearchRequest, SearchResult, TokenizerKind, TraceDbConfig,
 };
@@ -111,7 +111,7 @@ impl TraceDb {
                 mut failures,
                 parsed_candidates,
                 codex_rollout_cache,
-            } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
+            } = self.scan_agent(agent, &root, request.since_ms, &exclusions);
             if let Some(cache) = codex_rollout_cache {
                 store::save_codex_rollout_cache(&mut self.connection, &cache)?;
             }
@@ -141,7 +141,7 @@ impl TraceDb {
             }
             if !ready.is_empty() {
                 let (candidates, mut sessions): (Vec<_>, Vec<_>) = ready.into_iter().unzip();
-                if store::upsert_many(&mut self.connection, &mut sessions, request.mode).is_ok() {
+                if store::upsert_many(&mut self.connection, &mut sessions).is_ok() {
                     ingested += sessions.len();
                     ingested_locators
                         .extend(candidates.into_iter().map(|candidate| candidate.locator));
@@ -149,7 +149,7 @@ impl TraceDb {
                     // Preserve best-effort ingest semantics if one session has
                     // a malformed object or otherwise poisons the batch.
                     for (candidate, session) in candidates.into_iter().zip(sessions) {
-                        match store::upsert(&mut self.connection, session, request.mode) {
+                        match store::upsert(&mut self.connection, session) {
                             Ok(()) => {
                                 ingested += 1;
                                 ingested_locators.push(candidate.locator);
@@ -216,7 +216,7 @@ impl TraceDb {
                 mut failures,
                 parsed_candidates,
                 codex_rollout_cache: _,
-            } = self.scan_agent(agent, &root, request.mode, request.since_ms, &exclusions);
+            } = self.scan_agent(agent, &root, request.since_ms, &exclusions);
             let mut changed = 0;
             let mut estimated_full_capture_bytes = 0;
             for (candidate, parsed_session) in parsed_candidates {
@@ -249,7 +249,6 @@ impl TraceDb {
         }
         Ok(IngestDryRunReport {
             dry_run: true,
-            mode: IngestMode::Full,
             agents: reports,
         })
     }
@@ -447,7 +446,6 @@ impl TraceDb {
         &self,
         agent: Agent,
         root: &Path,
-        _mode: IngestMode,
         since_ms: Option<i64>,
         exclusions: &ExcludeMatcher,
     ) -> AgentScan {
@@ -541,9 +539,10 @@ impl TraceDb {
                 skipped += 1;
                 continue;
             }
-            if states.get(&candidate.locator).is_some_and(|state| {
-                state.fingerprint == candidate.fingerprint && matches!(state.mode, IngestMode::Full)
-            }) {
+            if states
+                .get(&candidate.locator)
+                .is_some_and(|state| state.fingerprint == candidate.fingerprint)
+            {
                 unchanged += 1;
                 continue;
             }
@@ -561,8 +560,8 @@ impl TraceDb {
     }
 
     /// Insert one already-parsed session through the same transactional path.
-    pub fn ingest_session(&mut self, session: ParsedSession, mode: IngestMode) -> Result<()> {
-        store::upsert(&mut self.connection, session, mode)
+    pub fn ingest_session(&mut self, session: ParsedSession) -> Result<()> {
+        store::upsert(&mut self.connection, session)
     }
 
     /// Search normalized events and return lineage-collapsed session results.
@@ -616,12 +615,11 @@ impl TraceDb {
     pub fn stats(&self) -> Result<ArchiveStats> {
         let agents = store::stats(&self.connection)?
             .into_iter()
-            .map(|(agent, sessions, events, full)| {
+            .map(|(agent, sessions, events)| {
                 Ok(AgentStats {
                     agent: agent.parse().map_err(|message: String| anyhow!(message))?,
                     sessions,
                     events,
-                    full_sessions: full,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -629,7 +627,6 @@ impl TraceDb {
             path: self.path.clone(),
             total_sessions: agents.iter().map(|row| row.sessions).sum(),
             total_events: agents.iter().map(|row| row.events).sum(),
-            total_full_sessions: agents.iter().map(|row| row.full_sessions).sum(),
             agents,
         })
     }
@@ -1220,11 +1217,6 @@ fn doctor_database_metrics(
 ) -> Result<DoctorDatabaseMetrics> {
     let connection = store::open_for_verification(path)?;
     let last_ingest = store::ingest_status(&connection)?.map(DoctorIngestStatus::from);
-    let full_sessions = connection.query_row(
-        "SELECT count(*) FROM sessions WHERE mode='full'",
-        [],
-        |row| row.get::<_, i64>(0),
-    )?;
     let total_sessions = connection.query_row("SELECT count(*) FROM sessions", [], |row| {
         row.get::<_, i64>(0)
     })?;
@@ -1233,7 +1225,7 @@ fn doctor_database_metrics(
             .zip(last_ingest.as_ref().map(|status| status.completed_at_ms))
             .map(|(native, completed)| (native - completed).max(0)),
         last_ingest,
-        backup: DoctorBackup::from_counts(total_sessions, full_sessions),
+        backup: DoctorBackup::from_counts(total_sessions),
     })
 }
 
@@ -1297,29 +1289,15 @@ fn doctor_watch(agents: &[DoctorAgent], interval_seconds: u64, debounce_ms: u64)
 }
 
 /// Options for discovering and ingesting native sessions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestRequest {
     #[serde(default)]
     pub agents: Vec<Agent>,
-    #[serde(default)]
-    pub mode: IngestMode,
     pub root: Option<PathBuf>,
     pub since_ms: Option<i64>,
     #[serde(default)]
     pub exclude: Vec<String>,
-}
-
-impl Default for IngestRequest {
-    fn default() -> Self {
-        Self {
-            agents: Vec::new(),
-            mode: IngestMode::Full,
-            root: None,
-            since_ms: None,
-            exclude: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1487,7 +1465,6 @@ pub struct IngestAck {
 #[serde(rename_all = "camelCase")]
 pub struct IngestDryRunReport {
     pub dry_run: bool,
-    pub mode: IngestMode,
     pub agents: Vec<AgentIngestDryRunReport>,
 }
 
@@ -1542,7 +1519,6 @@ pub struct AgentStats {
     pub agent: Agent,
     pub sessions: i64,
     pub events: i64,
-    pub full_sessions: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1551,7 +1527,6 @@ pub struct ArchiveStats {
     pub path: PathBuf,
     pub total_sessions: i64,
     pub total_events: i64,
-    pub total_full_sessions: i64,
     pub agents: Vec<AgentStats>,
 }
 
@@ -1570,7 +1545,6 @@ pub struct ListRequest {
     #[serde(default)]
     pub collapse_lineage: bool,
     pub since_ms: Option<i64>,
-    pub mode: Option<IngestMode>,
     pub model: Option<String>,
     pub provider: Option<String>,
 }
@@ -1589,7 +1563,6 @@ impl Default for ListRequest {
             cwd_exact: false,
             collapse_lineage: false,
             since_ms: None,
-            mode: None,
             model: None,
             provider: None,
         }
@@ -1607,7 +1580,6 @@ pub struct SessionSummary {
     pub title: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
-    pub mode: IngestMode,
     pub events: i64,
     pub ingested_at_ms: i64,
     pub fingerprint: String,
@@ -1626,7 +1598,6 @@ pub struct SessionCoverage {
     pub id: String,
     pub fingerprint: String,
     pub ingested_at_ms: i64,
-    pub mode: IngestMode,
     pub events: i64,
     pub sources: i64,
     pub latest_source_mtime_ns: Option<i64>,
@@ -1742,7 +1713,6 @@ impl From<store::StoredIngestStatus> for DoctorIngestStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DoctorBackup {
     pub recommended: bool,
-    pub full_capture_sessions: i64,
     pub total_sessions: i64,
     pub reason: String,
 }
@@ -1751,7 +1721,6 @@ impl DoctorBackup {
     fn not_created() -> Self {
         Self {
             recommended: false,
-            full_capture_sessions: 0,
             total_sessions: 0,
             reason: "archive has not been created".into(),
         }
@@ -1760,23 +1729,19 @@ impl DoctorBackup {
     fn unavailable() -> Self {
         Self {
             recommended: true,
-            full_capture_sessions: 0,
             total_sessions: 0,
             reason: "archive could not be inspected for backup guidance".into(),
         }
     }
 
-    fn from_counts(total_sessions: i64, full_capture_sessions: i64) -> Self {
-        let reason = if full_capture_sessions > 0 {
-            "full native snapshots are present; back up the archive to preserve exact reconstruction"
-        } else if total_sessions > 0 {
-            "archive is rebuildable from native stores, but a backup protects indexed history"
+    fn from_counts(total_sessions: i64) -> Self {
+        let reason = if total_sessions > 0 {
+            "native snapshots are present; back up the archive to preserve exact reconstruction"
         } else {
             "archive contains no sessions yet"
         };
         Self {
             recommended: total_sessions > 0,
-            full_capture_sessions,
             total_sessions,
             reason: reason.into(),
         }
@@ -1851,7 +1816,6 @@ impl VerifyReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTrace {
     pub session: Session,
-    pub mode: IngestMode,
     pub events: Vec<crate::model::Event>,
     pub spans: Vec<crate::model::Span>,
 }

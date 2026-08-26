@@ -1,4 +1,4 @@
-use crate::model::{Agent, IngestMode};
+use crate::model::Agent;
 use anyhow::{bail, Context, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,6 @@ pub struct TraceDbConfig {
     pub config_file_exists: bool,
     pub database_path: PathBuf,
     pub default_agents: Vec<Agent>,
-    pub capture_mode: IngestMode,
     pub exclude: Vec<String>,
     pub tokenizer: TokenizerKind,
     pub tokenizer_extension: Option<PathBuf>,
@@ -35,7 +34,6 @@ pub struct ConfigOverrides {
     pub config_path: Option<PathBuf>,
     pub database_path: Option<PathBuf>,
     pub default_agents: Option<Vec<Agent>>,
-    pub capture_mode: Option<IngestMode>,
     pub exclude: Option<Vec<String>>,
     pub tokenizer: Option<TokenizerKind>,
     pub tokenizer_extension: Option<PathBuf>,
@@ -113,7 +111,6 @@ impl FromStr for OutputFormat {
 struct ConfigFile {
     database_path: Option<PathBuf>,
     default_agents: Option<Vec<Agent>>,
-    capture_mode: Option<IngestMode>,
     exclude: Option<Vec<String>>,
     tokenizer: Option<TokenizerKind>,
     tokenizer_extension: Option<PathBuf>,
@@ -158,7 +155,6 @@ impl TraceDbConfig {
             config_file_exists,
             database_path: default_database_path(),
             default_agents: Agent::ALL.to_vec(),
-            capture_mode: IngestMode::Full,
             exclude: Vec::new(),
             tokenizer: TokenizerKind::Unicode61,
             tokenizer_extension: None,
@@ -179,9 +175,6 @@ impl TraceDbConfig {
         }
         if let Some(agents) = file.default_agents {
             self.default_agents = agents;
-        }
-        if let Some(mode) = file.capture_mode {
-            self.capture_mode = mode;
         }
         if let Some(exclude) = file.exclude {
             self.exclude = exclude;
@@ -210,9 +203,6 @@ impl TraceDbConfig {
         }
         if let Some(value) = env_string("TRACEDB_AGENTS")? {
             self.default_agents = parse_list(&value, "TRACEDB_AGENTS")?;
-        }
-        if let Some(value) = env_string("TRACEDB_CAPTURE_MODE")? {
-            self.capture_mode = value.parse().map_err(anyhow::Error::msg)?;
         }
         if let Some(value) = env_string("TRACEDB_EXCLUDE")? {
             self.exclude = split_csv(&value);
@@ -246,9 +236,6 @@ impl TraceDbConfig {
         if let Some(agents) = overrides.default_agents {
             self.default_agents = agents;
         }
-        if let Some(mode) = overrides.capture_mode {
-            self.capture_mode = mode;
-        }
         if let Some(exclude) = overrides.exclude {
             self.exclude = exclude;
         }
@@ -276,9 +263,6 @@ impl TraceDbConfig {
         let mut seen = HashSet::new();
         self.default_agents.retain(|agent| seen.insert(*agent));
         ExcludeMatcher::new(&self.exclude)?;
-        // `partial` is retained as an input compatibility spelling, but all
-        // resolved ingest configuration is canonicalized to lossless capture.
-        self.capture_mode = IngestMode::Full;
         match self.tokenizer {
             TokenizerKind::Unicode61 if self.tokenizer_extension.is_some() => {
                 bail!("tokenizer_extension requires tokenizer = \"jieba\"")

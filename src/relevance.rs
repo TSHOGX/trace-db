@@ -5,8 +5,7 @@
 //! context assembly without depending on host-native agent stores.
 
 use crate::{
-    Agent, Event, EventKind, IngestMode, ParsedSession, SearchRequest, SearchResult, Session,
-    TraceDb,
+    Agent, Event, EventKind, ParsedSession, SearchRequest, SearchResult, Session, TraceDb,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -701,7 +700,7 @@ fn build_corpus(database: &mut TraceDb) -> Result<usize> {
         ),
     ];
     for parsed in corpus {
-        database.ingest_session(parsed, IngestMode::Partial)?;
+        database.ingest_session(parsed)?;
     }
     Ok(12)
 }

@@ -619,7 +619,7 @@ fn preview(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, IngestMode, ParsedSession, Session};
+    use crate::{Event, ParsedSession, Session};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -771,7 +771,6 @@ mod tests {
                 },
                 events,
             },
-            IngestMode::Partial,
         )
         .unwrap();
     }

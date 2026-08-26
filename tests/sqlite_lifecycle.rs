@@ -7,8 +7,7 @@ use std::{
 };
 use tempfile::tempdir;
 use tracedb::{
-    open_database, Agent, Capture, Event, EventKind, IngestMode, NativeSource, ParsedSession,
-    Session, TraceDb,
+    open_database, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session, TraceDb,
 };
 
 fn parsed_session(id: &str, sources: Vec<NativeSource>) -> ParsedSession {
@@ -53,7 +52,7 @@ fn concurrent_writer_waits_for_the_configured_sqlite_busy_timeout_window() {
         let started = std::time::Instant::now();
         second
             .execute(
-                "INSERT INTO sessions(id,agent,mode,fingerprint,meta_json,ingested_at_ms) VALUES (?1,'codex','partial','busy','{}',0)",
+                "INSERT INTO sessions(id,agent,fingerprint,meta_json,ingested_at_ms) VALUES (?1,'codex','busy','{}',0)",
                 params!["codex:busy"],
             )
             .unwrap();
@@ -90,10 +89,7 @@ fn failed_full_capture_rolls_back_session_and_events() {
     };
 
     assert!(database
-        .ingest_session(
-            parsed_session("codex:rollback", vec![source]),
-            IngestMode::Full
-        )
+        .ingest_session(parsed_session("codex:rollback", vec![source]))
         .is_err());
     drop(database);
 

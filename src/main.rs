@@ -11,9 +11,8 @@ use std::{
 use tracedb::{
     doctor_configured,
     service::{serve_configured, ServiceEndpoint},
-    verify_archive, Agent, ConfigOverrides, EventKind, IngestMode, IngestRequest, ListRequest,
-    OutputFormat, SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig, WatchEvent,
-    WatchRequest,
+    verify_archive, Agent, ConfigOverrides, EventKind, IngestRequest, ListRequest, OutputFormat,
+    SearchRequest, ShowRequest, TokenizerKind, TraceDb, TraceDbConfig, WatchEvent, WatchRequest,
 };
 
 mod daemon;
@@ -56,8 +55,6 @@ enum Command {
     Ingest {
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         agent: Option<Vec<Agent>>,
-        #[arg(long)]
-        mode: Option<IngestMode>,
         /// Replace configured native-source exclusion globs.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         exclude: Option<Vec<String>>,
@@ -80,8 +77,6 @@ enum Command {
     Watch {
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         agent: Option<Vec<Agent>>,
-        #[arg(long)]
-        mode: Option<IngestMode>,
         /// Override configured native-source exclusion globs.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         exclude: Option<Vec<String>>,
@@ -132,8 +127,6 @@ enum Command {
         collapse_lineage: bool,
         #[arg(long)]
         since: Option<String>,
-        #[arg(long)]
-        mode: Option<IngestMode>,
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
@@ -252,9 +245,6 @@ enum DaemonAction {
         /// Override the configured agents to watch.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         agent: Option<Vec<Agent>>,
-        /// Override the configured capture mode.
-        #[arg(long)]
-        mode: Option<IngestMode>,
         /// Override configured native-source exclusion globs.
         #[arg(long, value_delimiter = ',', num_args = 1..)]
         exclude: Option<Vec<String>>,
@@ -279,29 +269,21 @@ fn main() -> anyhow::Result<()> {
         generate(*shell, &mut command, "trace-db", &mut io::stdout());
         return Ok(());
     }
-    let (default_agents, capture_mode, exclude, watch_interval_seconds, watch_debounce_ms) =
-        match &cli.command {
-            Command::Ingest {
-                agent,
-                mode,
-                exclude,
-                ..
-            } => (agent.clone(), *mode, exclude.clone(), None, None),
-            Command::Watch {
-                agent,
-                mode,
-                exclude,
-                interval,
-                debounce,
-                ..
-            } => (agent.clone(), *mode, exclude.clone(), *interval, *debounce),
-            _ => (None, None, None, None, None),
-        };
+    let (default_agents, exclude, watch_interval_seconds, watch_debounce_ms) = match &cli.command {
+        Command::Ingest { agent, exclude, .. } => (agent.clone(), exclude.clone(), None, None),
+        Command::Watch {
+            agent,
+            exclude,
+            interval,
+            debounce,
+            ..
+        } => (agent.clone(), exclude.clone(), *interval, *debounce),
+        _ => (None, None, None, None),
+    };
     let config = TraceDbConfig::load(ConfigOverrides {
         config_path: cli.config.clone(),
         database_path: cli.db.clone(),
         default_agents,
-        capture_mode,
         exclude,
         tokenizer: cli.tokenizer,
         tokenizer_extension: cli.tokenizer_extension.clone(),
@@ -329,7 +311,6 @@ fn main() -> anyhow::Result<()> {
                     .collect::<Vec<_>>()
                     .join(",")
             );
-            println!("capture mode: {}", config.capture_mode);
             println!("exclude: {}", config.exclude.join(","));
             println!("tokenizer: {}", config.tokenizer);
             println!(
@@ -499,7 +480,6 @@ fn main() -> anyhow::Result<()> {
         let request = WatchRequest {
             ingest: IngestRequest {
                 agents: config.default_agents.clone(),
-                mode: config.capture_mode,
                 root: root.clone(),
                 since_ms: None,
                 exclude: config.exclude.clone(),
@@ -572,7 +552,6 @@ fn main() -> anyhow::Result<()> {
             db_path,
             IngestRequest {
                 agents: config.default_agents.clone(),
-                mode: config.capture_mode,
                 root: root.clone(),
                 since_ms: since.as_deref().map(parse_since).transpose()?,
                 exclude: config.exclude.clone(),
@@ -649,7 +628,6 @@ fn main() -> anyhow::Result<()> {
             let started = Instant::now();
             let report = db.ingest(IngestRequest {
                 agents: config.default_agents.clone(),
-                mode: config.capture_mode,
                 root,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
                 exclude: config.exclude.clone(),
@@ -752,7 +730,6 @@ fn main() -> anyhow::Result<()> {
             cwd_exact,
             collapse_lineage,
             since,
-            mode,
             model,
             provider,
             json,
@@ -766,7 +743,6 @@ fn main() -> anyhow::Result<()> {
                 cwd_exact,
                 collapse_lineage,
                 since_ms: since.as_deref().map(parse_since).transpose()?,
-                mode,
                 model,
                 provider,
             })?;
@@ -775,10 +751,9 @@ fn main() -> anyhow::Result<()> {
             } else if !quiet {
                 for session in &page.sessions {
                     println!(
-                        "{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         session.id,
                         session.agent,
-                        session.mode,
                         session.events,
                         session.cwd.as_deref().unwrap_or("-")
                     );
@@ -965,8 +940,8 @@ fn main() -> anyhow::Result<()> {
                 println!("db: {}", stats.path.display());
                 for row in stats.agents {
                     println!(
-                        "{}\t{} sessions\t{} events\t{} full",
-                        row.agent, row.sessions, row.events, row.full_sessions
+                        "{}\t{} sessions\t{} events",
+                        row.agent, row.sessions, row.events
                     );
                 }
             }
@@ -1019,7 +994,6 @@ fn handle_daemon_command(action: &DaemonAction, config: &TraceDbConfig) -> anyho
         DaemonAction::Install {
             interval,
             agent,
-            mode,
             exclude,
             root,
         } => {
@@ -1031,7 +1005,6 @@ fn handle_daemon_command(action: &DaemonAction, config: &TraceDbConfig) -> anyho
                     .collect::<Vec<_>>()
                     .join(",")
             });
-            let mode_str = mode.map(|m| m.to_string());
             let exclude_str = exclude.as_ref().map(|e| e.join(","));
 
             daemon::install_daemon(
@@ -1039,7 +1012,6 @@ fn handle_daemon_command(action: &DaemonAction, config: &TraceDbConfig) -> anyho
                 &config.database_path,
                 *interval,
                 agents_str,
-                mode_str,
                 exclude_str,
                 root.as_deref(),
             )
@@ -1154,7 +1126,6 @@ struct ApiV2List {
     cwd_exact: Option<bool>,
     collapse_lineage: Option<bool>,
     since_ms: Option<i64>,
-    mode: Option<IngestMode>,
     model: Option<String>,
     provider: Option<String>,
 }
@@ -1208,7 +1179,6 @@ fn reject_unknown_api_fields(request: &serde_json::Value, op: &str) -> Result<()
             "cwd_exact",
             "collapse_lineage",
             "since",
-            "mode",
             "model",
             "provider",
         ],
@@ -1445,7 +1415,6 @@ fn execute_api_v2(
                     cwd_exact: typed.cwd_exact.unwrap_or(false),
                     collapse_lineage: typed.collapse_lineage.unwrap_or(false),
                     since_ms: typed.since_ms,
-                    mode: typed.mode,
                     model: typed.model,
                     provider: typed.provider,
                 })
@@ -1572,10 +1541,6 @@ fn execute_api_request(
                 .map(str::parse::<Agent>)
                 .transpose()
                 .map_err(ApiFailure::invalid)?;
-            let mode = optional_json_string(request, "mode")?
-                .map(str::parse::<IngestMode>)
-                .transpose()
-                .map_err(ApiFailure::invalid)?;
             let since_ms = optional_json_string(request, "since")?
                 .map(parse_since)
                 .transpose()
@@ -1590,7 +1555,6 @@ fn execute_api_request(
                     collapse_lineage: optional_json_bool(request, "collapse_lineage")?
                         .unwrap_or(false),
                     since_ms,
-                    mode,
                     model: optional_json_string(request, "model")?.map(str::to_owned),
                     provider: optional_json_string(request, "provider")?.map(str::to_owned),
                 })

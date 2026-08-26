@@ -42,7 +42,6 @@ fn harness_covers_the_end_to_end_archive_lifecycle() {
     assert!(matches!(
         run.operations[1].result,
         BenchmarkResult::Ingested {
-            mode: tracedb::IngestMode::Full,
             ingested: 8,
             failed: 0,
             ..

@@ -36,34 +36,32 @@ class TraceDb {
     return JSON.parse(this.searchJson(query, limit, agent, cwd, sinceMs));
   }
 
-  listJson(limit = 50, cursor, agent, cwd, sinceMs, mode, model, provider) {
+  listJson(limit = 50, cursor, agent, cwd, sinceMs, model, provider) {
     return this._native.listJson(
       limit,
       cursor,
       agent,
       cwd,
       sinceMs,
-      mode,
       model,
       provider,
     );
   }
 
   list(options = {}) {
-    const { limit = 50, cursor, agent, cwd, sinceMs, mode, model, provider } =
-      options;
+    const { limit = 50, cursor, agent, cwd, sinceMs, model, provider } = options;
     return JSON.parse(
-      this.listJson(limit, cursor, agent, cwd, sinceMs, mode, model, provider),
+      this.listJson(limit, cursor, agent, cwd, sinceMs, model, provider),
     );
   }
 
-  ingestJson(agents, mode = "full", root, sinceMs) {
-    return this._native.ingestJson(agents, mode, root, sinceMs);
+  ingestJson(agents, root, sinceMs) {
+    return this._native.ingestJson(agents, root, sinceMs);
   }
 
   ingest(options = {}) {
-    const { agents, mode = "full", root, sinceMs } = options;
-    return JSON.parse(this.ingestJson(agents, mode, root, sinceMs));
+    const { agents, root, sinceMs } = options;
+    return JSON.parse(this.ingestJson(agents, root, sinceMs));
   }
 
   showJson(sessionId) {

@@ -8,13 +8,18 @@ TraceDB mechanically discovers Claude Code, Codex, OpenCode, Gemini CLI, and Pi
 sessions. It normalizes their useful common structure into seven event kinds
 while retaining native provenance and session lineage.
 
-## Capture modes
+## Lossless capture
 
 TraceDB always stores the complete normalized projection and a compressed,
 content-addressed byte-for-byte snapshot of every discovered native source.
-`full` is the canonical mode. `partial` remains accepted as a compatibility
-spelling, but is canonicalized to `full` and never creates a lossy record.
-`trace-db reconstruct` restores snapshots into a safe output directory.
+Capture is unconditional: there is no lossy ingest path and no capture-mode
+switch to get wrong. `trace-db reconstruct` restores snapshots into a safe
+output directory.
+
+The normalized tables are a deterministic projection, so TraceDB carries no
+per-column schema upgrades. An archive written by a different schema version is
+refused with guidance to delete it and re-run `trace-db ingest`, which rebuilds
+every normalized row from the native stores.
 
 Ingestion first discovers lightweight candidates from file metadata or native
 session rows. It compares content-aware fingerprints with archived source
@@ -31,7 +36,7 @@ nonzero when any candidate failed.
 
 `trace-db ingest --dry-run` performs the same discovery, fingerprint comparison,
 and parsing without creating, migrating, or changing archive records. Its
-JSON report has stable `dryRun`, `mode`, and `agents` fields. Each agent reports
+JSON report has stable `dryRun` and `agents` fields. Each agent reports
 `discovered`, `changed`, `unchanged`, `skipped`, `skippedBySince`, `failed`, and
 `estimatedFullCaptureBytes`; the last value is the uncompressed native-source
 size for successfully parsed sessions that a full ingest would capture.
@@ -70,7 +75,7 @@ Requirements: Rust 1.83+ and Cargo.
 cargo install --path .
 trace-db ingest
 trace-db ingest --dry-run --json
-trace-db ingest --mode full --agent codex
+trace-db ingest --agent codex
 trace-db ingest --strict --json
 trace-db watch --json
 trace-db daemon install          # Install watch daemon for automatic periodic ingestion
@@ -128,7 +133,6 @@ the selected file.
 ```toml
 database_path = "data/trace.db"
 default_agents = ["claude", "codex", "gemini"]
-capture_mode = "full"
 exclude = ["**/private/**", "**/scratch-*"]
 tokenizer = "unicode61"
 output_format = "text"
@@ -143,24 +147,24 @@ candidates are reported as skipped and are never parsed or archived.
 
 Configuration precedence is CLI > environment > TOML file > built-in default.
 The environment variables are `TRACEDB_PATH`, `TRACEDB_AGENTS`,
-`TRACEDB_CAPTURE_MODE`, `TRACEDB_EXCLUDE`, `TRACEDB_TOKENIZER`,
+`TRACEDB_EXCLUDE`, `TRACEDB_TOKENIZER`,
 `TRACEDB_JIEBA_EXT`, `TRACEDB_OUTPUT_FORMAT`, `TRACEDB_WATCH_INTERVAL`, and
 `TRACEDB_WATCH_DEBOUNCE`; agent and exclusion lists are comma-separated. The
 built-in database path is the platform data directory at
-`trace-db/trace.db`, agents default to all five supported agents, capture mode
-defaults to `full`, output defaults to `text`, and watch timing defaults to
-300 seconds with a 1000 ms debounce.
+`trace-db/trace.db`, agents default to all five supported agents, output
+defaults to `text`, and watch timing defaults to 300 seconds with a 1000 ms
+debounce.
 
 ## CLI
 
 ```text
 trace-db [--config PATH] [--db PATH] [--format text|json|jsonl|markdown] [--quiet] [--progress] [--tokenizer unicode61|jieba] [--tokenizer-extension PATH] COMMAND
-trace-db ingest [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
-trace-db watch [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
-trace-db daemon install [--interval SECONDS] [--agent A[,A...]] [--mode partial|full] [--exclude GLOB[,GLOB...]] [--root PATH]
+trace-db ingest [--agent A[,A...]] [--exclude GLOB[,GLOB...]] [--since DAYS|RFC3339] [--root PATH] [--dry-run] [--strict] [--json]
+trace-db watch [--agent A[,A...]] [--exclude GLOB[,GLOB...]] [--root PATH] [--interval SECONDS] [--debounce MS] [--once] [--json]
+trace-db daemon install [--interval SECONDS] [--agent A[,A...]] [--exclude GLOB[,GLOB...]] [--root PATH]
 trace-db daemon {status|start|stop|uninstall}
 trace-db search QUERY [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--limit N] [--json]
-trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--mode partial|full] [--model MODEL] [--provider PROVIDER] [--json]
+trace-db list [--limit N] [--cursor CURSOR] [--agent A] [--cwd SUBSTRING] [--since DAYS|RFC3339] [--model MODEL] [--provider PROVIDER] [--json]
 trace-db show SESSION_ID [--from EVENT_INDEX] [--to EVENT_INDEX] [--kind KIND[,KIND...]] [--include-tools] [--json]
 trace-db reconstruct SESSION_ID --out DIRECTORY [--manifest PATH] [--overwrite]
 trace-db reindex
@@ -276,14 +280,14 @@ for row in rows {
 specialized SQL access.
 
 `coverage(sessionId)` is the cheap per-session ingestion watermark: it returns
-the stored fingerprint, `ingestedAtMs`, capture mode, normalized event/source
+the stored fingerprint, `ingestedAtMs`, normalized event/source
 counts, and latest source mtime without loading the event stream or consulting
 native agent stores. List rows include the same fingerprint for bulk scans.
 
 List inventory remains expanded by default. `--collapse-lineage` (or API v2
 `collapseLineage`) applies scope-preserving collapse: a child is hidden only
-when its direct parent also satisfies the same agent/cwd/time/model/provider/
-mode filters. A worktree child therefore remains visible in its own cwd scope
+when its direct parent also satisfies the same agent/cwd/time/model/provider
+filters. A worktree child therefore remains visible in its own cwd scope
 instead of being folded into an out-of-scope parent.
 
 Every mutating `ingest` response includes a durable monotonic `ack` containing

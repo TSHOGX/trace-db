@@ -1,6 +1,6 @@
 //! Deterministic end-to-end performance benchmarks for TraceDB.
 
-use crate::{Agent, IngestMode, IngestReport, IngestRequest, ListRequest, SearchRequest, TraceDb};
+use crate::{Agent, IngestReport, IngestRequest, ListRequest, SearchRequest, TraceDb};
 use anyhow::{bail, Context, Result};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -155,7 +155,6 @@ pub enum BenchmarkResult {
         bytes: u64,
     },
     Ingested {
-        mode: IngestMode,
         discovered: usize,
         parsed: usize,
         ingested: usize,
@@ -176,7 +175,6 @@ pub enum BenchmarkResult {
     Stats {
         sessions: i64,
         events: i64,
-        full_sessions: i64,
     },
     Reindexed {
         events: i64,
@@ -256,9 +254,8 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
         ))
     })?;
     operations.push(op);
-    let request = |mode| IngestRequest {
+    let request = || IngestRequest {
         agents: vec![Agent::Codex],
-        mode,
         root: Some(native.clone()),
         since_ms: None,
         exclude: Vec::new(),
@@ -269,16 +266,16 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
         native_bytes,
         || {
             let mut db = TraceDb::open(&db_path)?;
-            let report = db.ingest(request(IngestMode::Full))?;
+            let report = db.ingest(request())?;
             require_ingest(&report, sessions, sessions, sessions, 0)?;
-            Ok((db, ingest_result(IngestMode::Full, &report)))
+            Ok((db, ingest_result(&report)))
         },
     )?;
     operations.push(op);
     let (_, op) = measure(BenchmarkOperationName::UnchangedIngest, &db_path, 0, || {
-        let report = archive.ingest(request(IngestMode::Full))?;
+        let report = archive.ingest(request())?;
         require_ingest(&report, sessions, 0, 0, sessions)?;
-        Ok(((), ingest_result(IngestMode::Full, &report)))
+        Ok(((), ingest_result(&report)))
     })?;
     operations.push(op);
     let changed_sessions = sessions.div_ceil(CHANGE_DIVISOR);
@@ -288,7 +285,7 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
         &db_path,
         changed_bytes,
         || {
-            let report = archive.ingest(request(IngestMode::Full))?;
+            let report = archive.ingest(request())?;
             require_ingest(
                 &report,
                 sessions,
@@ -296,7 +293,7 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
                 changed_sessions,
                 sessions - changed_sessions,
             )?;
-            Ok(((), ingest_result(IngestMode::Full, &report)))
+            Ok(((), ingest_result(&report)))
         },
     )?;
     operations.push(op);
@@ -361,18 +358,16 @@ fn run_one(workspace: &Path, sessions: usize) -> Result<BenchmarkRunReport> {
     operations.push(op);
     let (stats, op) = measure(BenchmarkOperationName::Stats, &db_path, 0, || {
         let stats = archive.stats()?;
-        if stats.total_sessions != sessions as i64 || stats.total_full_sessions != sessions as i64 {
+        if stats.total_sessions != sessions as i64 {
             bail!("benchmark stats do not match dataset");
         }
         let total_sessions = stats.total_sessions;
         let total_events = stats.total_events;
-        let total_full_sessions = stats.total_full_sessions;
         Ok((
             stats,
             BenchmarkResult::Stats {
                 sessions: total_sessions,
                 events: total_events,
-                full_sessions: total_full_sessions,
             },
         ))
     })?;
@@ -468,9 +463,8 @@ fn nearest_rank_p95(samples: &mut [u64]) -> Option<u64> {
     samples.get(rank.saturating_sub(1)).copied()
 }
 
-fn ingest_result(mode: IngestMode, r: &IngestReport) -> BenchmarkResult {
+fn ingest_result(r: &IngestReport) -> BenchmarkResult {
     BenchmarkResult::Ingested {
-        mode,
         discovered: r.total_discovered(),
         parsed: r.total_parsed(),
         ingested: r.total_ingested(),

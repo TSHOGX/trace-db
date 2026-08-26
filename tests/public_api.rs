@@ -1,7 +1,7 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Capture, Event, EventKind, IngestErrorCategory, IngestMode, IngestRequest, IngestStage,
+    Agent, Capture, Event, EventKind, IngestErrorCategory, IngestRequest, IngestStage,
     NativeSource, ParsedSession, SearchRequest, Session, ShowRequest, TraceDb,
 };
 
@@ -38,7 +38,6 @@ fn native_ingest_reports_corrupt_candidates_and_continues() {
     let report = db
         .ingest(IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
             exclude: Vec::new(),
@@ -78,7 +77,6 @@ fn native_ingest_distinguishes_unsupported_format() {
     let report = db
         .ingest(IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
             exclude: Vec::new(),
@@ -129,7 +127,6 @@ fn native_ingest_reports_permission_failures() {
     let report = db
         .ingest(IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Partial,
             root: Some(native),
             since_ms: None,
             exclude: Vec::new(),
@@ -152,32 +149,29 @@ fn native_ingest_reports_permission_failures() {
 fn trace_db_facade_covers_archive_lifecycle() {
     let dir = tempdir().unwrap();
     let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
-    db.ingest_session(
-        ParsedSession {
-            session: Session {
-                id: "codex:facade".into(),
-                agent: Agent::Codex,
-                cwd: Some("/workspace/demo".into()),
-                started_at_ms: Some(10),
-                ended_at_ms: Some(20),
-                status: None,
-                title: Some("Deploy demo".into()),
-                model: None,
-                provider: None,
-                git_branch: None,
-                parent_session_id: None,
-                forked_from: None,
-                meta: json!({}),
-                fingerprint: "facade-v1".into(),
-                sources: Vec::new(),
-            },
-            events: vec![
-                Event::new(EventKind::User, "deploy the demo"),
-                Event::new(EventKind::Assistant, "the demo is deployed"),
-            ],
+    db.ingest_session(ParsedSession {
+        session: Session {
+            id: "codex:facade".into(),
+            agent: Agent::Codex,
+            cwd: Some("/workspace/demo".into()),
+            started_at_ms: Some(10),
+            ended_at_ms: Some(20),
+            status: None,
+            title: Some("Deploy demo".into()),
+            model: None,
+            provider: None,
+            git_branch: None,
+            parent_session_id: None,
+            forked_from: None,
+            meta: json!({}),
+            fingerprint: "facade-v1".into(),
+            sources: Vec::new(),
         },
-        IngestMode::Partial,
-    )
+        events: vec![
+            Event::new(EventKind::User, "deploy the demo"),
+            Event::new(EventKind::Assistant, "the demo is deployed"),
+        ],
+    })
     .unwrap();
 
     let hits = db.search(SearchRequest::new("deploy")).unwrap();
@@ -221,29 +215,26 @@ fn backup_publishes_verified_snapshot_without_overwriting() {
     let destination = dir.path().join("backup.db");
     let mut database = TraceDb::open(&source).unwrap();
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:backup".into(),
-                    agent: Agent::Codex,
-                    cwd: None,
-                    started_at_ms: Some(1),
-                    ended_at_ms: Some(2),
-                    status: None,
-                    title: Some("backup".into()),
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: serde_json::json!({}),
-                    fingerprint: "backup-v1".into(),
-                    sources: Vec::new(),
-                },
-                events: vec![Event::new(EventKind::User, "backup this")],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:backup".into(),
+                agent: Agent::Codex,
+                cwd: None,
+                started_at_ms: Some(1),
+                ended_at_ms: Some(2),
+                status: None,
+                title: Some("backup".into()),
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: serde_json::json!({}),
+                fingerprint: "backup-v1".into(),
+                sources: Vec::new(),
             },
-            IngestMode::Partial,
-        )
+            events: vec![Event::new(EventKind::User, "backup this")],
+        })
         .unwrap();
     let report = database.backup(&destination).unwrap();
     assert!(report.verified);
@@ -264,41 +255,38 @@ fn import_archive_is_verified_and_idempotent() {
     let raw = b"native source bytes".to_vec();
     let mut source = TraceDb::open(&source_path).unwrap();
     source
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:import".into(),
-                    agent: Agent::Codex,
-                    cwd: Some("/workspace".into()),
-                    started_at_ms: Some(1),
-                    ended_at_ms: Some(2),
-                    status: None,
-                    title: Some("Import me".into()),
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: "import-v1".into(),
-                    sources: vec![NativeSource {
-                        locator: "session.json".into(),
-                        kind: "json".into(),
-                        restore_path: "session.json".into(),
-                        role: None,
-                        bytes: Some(raw.len() as i64),
-                        mtime_ns: None,
-                        mode: None,
-                        capture: Some(Capture::Bytes {
-                            label: "session".into(),
-                            bytes: raw.clone(),
-                        }),
-                    }],
-                },
-                events: vec![Event::new(EventKind::User, "importable deploy event")],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:import".into(),
+                agent: Agent::Codex,
+                cwd: Some("/workspace".into()),
+                started_at_ms: Some(1),
+                ended_at_ms: Some(2),
+                status: None,
+                title: Some("Import me".into()),
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: "import-v1".into(),
+                sources: vec![NativeSource {
+                    locator: "session.json".into(),
+                    kind: "json".into(),
+                    restore_path: "session.json".into(),
+                    role: None,
+                    bytes: Some(raw.len() as i64),
+                    mtime_ns: None,
+                    mode: None,
+                    capture: Some(Capture::Bytes {
+                        label: "session".into(),
+                        bytes: raw.clone(),
+                    }),
+                }],
             },
-            IngestMode::Full,
-        )
+            events: vec![Event::new(EventKind::User, "importable deploy event")],
+        })
         .unwrap();
     source.backup(&backup_path).unwrap();
 
@@ -391,48 +379,45 @@ fn ingest_preserves_credentials_in_normalized_values_and_native_bytes() {
     let mut database = TraceDb::open(dir.path().join("lossless.db")).unwrap();
     let raw = b"Authorization: Bearer raw-secret\n".to_vec();
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:privacy".into(),
-                    agent: Agent::Codex,
-                    cwd: Some("/workspace".into()),
-                    started_at_ms: Some(1),
-                    ended_at_ms: Some(2),
-                    status: None,
-                    title: Some("alice@example.com incident".into()),
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: serde_json::json!({"contact":"alice@example.com"}),
-                    fingerprint: "privacy-v1".into(),
-                    sources: vec![NativeSource {
-                        locator: "privacy.raw".into(),
-                        kind: "jsonl".into(),
-                        restore_path: "privacy.raw".into(),
-                        role: None,
-                        bytes: Some(raw.len() as i64),
-                        mtime_ns: None,
-                        mode: None,
-                        capture: Some(Capture::Bytes {
-                            label: "privacy".into(),
-                            bytes: raw.clone(),
-                        }),
-                    }],
-                },
-                events: vec![{
-                    let mut event = Event::new(
-                        EventKind::User,
-                        "contact alice@example.com token=normalized-secret",
-                    );
-                    event.data_json = Some(json!({"authorization":"Bearer structured-secret"}));
-                    event
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:privacy".into(),
+                agent: Agent::Codex,
+                cwd: Some("/workspace".into()),
+                started_at_ms: Some(1),
+                ended_at_ms: Some(2),
+                status: None,
+                title: Some("alice@example.com incident".into()),
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: serde_json::json!({"contact":"alice@example.com"}),
+                fingerprint: "privacy-v1".into(),
+                sources: vec![NativeSource {
+                    locator: "privacy.raw".into(),
+                    kind: "jsonl".into(),
+                    restore_path: "privacy.raw".into(),
+                    role: None,
+                    bytes: Some(raw.len() as i64),
+                    mtime_ns: None,
+                    mode: None,
+                    capture: Some(Capture::Bytes {
+                        label: "privacy".into(),
+                        bytes: raw.clone(),
+                    }),
                 }],
             },
-            IngestMode::Full,
-        )
+            events: vec![{
+                let mut event = Event::new(
+                    EventKind::User,
+                    "contact alice@example.com token=normalized-secret",
+                );
+                event.data_json = Some(json!({"authorization":"Bearer structured-secret"}));
+                event
+            }],
+        })
         .unwrap();
     let trace = database.show("codex:privacy").unwrap().unwrap();
     assert_eq!(
@@ -471,15 +456,14 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     )
     .unwrap();
     let mut db = TraceDb::open(dir.path().join("trace.db")).unwrap();
-    let request = |mode, since_ms| IngestRequest {
+    let request = |since_ms| IngestRequest {
         agents: vec![Agent::Gemini],
-        mode,
         root: Some(native.clone()),
         since_ms,
         exclude: Vec::new(),
     };
 
-    let first = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    let first = db.ingest(request(None)).unwrap();
     assert_eq!(first.total_discovered(), 1);
     assert_eq!(first.total_parsed(), 1);
     assert_eq!(first.total_ingested(), 1);
@@ -488,29 +472,21 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     assert_eq!(first_ack.sequence, 1);
     assert!(first_ack.committed_at_ms > 0);
 
-    let unchanged = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    let unchanged = db.ingest(request(None)).unwrap();
     assert_eq!(unchanged.total_parsed(), 0);
     assert_eq!(unchanged.total_ingested(), 0);
     assert_eq!(unchanged.total_unchanged(), 1);
     assert_eq!(unchanged.ack.unwrap().sequence, first_ack.sequence + 1);
 
-    let full_plan = db.ingest_dry_run(request(IngestMode::Full, None)).unwrap();
-    assert_eq!(full_plan.total_discovered(), 1);
-    assert_eq!(full_plan.total_changed(), 0);
-    assert_eq!(full_plan.total_unchanged(), 1);
-    assert_eq!(full_plan.total_estimated_full_capture_bytes(), 0);
-    assert_eq!(
-        db.show("gemini:incremental").unwrap().unwrap().mode,
-        IngestMode::Full
-    );
+    let plan = db.ingest_dry_run(request(None)).unwrap();
+    assert_eq!(plan.total_discovered(), 1);
+    assert_eq!(plan.total_changed(), 0);
+    assert_eq!(plan.total_unchanged(), 1);
+    assert_eq!(plan.total_estimated_full_capture_bytes(), 0);
 
-    let upgraded = db.ingest(request(IngestMode::Full, None)).unwrap();
-    assert_eq!(upgraded.total_parsed(), 0);
-    assert_eq!(upgraded.total_ingested(), 0);
-    assert_eq!(
-        db.show("gemini:incremental").unwrap().unwrap().mode,
-        IngestMode::Full
-    );
+    let repeated = db.ingest(request(None)).unwrap();
+    assert_eq!(repeated.total_parsed(), 0);
+    assert_eq!(repeated.total_ingested(), 0);
 
     std::fs::write(
         &source,
@@ -526,16 +502,13 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
         .to_string(),
     )
     .unwrap();
-    let changed = db.ingest(request(IngestMode::Partial, None)).unwrap();
+    let changed = db.ingest(request(None)).unwrap();
     assert_eq!(changed.total_parsed(), 1);
     assert_eq!(changed.total_ingested(), 1);
     let trace = db.show("gemini:incremental").unwrap().unwrap();
-    assert_eq!(trace.mode, IngestMode::Full);
     assert_eq!(trace.events.len(), 2);
 
-    let skipped = db
-        .ingest(request(IngestMode::Partial, Some(i64::MAX)))
-        .unwrap();
+    let skipped = db.ingest(request(Some(i64::MAX))).unwrap();
     assert_eq!(skipped.total_parsed(), 0);
     assert_eq!(skipped.total_unchanged(), 0);
     assert_eq!(skipped.total_skipped_by_since(), 1);
@@ -543,7 +516,7 @@ fn native_ingest_skips_unchanged_sessions_before_parsing() {
     let database_path = dir.path().join("trace.db");
     drop(db);
     let mut reopened = TraceDb::open(database_path).unwrap();
-    let resumed = reopened.ingest(request(IngestMode::Partial, None)).unwrap();
+    let resumed = reopened.ingest(request(None)).unwrap();
     assert_eq!(resumed.ack.unwrap().sequence, 6);
 }
 
@@ -559,29 +532,26 @@ fn tool_spans_round_trip_through_the_archive() {
     result.call_id = Some("call-1".into());
     result.created_at_ms = Some(20);
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:spans".into(),
-                    agent: Agent::Codex,
-                    cwd: None,
-                    started_at_ms: Some(10),
-                    ended_at_ms: Some(20),
-                    status: None,
-                    title: None,
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: "spans".into(),
-                    sources: Vec::new(),
-                },
-                events: vec![call, result],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:spans".into(),
+                agent: Agent::Codex,
+                cwd: None,
+                started_at_ms: Some(10),
+                ended_at_ms: Some(20),
+                status: None,
+                title: None,
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: "spans".into(),
+                sources: Vec::new(),
             },
-            IngestMode::Full,
-        )
+            events: vec![call, result],
+        })
         .unwrap();
 
     let trace = database.show("codex:spans").unwrap().unwrap();

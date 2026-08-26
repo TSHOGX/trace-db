@@ -68,13 +68,12 @@ class TraceDb:
         agent: str | None = None,
         cwd: str | None = None,
         since_ms: int | None = None,
-        mode: str | None = None,
         model: str | None = None,
         provider: str | None = None,
     ) -> str:
         """List archived sessions and return the cursor page as raw JSON."""
         return self._native.list_json(
-            limit, cursor, agent, cwd, since_ms, mode, model, provider
+            limit, cursor, agent, cwd, since_ms, model, provider
         )
 
     def list(self, **kwargs: Any) -> dict[str, Any]:
@@ -84,24 +83,22 @@ class TraceDb:
     def ingest_json(
         self,
         agents: Iterable[str] | None = None,
-        mode: str = "full",
         root: os.PathLike[str] | str | None = None,
         since_ms: int | None = None,
     ) -> str:
         """Ingest native sessions and return the report as raw JSON."""
         native_root = None if root is None else os.fspath(root)
         native_agents = None if agents is None else list(agents)
-        return self._native.ingest_json(native_agents, mode, native_root, since_ms)
+        return self._native.ingest_json(native_agents, native_root, since_ms)
 
     def ingest(
         self,
         agents: Iterable[str] | None = None,
-        mode: str = "full",
         root: os.PathLike[str] | str | None = None,
         since_ms: int | None = None,
     ) -> dict[str, Any]:
         """Ingest native sessions and return the report as a dictionary."""
-        return json.loads(self.ingest_json(agents, mode, root, since_ms))
+        return json.loads(self.ingest_json(agents, root, since_ms))
 
     def show_json(self, session_id: str) -> str:
         """Return one normalized session trace as raw JSON."""

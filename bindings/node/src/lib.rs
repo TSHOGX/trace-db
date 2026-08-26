@@ -2,9 +2,7 @@ use napi::{Error, Result, Status};
 use napi_derive::napi;
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{
-    Agent, IngestMode, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb,
-};
+use tracedb::{Agent, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb};
 
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
@@ -80,15 +78,11 @@ impl NodeTraceDb {
         agent: Option<String>,
         cwd: Option<String>,
         since_ms: Option<i64>,
-        mode: Option<String>,
         model: Option<String>,
         provider: Option<String>,
     ) -> Result<String> {
         let agent = agent
             .map(|value| value.parse::<Agent>().map_err(native_error))
-            .transpose()?;
-        let mode = mode
-            .map(|value| value.parse::<IngestMode>().map_err(native_error))
             .transpose()?;
         json(
             self.db
@@ -100,7 +94,6 @@ impl NodeTraceDb {
                     cwd_exact: false,
                     collapse_lineage: false,
                     since_ms,
-                    mode,
                     model,
                     provider,
                 })
@@ -113,7 +106,6 @@ impl NodeTraceDb {
     pub fn ingest_json(
         &mut self,
         agents: Option<Vec<String>>,
-        mode: Option<String>,
         root: Option<String>,
         since_ms: Option<i64>,
     ) -> Result<String> {
@@ -122,16 +114,10 @@ impl NodeTraceDb {
             .into_iter()
             .map(|value| value.parse::<Agent>().map_err(native_error))
             .collect::<Result<Vec<_>>>()?;
-        let mode = mode
-            .as_deref()
-            .unwrap_or("full")
-            .parse::<IngestMode>()
-            .map_err(native_error)?;
         json(
             self.db
                 .ingest(IngestRequest {
                     agents,
-                    mode,
                     root: root.map(PathBuf::from),
                     since_ms,
                     exclude: Vec::new(),

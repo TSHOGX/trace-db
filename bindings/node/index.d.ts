@@ -1,5 +1,4 @@
 export type Agent = "claude" | "codex" | "opencode" | "gemini" | "pi";
-export type IngestMode = "partial" | "full";
 
 export interface SearchOptions {
   limit?: number;
@@ -14,14 +13,12 @@ export interface ListOptions {
   agent?: Agent;
   cwd?: string;
   sinceMs?: number;
-  mode?: IngestMode;
   model?: string;
   provider?: string;
 }
 
 export interface IngestOptions {
   agents?: Agent[];
-  mode?: IngestMode;
   root?: string;
   sinceMs?: number;
 }
@@ -83,18 +80,15 @@ export interface ArchiveStats {
   path: string;
   totalSessions: number;
   totalEvents: number;
-  totalFullSessions: number;
   agents: Array<{
     agent: Agent;
     sessions: number;
     events: number;
-    fullSessions: number;
   }>;
 }
 
 export interface SessionTrace {
   session: Record<string, unknown>;
-  mode: IngestMode;
   events: Array<Record<string, unknown>>;
 }
 
@@ -122,7 +116,6 @@ export class TraceDb {
     agent?: Agent,
     cwd?: string,
     sinceMs?: number,
-    mode?: IngestMode,
     model?: string,
     provider?: string,
   ): string;
@@ -131,12 +124,7 @@ export class TraceDb {
     nextCursor: string | null;
   };
 
-  ingestJson(
-    agents?: Agent[],
-    mode?: IngestMode,
-    root?: string,
-    sinceMs?: number,
-  ): string;
+  ingestJson(agents?: Agent[], root?: string, sinceMs?: number): string;
   ingest(options?: IngestOptions): IngestReport;
 
   showJson(sessionId: string): string;

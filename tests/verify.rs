@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::process::Command;
 use tempfile::tempdir;
-use tracedb::{verify_archive, Agent, IngestMode, IngestRequest, TraceDb};
+use tracedb::{verify_archive, Agent, IngestRequest, TraceDb};
 
 fn full_archive() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().unwrap();
@@ -20,7 +20,6 @@ fn full_archive() -> (tempfile::TempDir, std::path::PathBuf) {
     let report = db
         .ingest(IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Full,
             root: Some(native),
             since_ms: None,
             exclude: Vec::new(),
@@ -52,7 +51,7 @@ fn verify_reports_contract_and_object_corruption() {
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute(
-            "UPDATE schema_meta SET value='future-v9' WHERE key='archive_contract'",
+            "UPDATE schema_meta SET value='999' WHERE key='schema_version'",
             [],
         )
         .unwrap();
@@ -67,10 +66,10 @@ fn verify_reports_contract_and_object_corruption() {
     let contract = report
         .checks
         .iter()
-        .find(|check| check.name == "archive_contract")
+        .find(|check| check.name == "schema_contract")
         .unwrap();
     assert!(!contract.passed);
-    assert!(contract.failures[0].message.contains("future-v9"));
+    assert!(contract.failures[0].message.contains("999"));
     let objects = report
         .checks
         .iter()

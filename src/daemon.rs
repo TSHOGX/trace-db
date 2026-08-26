@@ -11,7 +11,6 @@ fn watch_args(
     db_path: &Path,
     interval: u64,
     agents: Option<String>,
-    mode: Option<String>,
     exclude: Option<String>,
     root: Option<&Path>,
 ) -> Vec<String> {
@@ -25,9 +24,6 @@ fn watch_args(
     ];
     if let Some(value) = agents {
         args.extend(["--agent".into(), value]);
-    }
-    if let Some(value) = mode {
-        args.extend(["--mode".into(), value]);
     }
     if let Some(value) = exclude {
         args.extend(["--exclude".into(), value]);
@@ -44,7 +40,6 @@ pub fn install_daemon(
     db_path: &Path,
     interval: u64,
     agents: Option<String>,
-    mode: Option<String>,
     exclude: Option<String>,
     root: Option<&Path>,
 ) -> Result<()> {
@@ -58,7 +53,7 @@ pub fn install_daemon(
     fs::create_dir_all(&launch_agents_dir)?;
     fs::create_dir_all(&log_dir)?;
 
-    let program_args = watch_args(trace_db_bin, db_path, interval, agents, mode, exclude, root);
+    let program_args = watch_args(trace_db_bin, db_path, interval, agents, exclude, root);
 
     let plist_content = generate_plist(label, &program_args, &log_path)?;
     fs::write(&plist_path, plist_content)?;
@@ -286,7 +281,6 @@ pub fn install_daemon(
     db_path: &Path,
     interval: u64,
     agents: Option<String>,
-    mode: Option<String>,
     exclude: Option<String>,
     root: Option<&Path>,
 ) -> Result<()> {
@@ -295,7 +289,7 @@ pub fn install_daemon(
     let unit_dir = config.join("systemd/user");
     let unit_path = unit_dir.join("tracedb-watch.service");
     fs::create_dir_all(&unit_dir)?;
-    let args = watch_args(trace_db_bin, db_path, interval, agents, mode, exclude, root);
+    let args = watch_args(trace_db_bin, db_path, interval, agents, exclude, root);
     fs::write(&unit_path, generate_systemd_unit(&args))?;
     run_systemctl(["--user", "daemon-reload"])?;
     run_systemctl(["--user", "enable", "--now", "tracedb-watch.service"])?;
@@ -412,11 +406,10 @@ pub fn install_daemon(
     db_path: &Path,
     interval: u64,
     agents: Option<String>,
-    mode: Option<String>,
     exclude: Option<String>,
     root: Option<&Path>,
 ) -> Result<()> {
-    let args = watch_args(trace_db_bin, db_path, interval, agents, mode, exclude, root);
+    let args = watch_args(trace_db_bin, db_path, interval, agents, exclude, root);
     let definition_path = windows_task_definition_path()?;
     if let Some(parent) = definition_path.parent() {
         fs::create_dir_all(parent)?;
@@ -582,7 +575,6 @@ pub fn install_daemon(
     _db_path: &Path,
     _interval: u64,
     _agents: Option<String>,
-    _mode: Option<String>,
     _exclude: Option<String>,
     _root: Option<&Path>,
 ) -> Result<()> {
@@ -632,7 +624,6 @@ mod tests {
             Path::new("/tmp/archive.db"),
             42,
             Some("claude,codex".into()),
-            Some("full".into()),
             Some("**/private/**".into()),
             Some(Path::new("/native/root")),
         );
@@ -646,8 +637,6 @@ mod tests {
                 "/tmp/archive.db",
                 "--agent",
                 "claude,codex",
-                "--mode",
-                "full",
                 "--exclude",
                 "**/private/**",
                 "--root",
@@ -666,7 +655,6 @@ mod tests {
             Path::new("/opt/trace db/trace-db"),
             Path::new("/tmp/100%/archive.db"),
             42,
-            None,
             None,
             None,
             None,
@@ -690,7 +678,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
             ),
             Path::new("/tmp/trace-db.log"),
         )
@@ -708,7 +695,6 @@ mod tests {
                 Path::new(r"C:\Data\archive.db"),
                 42,
                 Some("claude,codex".into()),
-                Some("full".into()),
                 None,
                 None,
             ),
@@ -728,7 +714,6 @@ mod tests {
             Path::new(r"C:\Data\100%\archive.db"),
             42,
             Some("claude,codex".into()),
-            Some("full".into()),
             None,
             None,
         );

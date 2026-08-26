@@ -4,7 +4,7 @@ use std::{
     process::{Command, Stdio},
 };
 use tempfile::tempdir;
-use tracedb::{Agent, Event, EventKind, IngestMode, ParsedSession, Session, TraceDb};
+use tracedb::{Agent, Event, EventKind, ParsedSession, Session, TraceDb};
 
 fn archive() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().unwrap();
@@ -13,29 +13,26 @@ fn archive() -> (tempfile::TempDir, std::path::PathBuf) {
     let mut tool = Event::new(EventKind::ToolCall, "{\"path\":\"README.md\"}");
     tool.name = Some("read_file".into());
     tool.data_json = Some(json!({"vendor_key":"kept"}));
-    db.ingest_session(
-        ParsedSession {
-            session: Session {
-                id: "codex:json-contract".into(),
-                agent: Agent::Codex,
-                cwd: Some("/workspace/demo".into()),
-                started_at_ms: Some(10),
-                ended_at_ms: Some(20),
-                status: None,
-                title: Some("JSON contract".into()),
-                model: Some("gpt-test".into()),
-                provider: Some("openai".into()),
-                git_branch: Some("main".into()),
-                parent_session_id: None,
-                forked_from: None,
-                meta: json!({"source":"fixture"}),
-                fingerprint: "json-v1".into(),
-                sources: Vec::new(),
-            },
-            events: vec![Event::new(EventKind::User, "inspect JSON"), tool],
+    db.ingest_session(ParsedSession {
+        session: Session {
+            id: "codex:json-contract".into(),
+            agent: Agent::Codex,
+            cwd: Some("/workspace/demo".into()),
+            started_at_ms: Some(10),
+            ended_at_ms: Some(20),
+            status: None,
+            title: Some("JSON contract".into()),
+            model: Some("gpt-test".into()),
+            provider: Some("openai".into()),
+            git_branch: Some("main".into()),
+            parent_session_id: None,
+            forked_from: None,
+            meta: json!({"source":"fixture"}),
+            fingerprint: "json-v1".into(),
+            sources: Vec::new(),
         },
-        IngestMode::Partial,
-    )
+        events: vec![Event::new(EventKind::User, "inspect JSON"), tool],
+    })
     .unwrap();
     (dir, path)
 }
@@ -53,8 +50,6 @@ fn stats_json_serializes_the_complete_archive_stats() {
     assert_eq!(stats["path"], path.display().to_string());
     assert_eq!(stats["totalSessions"], 1);
     assert_eq!(stats["totalEvents"], 2);
-    assert_eq!(stats["totalFullSessions"], 1);
-    assert_eq!(stats["agents"][0]["fullSessions"], 1);
 }
 
 #[test]
@@ -252,7 +247,6 @@ fn show_json_serializes_the_complete_session_trace() {
     let trace: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(trace["session"]["id"], "codex:json-contract");
     assert_eq!(trace["session"]["model"], "gpt-test");
-    assert_eq!(trace["mode"], "full");
     assert_eq!(trace["events"].as_array().unwrap().len(), 2);
     assert_eq!(trace["events"][1]["kind"], "tool_call");
     assert_eq!(trace["events"][1]["name"], "read_file");

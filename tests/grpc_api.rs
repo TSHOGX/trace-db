@@ -9,7 +9,7 @@ use tracedb::{
         trace_db_service_client::TraceDbServiceClient, ListRequest as ProtoListRequest,
         ReconstructRequest, SearchRequest as ProtoSearchRequest, ShowRequest, StatsRequest,
     },
-    Agent, Event, EventKind, IngestMode, ParsedSession, Session, TraceDb,
+    Agent, Event, EventKind, ParsedSession, Session, TraceDb,
 };
 
 #[tokio::test]
@@ -17,57 +17,51 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
     let dir = tempdir().unwrap();
     let mut database = TraceDb::open(dir.path().join("trace.db")).unwrap();
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:grpc".into(),
-                    agent: Agent::Codex,
-                    cwd: Some("/workspace/grpc".into()),
-                    started_at_ms: Some(10),
-                    ended_at_ms: Some(20),
-                    status: None,
-                    title: Some("gRPC contract".into()),
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: "grpc-v1".into(),
-                    sources: Vec::new(),
-                },
-                events: vec![
-                    Event::new(EventKind::User, "deploy over grpc"),
-                    Event::new(EventKind::Assistant, "grpc deployment complete"),
-                ],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:grpc".into(),
+                agent: Agent::Codex,
+                cwd: Some("/workspace/grpc".into()),
+                started_at_ms: Some(10),
+                ended_at_ms: Some(20),
+                status: None,
+                title: Some("gRPC contract".into()),
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: "grpc-v1".into(),
+                sources: Vec::new(),
             },
-            IngestMode::Partial,
-        )
+            events: vec![
+                Event::new(EventKind::User, "deploy over grpc"),
+                Event::new(EventKind::Assistant, "grpc deployment complete"),
+            ],
+        })
         .unwrap();
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:grpc-second".into(),
-                    agent: Agent::Codex,
-                    cwd: Some("/workspace/grpc".into()),
-                    started_at_ms: Some(1),
-                    ended_at_ms: Some(2),
-                    status: None,
-                    title: Some("second gRPC contract".into()),
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: "grpc-second-v1".into(),
-                    sources: Vec::new(),
-                },
-                events: vec![Event::new(EventKind::User, "second grpc event")],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:grpc-second".into(),
+                agent: Agent::Codex,
+                cwd: Some("/workspace/grpc".into()),
+                started_at_ms: Some(1),
+                ended_at_ms: Some(2),
+                status: None,
+                title: Some("second gRPC contract".into()),
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: "grpc-second-v1".into(),
+                sources: Vec::new(),
             },
-            IngestMode::Partial,
-        )
+            events: vec![Event::new(EventKind::User, "second grpc event")],
+        })
         .unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -92,7 +86,6 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
     let ingest = client
         .ingest(tracedb::proto::IngestRequest {
             agents: vec!["codex".into()],
-            mode: "partial".into(),
             root: Some(dir.path().to_string_lossy().into_owned()),
             since_ms: None,
         })
@@ -110,7 +103,6 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
             agent: Some("codex".into()),
             cwd: Some("/workspace".into()),
             since_ms: None,
-            mode: Some("partial".into()),
             model: None,
             provider: None,
             collapse_lineage: false,
@@ -132,7 +124,6 @@ async fn grpc_round_trip_uses_the_versioned_contract() {
             agent: Some("codex".into()),
             cwd: Some("/workspace".into()),
             since_ms: None,
-            mode: Some("partial".into()),
             model: None,
             provider: None,
             collapse_lineage: false,

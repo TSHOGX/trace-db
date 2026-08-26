@@ -1,8 +1,7 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Event, EventKind, IngestMode, ListRequest, ParsedSession, Session, SessionStatus,
-    TraceDb,
+    Agent, Event, EventKind, ListRequest, ParsedSession, Session, SessionStatus, TraceDb,
 };
 
 struct Fixture<'a> {
@@ -10,7 +9,6 @@ struct Fixture<'a> {
     agent: Agent,
     cwd: &'a str,
     time: i64,
-    mode: IngestMode,
     model: &'a str,
     provider: &'a str,
 }
@@ -21,34 +19,30 @@ fn insert(database: &mut TraceDb, fixture: Fixture<'_>) {
         agent,
         cwd,
         time,
-        mode,
         model,
         provider,
     } = fixture;
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: id.into(),
-                    agent,
-                    cwd: Some(cwd.into()),
-                    started_at_ms: Some(time - 1),
-                    ended_at_ms: Some(time),
-                    status: Some(SessionStatus::Completed),
-                    title: Some(format!("Session {id}")),
-                    model: Some(model.into()),
-                    provider: Some(provider.into()),
-                    git_branch: None,
-                    parent_session_id: None,
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: id.into(),
-                    sources: Vec::new(),
-                },
-                events: vec![Event::new(EventKind::User, id)],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: id.into(),
+                agent,
+                cwd: Some(cwd.into()),
+                started_at_ms: Some(time - 1),
+                ended_at_ms: Some(time),
+                status: Some(SessionStatus::Completed),
+                title: Some(format!("Session {id}")),
+                model: Some(model.into()),
+                provider: Some(provider.into()),
+                git_branch: None,
+                parent_session_id: None,
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: id.into(),
+                sources: Vec::new(),
             },
-            mode,
-        )
+            events: vec![Event::new(EventKind::User, id)],
+        })
         .unwrap();
 }
 
@@ -63,7 +57,6 @@ fn list_uses_stable_keyset_pagination() {
             agent: Agent::Codex,
             cwd: "/workspace/a",
             time: 30,
-            mode: IngestMode::Partial,
             model: "gpt-a",
             provider: "openai",
         },
@@ -75,7 +68,6 @@ fn list_uses_stable_keyset_pagination() {
             agent: Agent::Codex,
             cwd: "/workspace/b",
             time: 20,
-            mode: IngestMode::Partial,
             model: "gpt-b",
             provider: "openai",
         },
@@ -87,7 +79,6 @@ fn list_uses_stable_keyset_pagination() {
             agent: Agent::Claude,
             cwd: "/workspace/c",
             time: 20,
-            mode: IngestMode::Full,
             model: "claude-test",
             provider: "anthropic",
         },
@@ -99,7 +90,6 @@ fn list_uses_stable_keyset_pagination() {
             agent: Agent::Pi,
             cwd: "/workspace/d",
             time: 10,
-            mode: IngestMode::Partial,
             model: "gpt-d",
             provider: "openai",
         },
@@ -128,7 +118,6 @@ fn list_uses_stable_keyset_pagination() {
             agent: Agent::Gemini,
             cwd: "/workspace/new",
             time: 40,
-            mode: IngestMode::Partial,
             model: "gemini-test",
             provider: "google",
         },
@@ -163,7 +152,6 @@ fn list_applies_metadata_filters_in_sql() {
             agent: Agent::Codex,
             cwd: "/workspace/project-a",
             time: 30,
-            mode: IngestMode::Full,
             model: "gpt-test",
             provider: "openai",
         },
@@ -175,7 +163,6 @@ fn list_applies_metadata_filters_in_sql() {
             agent: Agent::Codex,
             cwd: "/workspace/project-a",
             time: 5,
-            mode: IngestMode::Full,
             model: "gpt-test",
             provider: "openai",
         },
@@ -187,7 +174,6 @@ fn list_applies_metadata_filters_in_sql() {
             agent: Agent::Claude,
             cwd: "/workspace/project-a",
             time: 30,
-            mode: IngestMode::Full,
             model: "claude-test",
             provider: "anthropic",
         },
@@ -199,7 +185,6 @@ fn list_applies_metadata_filters_in_sql() {
             agent: Some(Agent::Codex),
             cwd: Some("project-a".into()),
             since_ms: Some(10),
-            mode: Some(IngestMode::Full),
             model: Some("gpt-test".into()),
             provider: Some("openai".into()),
             ..Default::default()
@@ -235,7 +220,6 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
             agent: Agent::Codex,
             cwd: "/workspace/app",
             time: 30,
-            mode: IngestMode::Full,
             model: "gpt",
             provider: "openai",
         },
@@ -247,35 +231,31 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
             agent: Agent::Codex,
             cwd: "/workspace/app-old",
             time: 29,
-            mode: IngestMode::Full,
             model: "gpt",
             provider: "openai",
         },
     );
     database
-        .ingest_session(
-            ParsedSession {
-                session: Session {
-                    id: "codex:child".into(),
-                    agent: Agent::Codex,
-                    cwd: Some("/workspace/worktree".into()),
-                    started_at_ms: Some(9),
-                    ended_at_ms: Some(10),
-                    status: Some(SessionStatus::Completed),
-                    title: None,
-                    model: None,
-                    provider: None,
-                    git_branch: None,
-                    parent_session_id: Some("codex:parent".into()),
-                    forked_from: None,
-                    meta: json!({}),
-                    fingerprint: "child".into(),
-                    sources: Vec::new(),
-                },
-                events: vec![Event::new(EventKind::Assistant, "child")],
+        .ingest_session(ParsedSession {
+            session: Session {
+                id: "codex:child".into(),
+                agent: Agent::Codex,
+                cwd: Some("/workspace/worktree".into()),
+                started_at_ms: Some(9),
+                ended_at_ms: Some(10),
+                status: Some(SessionStatus::Completed),
+                title: None,
+                model: None,
+                provider: None,
+                git_branch: None,
+                parent_session_id: Some("codex:parent".into()),
+                forked_from: None,
+                meta: json!({}),
+                fingerprint: "child".into(),
+                sources: Vec::new(),
             },
-            IngestMode::Full,
-        )
+            events: vec![Event::new(EventKind::Assistant, "child")],
+        })
         .unwrap();
 
     let page = database

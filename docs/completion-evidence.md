@@ -8,7 +8,7 @@ executed result until a runner has actually completed it.
 | --- | --- | --- |
 | Five-agent discovery, parsing, incremental ingest, errors | Real installed-version dry-runs for Claude Code, Codex, OpenCode, Gemini CLI, and Pi; parser robustness and structured-failure tests | Proven for recorded versions |
 | No implicit redaction or data loss | Credential-preservation tests, exact native-source fixture reconstruction, and real selected-file SHA-256 matches | Proven for tested inputs |
-| Capture/source/reconstruction boundaries | Full-only canonical mode, legacy partial verification, restore manifests, source-trace preservation, real reconstruction probes | Proven |
+| Capture/source/reconstruction boundaries | Unconditional lossless capture, snapshot verification, restore manifests, source-trace preservation, real reconstruction probes | Proven |
 | Verify/doctor/backup/restore/lifecycle | Corruption, permission, telemetry, idempotent import, verified backup, reconstruction preflight, and dry-run-only GC tests | Proven |
 | CLI/API/gRPC output and errors | JSON/JSONL/Markdown contracts, structured API errors, gRPC status-code/range/kind/security tests, protocol compatibility rules | Proven for v1 contracts |
 | Platform install, upgrade, checksums, packages | Five-target release matrix; Unix offline install/upgrade test; Windows zip, wheel, Node package, checksum, SBOM, and attestation workflow checks | Proven except published attestation execution |

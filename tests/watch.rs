@@ -8,15 +8,12 @@ use std::{
     },
 };
 use tempfile::tempdir;
-use tracedb::{
-    Agent, IngestMode, IngestRequest, TraceDb, WatchEvent, WatchRequest, WatchRun, WatchTrigger,
-};
+use tracedb::{Agent, IngestRequest, TraceDb, WatchEvent, WatchRequest, WatchRun, WatchTrigger};
 
 fn request(root: PathBuf, once: bool) -> WatchRequest {
     WatchRequest {
         ingest: IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Partial,
             root: Some(root),
             since_ms: None,
             exclude: Vec::new(),

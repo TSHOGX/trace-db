@@ -2,9 +2,9 @@
 //!
 //! The normalized layer intentionally contains only information that is useful
 //! to every supported coding agent. Agent-specific fields remain in `meta` and
-//! `data_json`; in `full` mode the original native source is additionally kept
-//! as a content-addressed object, so normalization can never become the source
-//! of truth.
+//! `data_json`; every ingest additionally keeps the original native source as a
+//! content-addressed object, so normalization can never become the source of
+//! truth.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,45 +98,6 @@ impl FromStr for Agent {
             "gemini" => Ok(Self::Gemini),
             "pi" => Ok(Self::Pi),
             _ => Err(format!("unknown agent: {s}")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum IngestMode {
-    Partial,
-    #[default]
-    Full,
-}
-
-impl IngestMode {
-    /// Every new write is lossless. `partial` remains readable and accepted as
-    /// a compatibility spelling for callers and archives created before the
-    /// lossless contract, but it can no longer create a partial record.
-    pub fn retain_full(self, _existing: Option<IngestMode>) -> IngestMode {
-        IngestMode::Full
-    }
-}
-
-impl fmt::Display for IngestMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Partial => "partial",
-            Self::Full => "full",
-        })
-    }
-}
-
-impl FromStr for IngestMode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "partial" => Ok(Self::Partial),
-            "full" => Ok(Self::Full),
-            _ => Err(format!(
-                "unknown ingest mode: {s} (expected partial or full)"
-            )),
         }
     }
 }

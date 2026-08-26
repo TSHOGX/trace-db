@@ -1,8 +1,7 @@
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tracedb::{
-    Agent, IngestMode, IngestRequest, ReconstructionOptions, TraceDb,
-    RESTORE_MANIFEST_SCHEMA_VERSION,
+    Agent, IngestRequest, ReconstructionOptions, TraceDb, RESTORE_MANIFEST_SCHEMA_VERSION,
 };
 
 fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, TraceDb) {
@@ -11,7 +10,6 @@ fn ingest_one(root: &std::path::Path, agent: Agent) -> (tempfile::TempDir, Trace
     let report = db
         .ingest(IngestRequest {
             agents: vec![agent],
-            mode: IngestMode::Full,
             root: Some(root.to_path_buf()),
             since_ms: None,
             exclude: Vec::new(),
@@ -40,7 +38,6 @@ fn reconstruction_preflights_conflicts_before_writing() {
     let report = db
         .ingest(IngestRequest {
             agents: vec![Agent::Codex],
-            mode: IngestMode::Full,
             root: Some(fixtures.path().to_path_buf()),
             since_ms: None,
             exclude: Vec::new(),

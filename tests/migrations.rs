@@ -1,30 +1,37 @@
 use rusqlite::Connection;
 use tempfile::tempdir;
-use tracedb::{open_database, SearchRequest, TraceDb};
+use tracedb::{open_database, TraceDb};
 
 const HISTORICAL_V1: &str = include_str!("fixtures/migrations/v1_baseline.sql");
 
 #[test]
-fn historical_v1_fixture_migrates_without_losing_searchable_data() {
+fn a_historical_archive_is_refused_with_reingest_guidance() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("historical-v1.db");
     let connection = Connection::open(&path).unwrap();
     connection.execute_batch(HISTORICAL_V1).unwrap();
     drop(connection);
 
-    let database = TraceDb::open(&path).unwrap();
-    let stats = database.stats().unwrap();
-    assert_eq!(stats.total_sessions, 1);
-    assert_eq!(stats.total_events, 2);
+    // The normalized layer is a rebuildable projection, so TraceDB refuses a
+    // foreign schema instead of carrying per-column upgrade paths.
+    let error = match TraceDb::open(&path) {
+        Ok(_) => panic!("a historical archive must not open"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("schema version 1") && error.contains("re-run `trace-db ingest`"),
+        "unexpected refusal message: {error}"
+    );
+}
 
-    let matches = database
-        .search(SearchRequest::new("legacy deploy"))
-        .unwrap();
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].id, "codex:historical-v1");
+#[test]
+fn a_fresh_archive_records_the_current_schema_contract() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("fresh.db");
+    TraceDb::open(&path).unwrap();
 
     let metadata = open_database(&path).unwrap();
-    let values = ["schema_version", "tokenizer", "archive_contract"]
+    let values = ["schema_version", "tokenizer"]
         .into_iter()
         .map(|key| {
             metadata
@@ -39,7 +46,6 @@ fn historical_v1_fixture_migrates_without_losing_searchable_data() {
         [
             tracedb::store::SCHEMA_VERSION.to_string(),
             tracedb::store::PORTABLE_TOKENIZER.to_string(),
-            tracedb::store::ARCHIVE_CONTRACT.to_string(),
         ]
     );
 }

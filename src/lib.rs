@@ -34,8 +34,8 @@ pub use facade::{
     WatchSummary, WatchTrigger, RESTORE_MANIFEST_SCHEMA_VERSION,
 };
 pub use model::{
-    Agent, Capture, Event, EventKind, EventParentKind, IngestMode, NativeSource, ParsedSession,
-    Session, SessionStatus, Span, SpanKind, SpanStatus, TokenUsage,
+    Agent, Capture, Event, EventKind, EventParentKind, NativeSource, ParsedSession, Session,
+    SessionStatus, Span, SpanKind, SpanStatus, TokenUsage,
 };
 pub use parsers::SessionCandidate;
 pub use search::{ScoreBreakdown, SearchMatch, SearchRequest, SearchResult};

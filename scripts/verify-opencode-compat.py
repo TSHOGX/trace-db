@@ -49,7 +49,7 @@ def main() -> None:
         ingest = run(
             [
                 str(trace_db), "--db", str(archive), "ingest", "--agent", "opencode",
-                "--mode", "full", "--root", str(database), "--since", since,
+                "--root", str(database), "--since", since,
                 "--format", "json",
             ]
         )

@@ -1,9 +1,7 @@
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use serde::Serialize;
 use std::path::PathBuf;
-use tracedb::{
-    Agent, IngestMode, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb,
-};
+use tracedb::{Agent, IngestRequest, ListRequest, ReconstructionOptions, SearchRequest, TraceDb};
 
 fn runtime_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
@@ -70,7 +68,7 @@ impl PyTraceDb {
 
     /// List archived sessions with cursor pagination and metadata filters.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (limit=50, cursor=None, agent=None, cwd=None, since_ms=None, mode=None, model=None, provider=None))]
+    #[pyo3(signature = (limit=50, cursor=None, agent=None, cwd=None, since_ms=None, model=None, provider=None))]
     fn list_json(
         &self,
         limit: usize,
@@ -78,15 +76,11 @@ impl PyTraceDb {
         agent: Option<String>,
         cwd: Option<String>,
         since_ms: Option<i64>,
-        mode: Option<String>,
         model: Option<String>,
         provider: Option<String>,
     ) -> PyResult<String> {
         let agent = agent
             .map(|value| value.parse::<Agent>().map_err(runtime_error))
-            .transpose()?;
-        let mode = mode
-            .map(|value| value.parse::<IngestMode>().map_err(runtime_error))
             .transpose()?;
         json(
             self.db
@@ -98,7 +92,6 @@ impl PyTraceDb {
                     cwd_exact: false,
                     collapse_lineage: false,
                     since_ms,
-                    mode,
                     model,
                     provider,
                 })
@@ -107,11 +100,10 @@ impl PyTraceDb {
     }
 
     /// Ingest native sessions and return the typed report as a JSON object string.
-    #[pyo3(signature = (agents=None, mode="full", root=None, since_ms=None))]
+    #[pyo3(signature = (agents=None, root=None, since_ms=None))]
     fn ingest_json(
         &mut self,
         agents: Option<Vec<String>>,
-        mode: &str,
         root: Option<String>,
         since_ms: Option<i64>,
     ) -> PyResult<String> {
@@ -120,12 +112,10 @@ impl PyTraceDb {
             .into_iter()
             .map(|value| value.parse::<Agent>().map_err(runtime_error))
             .collect::<PyResult<Vec<_>>>()?;
-        let mode = mode.parse::<IngestMode>().map_err(runtime_error)?;
         json(
             self.db
                 .ingest(IngestRequest {
                     agents,
-                    mode,
                     root: root.map(PathBuf::from),
                     since_ms,
                     exclude: Vec::new(),
