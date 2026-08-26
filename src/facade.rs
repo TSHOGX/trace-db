@@ -632,8 +632,15 @@ impl TraceDb {
     }
 
     /// Rebuild the gated FTS index from normalized events.
+    /// Rebuild the FTS index and repair every materialized session aggregate.
+    ///
+    /// This is the single "recompute derived state" command: both the search
+    /// index and the session aggregates are deterministic projections, so one
+    /// operation restores them from the normalized rows.
     pub fn reindex(&self) -> Result<()> {
-        store::rebuild_fts(&self.connection)
+        store::rebuild_fts(&self.connection)?;
+        store::rebuild_aggregates(&self.connection)?;
+        Ok(())
     }
 
     /// Create a verified, consistent SQLite snapshot at `destination`.
@@ -1590,6 +1597,16 @@ pub struct SessionSummary {
     pub parent_relation: Option<crate::SessionRelation>,
     /// Number of sessions that directly reference this session as a parent.
     pub subagent_count: i64,
+    /// User and assistant turns in the normalized stream.
+    pub turns: i64,
+    pub tool_calls: i64,
+    /// Events the producer explicitly marked as errors.
+    pub errors: i64,
+    /// Token totals, or `None` when no event carried usage evidence. A real
+    /// zero stays distinguishable from an absent measurement.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1601,6 +1618,8 @@ pub struct SessionCoverage {
     pub events: i64,
     pub sources: i64,
     pub latest_source_mtime_ns: Option<i64>,
+    /// Total bytes of the native sources this session retains.
+    pub source_bytes: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

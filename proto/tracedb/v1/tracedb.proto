@@ -238,6 +238,14 @@ message SessionSummary {
   int64 subagent_count = 14;
   optional string status = 15;
   string fingerprint = 16;
+  // Materialized at ingest; see references/architecture.md.
+  int64 turns = 17;
+  int64 tool_calls = 18;
+  int64 errors = 19;
+  // Absent when the producer reported no usage; a real zero is distinct.
+  optional int64 input_tokens = 20;
+  optional int64 output_tokens = 21;
+  optional int64 total_tokens = 22;
 }
 
 message CoverageRequest { string id = 1; }
@@ -255,6 +263,7 @@ message SessionCoverage {
   int64 events = 5;
   int64 sources = 6;
   optional int64 latest_source_mtime_ns = 7;
+  int64 source_bytes = 8;
 }
 
 message StatsResponse {

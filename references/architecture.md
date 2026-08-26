@@ -127,6 +127,31 @@ Ingest has two explicit performance invariants:
   array format remains buffered because its shape requires materializing the
   document before normalization.
 
+## Materialized session aggregates
+
+Session-level facts that are deterministic functions of the event stream and
+retained sources are materialized at ingest rather than recomputed per query:
+event/turn/tool-call/error counts, token totals, the first user and last
+assistant previews, source count and bytes, the newest source mtime, and the
+`sort_time` ordering key. `list` therefore projects only stored columns and
+pages directly from `sessions_sort_idx`, and `coverage` is one indexed row read.
+
+`model::SessionAggregates` is the single definition of the event-derived values.
+Two aggregates cannot come from the event stream and are derived in SQL instead:
+`child_count` is a property of the parent that only the set of other sessions
+knows, and the source totals must describe the rows the archive actually
+retained, which include snapshots preserved from earlier ingests.
+
+`child_count` is recomputed from the indexed lineage edge inside the writing
+transaction rather than incremented. Deriving instead of adjusting is what makes
+it correct when a child is ingested before its parent, when the same child is
+re-ingested, and when a child is re-parented; a counter would drift in all
+three cases.
+
+Because these are projections, `reindex` repairs them and `verify` reports drift
+as the `session_aggregates` check. `import` recomputes them after a merge, since
+the counts describe the union rather than either input archive.
+
 ## Lineage
 
 There are three independent relationship layers:

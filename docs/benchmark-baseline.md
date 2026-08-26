@@ -40,6 +40,32 @@ use smaller workloads, but they make the architectural improvements visible:
 | 1k, current `a66db36` | 267 ms | 5.8 ms | 507 ms | 17.9 MiB | 2.62x |
 | 10k, post-batch/search `91e8189` checkpoint | 3.80 s | 104 ms | 4.34 s | 97.9 MiB | 4.75x |
 
+### Materialized session aggregates
+
+Measured on the 10,000-session suite immediately before and after materializing
+the session aggregates, same host and build mode:
+
+| Operation | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| `list` | 2.6 ms | 0.2 ms | −93% |
+| `stats` | 9.4 ms | 1.7 ms | −82% |
+| `unchanged_ingest` | 70.7 ms | 60.2 ms | −15% |
+| `first_ingest` | 5.06 s | 5.10 s | +0.8% |
+| `reindex` | 62.6 ms | 196.8 ms | +215% |
+| `verify` | 374 ms | 411 ms | +10% |
+
+`list` no longer scans the session table: `EXPLAIN QUERY PLAN` reports a single
+`SCAN s USING INDEX sessions_sort_idx`, replacing a full scan plus two
+correlated subqueries per row and a temp B-tree sort. The old plan cost grew
+with archive size even for a fixed page — 0.21 ms of query CPU at 1,000 sessions
+against 0.73 ms at 10,000 — while the materialized projection stays at roughly
+0.09 ms regardless.
+
+The `reindex` and `verify` regressions are the intended cost of the new
+contract: `reindex` now repairs every materialized aggregate in addition to
+rebuilding the FTS index, and `verify` gained a drift check that recomputes the
+aggregates it validates.
+
 The current 1k run also wrote only 16 KiB during the unchanged pass. The
 streaming parser primarily reduces memory pressure for large native JSONL files;
 the synthetic benchmark's small files therefore show similar wall time to the

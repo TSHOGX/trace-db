@@ -342,6 +342,12 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                     subagent_count: row.subagent_count,
                     status: row.status.map(|status| status.to_string()),
                     fingerprint: row.fingerprint,
+                    turns: row.turns,
+                    tool_calls: row.tool_calls,
+                    errors: row.errors,
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    total_tokens: row.total_tokens,
                 })
                 .collect(),
             next_cursor: page.next_cursor,
@@ -417,6 +423,7 @@ impl pb::trace_db_service_server::TraceDbService for TraceDbGrpc {
                 events: row.events,
                 sources: row.sources,
                 latest_source_mtime_ns: row.latest_source_mtime_ns,
+                source_bytes: row.source_bytes,
             });
         Ok(Response::new(pb::CoverageResponse { coverage }))
     }

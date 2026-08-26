@@ -1,7 +1,8 @@
 use crate::{
     config::TokenizerKind,
     model::{
-        assign_indexes, derive_spans, Event, NativeSource, ParsedSession, Session, Span, TokenUsage,
+        assign_indexes, derive_spans, Event, NativeSource, ParsedSession, Session,
+        SessionAggregates, Span, TokenUsage,
     },
     IngestAck, IngestReport, ListPage, ListRequest, ReconstructionOptions, SessionCoverage,
     SessionSummary, SessionTrace,
@@ -19,7 +20,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
 
@@ -281,7 +282,12 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
                object_hash=COALESCE(raw_sources.object_hash,excluded.object_hash)",
             [],
         )?;
+        // Imported rows merge into an existing archive, so child_count and the
+        // event totals are properties of the union, not of either input.
+        // Recomputing states that invariant instead of trusting copied columns.
+        connection.execute(&format!("UPDATE sessions SET {AGGREGATE_PROJECTION}"), [])?;
         connection.execute_batch("COMMIT")?;
+        truncate_stored_previews(connection)?;
         Ok(crate::ImportReport {
             source: source.to_path_buf(),
             imported_sessions,
@@ -676,11 +682,25 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
         ended_at_ms INTEGER, status TEXT, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
         parent_session_id TEXT, parent_relation TEXT, fork_point_native_id TEXT,
         fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL,
+        -- Materialized deterministic projections of the event stream and native
+        -- sources. Retrieval reads these instead of recomputing per row;
+        -- `reindex` repairs them and `verify` reports drift.
+        event_count INTEGER NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0,
+        child_count INTEGER NOT NULL DEFAULT 0, tool_call_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+        first_user_text TEXT, last_assistant_text TEXT,
+        source_count INTEGER NOT NULL DEFAULT 0, source_bytes INTEGER NOT NULL DEFAULT 0,
+        latest_source_mtime_ns INTEGER,
+        sort_time INTEGER NOT NULL DEFAULT 0,
         CHECK ((parent_session_id IS NULL) = (parent_relation IS NULL))
       );
       CREATE INDEX IF NOT EXISTS sessions_agent_idx ON sessions(agent);
       CREATE INDEX IF NOT EXISTS sessions_ended_idx ON sessions(ended_at_ms);
       CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions(parent_session_id);
+      -- Serves `list`'s keyset pagination directly: the ordering key is stored,
+      -- so paging is an index scan rather than a full scan plus temp B-tree.
+      CREATE INDEX IF NOT EXISTS sessions_sort_idx ON sessions(sort_time DESC, id ASC);
       CREATE TABLE IF NOT EXISTS raw_sources (
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         locator TEXT NOT NULL, kind TEXT NOT NULL, restore_path TEXT NOT NULL,
@@ -870,6 +890,15 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
 
     let contract_failures = verify_contract(connection)?;
     checks.push(VerifyCheck::new("schema_contract", 3, contract_failures));
+
+    // Materialized aggregates are derived state, so drift is exactly the class
+    // of corruption a verifier should surface rather than silently serve.
+    let aggregate_failures = aggregate_drift(connection)?;
+    checks.push(VerifyCheck::new(
+        "session_aggregates",
+        connection.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?,
+        aggregate_failures,
+    ));
 
     // Rank 0 checks the FTS shadow tables without comparing every row in the
     // external content table. TraceDB intentionally indexes only searchable
@@ -1161,10 +1190,34 @@ fn write_session(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
-    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json,ingested_at_ms)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,parent_relation=excluded.parent_relation,fork_point_native_id=excluded.fork_point_native_id,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
-        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.parent_relation.map(|relation| relation.to_string()), session.fork_point_native_id, session.fingerprint, session.meta.to_string(), now_ms()])?;
+    let previous_parent: Option<Option<String>> = tx
+        .query_row(
+            "SELECT parent_session_id FROM sessions WHERE id=?1",
+            [&session.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let ingested_at_ms = now_ms();
+    let aggregates = SessionAggregates::derive(events).with_sort_time(session, ingested_at_ms);
+    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json,ingested_at_ms,event_count,turn_count,tool_call_count,error_count,input_tokens,output_tokens,total_tokens,first_user_text,last_assistant_text,sort_time)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
+                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,parent_relation=excluded.parent_relation,fork_point_native_id=excluded.fork_point_native_id,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms,event_count=excluded.event_count,turn_count=excluded.turn_count,tool_call_count=excluded.tool_call_count,error_count=excluded.error_count,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,total_tokens=excluded.total_tokens,first_user_text=excluded.first_user_text,last_assistant_text=excluded.last_assistant_text,sort_time=excluded.sort_time",
+        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.parent_relation.map(|relation| relation.to_string()), session.fork_point_native_id, session.fingerprint, session.meta.to_string(), ingested_at_ms, aggregates.event_count, aggregates.turn_count, aggregates.tool_call_count, aggregates.error_count, aggregates.input_tokens, aggregates.output_tokens, aggregates.total_tokens, aggregates.first_user_text, aggregates.last_assistant_text, aggregates.sort_time])?;
+    // `child_count` belongs to the parent but is only learnable when a child is
+    // written, and children can arrive before their parent, after it, or again
+    // on re-ingest. Recomputing the affected parents from the indexed edge
+    // inside this transaction is idempotent under every one of those orders,
+    // unlike an incrementing counter. A re-parented child repairs both its old
+    // and new parent.
+    for parent_id in [previous_parent.flatten(), session.parent_session_id.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        refresh_child_count(tx, &parent_id)?;
+    }
+    // A parent ingested after its children adopts the count they already imply.
+    refresh_child_count(tx, &session.id)?;
     tx.execute("DELETE FROM raw_sources WHERE session_id=?1", [&session.id])?;
     let mut current_locators = Vec::with_capacity(session.sources.len());
     for src in &session.sources {
@@ -1182,6 +1235,9 @@ fn write_session(
             )?;
         }
     }
+    // Derived from the retained rows rather than the parse, because the block
+    // above deliberately keeps snapshots whose locator vanished from the source.
+    refresh_source_aggregates(tx, &session.id)?;
     if !events_match_stored(tx, &session.id, events)? {
         tx.execute("DELETE FROM events WHERE session_id=?1", [&session.id])?;
         for e in events {
@@ -1211,6 +1267,35 @@ fn write_session(
             ],
         )?;
     }
+    Ok(())
+}
+
+/// Recompute the stored source totals from the rows the archive retained.
+fn refresh_source_aggregates(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET
+           source_count=(SELECT count(*) FROM raw_sources r WHERE r.session_id=?1),
+           source_bytes=(SELECT coalesce(sum(coalesce(r.bytes,0)),0) FROM raw_sources r WHERE r.session_id=?1),
+           latest_source_mtime_ns=(SELECT max(r.mtime_ns) FROM raw_sources r WHERE r.session_id=?1)
+         WHERE id=?1",
+        [session_id],
+    )?;
+    Ok(())
+}
+
+/// Recompute one session's `child_count` from the authoritative lineage edge.
+///
+/// Idempotent by construction: it derives the count rather than adjusting it,
+/// so repeat ingest and out-of-order arrival converge to the same value. A
+/// missing session id is a no-op, which is what makes a child that precedes its
+/// parent harmless.
+fn refresh_child_count(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions SET child_count=
+           (SELECT count(*) FROM sessions child WHERE child.parent_session_id=?1)
+         WHERE id=?1",
+        [session_id],
+    )?;
     Ok(())
 }
 
@@ -1404,6 +1489,112 @@ fn store_object(tx: &Transaction<'_>, bytes: &[u8]) -> Result<Option<String>> {
     Ok(Some(hash))
 }
 
+/// The authoritative SQL definition of every session aggregate that is a
+/// projection of other tables.
+///
+/// `reindex` applies it to repair and `verify` compares against it to report
+/// drift, so the repair and the check can never disagree.
+const AGGREGATE_PROJECTION: &str = "
+  event_count=(SELECT count(*) FROM events e WHERE e.session_id=sessions.id),
+  turn_count=(SELECT count(*) FROM events e WHERE e.session_id=sessions.id AND e.kind IN ('user','assistant')),
+  child_count=(SELECT count(*) FROM sessions c WHERE c.parent_session_id=sessions.id),
+  tool_call_count=(SELECT count(*) FROM events e WHERE e.session_id=sessions.id AND e.kind='tool_call'),
+  error_count=(SELECT count(*) FROM events e WHERE e.session_id=sessions.id AND e.is_error=1),
+  first_user_text=(SELECT e.text FROM events e WHERE e.session_id=sessions.id AND e.kind='user' ORDER BY e.idx LIMIT 1),
+  last_assistant_text=(SELECT e.text FROM events e WHERE e.session_id=sessions.id AND e.kind='assistant' ORDER BY e.idx DESC LIMIT 1),
+  source_count=(SELECT count(*) FROM raw_sources r WHERE r.session_id=sessions.id),
+  source_bytes=(SELECT coalesce(sum(coalesce(r.bytes,0)),0) FROM raw_sources r WHERE r.session_id=sessions.id),
+  latest_source_mtime_ns=(SELECT max(r.mtime_ns) FROM raw_sources r WHERE r.session_id=sessions.id),
+  sort_time=coalesce(ended_at_ms,started_at_ms,ingested_at_ms)
+";
+
+/// Recompute every materialized session aggregate from the underlying rows.
+///
+/// The stored previews are truncated to [`crate::model::PREVIEW_LIMIT`] after
+/// the SQL pass so repair reproduces the ingest-time value exactly.
+pub fn rebuild_aggregates(conn: &Connection) -> Result<u64> {
+    let repaired = conn.execute(&format!("UPDATE sessions SET {AGGREGATE_PROJECTION}"), [])? as u64;
+    truncate_stored_previews(conn)?;
+    Ok(repaired)
+}
+
+/// Apply the shared preview budget to the previews the SQL pass copied whole.
+fn truncate_stored_previews(conn: &Connection) -> Result<()> {
+    let mut statement = conn.prepare(
+        "SELECT id,first_user_text,last_assistant_text FROM sessions
+         WHERE length(first_user_text)>?1 OR length(last_assistant_text)>?1",
+    )?;
+    let overlong = statement
+        .query_map([crate::model::PREVIEW_LIMIT as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    for (id, ask, outcome) in overlong {
+        conn.execute(
+            "UPDATE sessions SET first_user_text=?2,last_assistant_text=?3 WHERE id=?1",
+            params![
+                id,
+                ask.map(|text| crate::model::preview(&text, crate::model::PREVIEW_LIMIT)),
+                outcome.map(|text| crate::model::preview(&text, crate::model::PREVIEW_LIMIT)),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Count sessions whose stored aggregates disagree with the underlying rows.
+fn aggregate_drift(connection: &Connection) -> Result<Vec<crate::VerificationFailure>> {
+    let mut statement = connection.prepare(
+        "SELECT s.id,s.event_count,s.child_count,s.turn_count,s.tool_call_count,s.sort_time,
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id),
+                (SELECT count(*) FROM sessions c WHERE c.parent_session_id=s.id),
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id AND e.kind IN ('user','assistant')),
+                (SELECT count(*) FROM events e WHERE e.session_id=s.id AND e.kind='tool_call'),
+                coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)
+         FROM sessions s
+         WHERE s.event_count <> (SELECT count(*) FROM events e WHERE e.session_id=s.id)
+            OR s.child_count <> (SELECT count(*) FROM sessions c WHERE c.parent_session_id=s.id)
+            OR s.turn_count <> (SELECT count(*) FROM events e WHERE e.session_id=s.id AND e.kind IN ('user','assistant'))
+            OR s.tool_call_count <> (SELECT count(*) FROM events e WHERE e.session_id=s.id AND e.kind='tool_call')
+            OR s.sort_time <> coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)
+         LIMIT 100",
+    )?;
+    let failures = statement
+        .query_map([], |row| {
+            let id = row.get::<_, String>(0)?;
+            let stored = [
+                ("event_count", row.get::<_, i64>(1)?, row.get::<_, i64>(6)?),
+                ("child_count", row.get::<_, i64>(2)?, row.get::<_, i64>(7)?),
+                ("turn_count", row.get::<_, i64>(3)?, row.get::<_, i64>(8)?),
+                (
+                    "tool_call_count",
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(9)?,
+                ),
+                ("sort_time", row.get::<_, i64>(5)?, row.get::<_, i64>(10)?),
+            ];
+            let detail = stored
+                .iter()
+                .filter(|(_, stored, actual)| stored != actual)
+                .map(|(name, stored, actual)| format!("{name} stored {stored}, actual {actual}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Ok(crate::VerificationFailure {
+                locator: id,
+                message: format!(
+                    "materialized aggregates disagree with stored rows ({detail}); run `trace-db reindex` to repair"
+                ),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(failures)
+}
+
 pub fn rebuild_fts(conn: &Connection) -> Result<()> {
     let tokenizer: String = conn.query_row(
         "SELECT value FROM schema_meta WHERE key='tokenizer'",
@@ -1583,7 +1774,9 @@ pub fn reconstruct(
 }
 
 pub fn stats(conn: &Connection) -> Result<Vec<(String, i64, i64)>> {
-    let mut stmt=conn.prepare("SELECT agent,count(*),coalesce(sum((SELECT count(*) FROM events e WHERE e.session_id=s.id)),0) FROM sessions s GROUP BY agent ORDER BY agent")?;
+    let mut stmt = conn.prepare(
+        "SELECT agent,count(*),coalesce(sum(event_count),0) FROM sessions GROUP BY agent ORDER BY agent",
+    )?;
     let rows = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1597,12 +1790,13 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         .as_deref()
         .map(decode_list_cursor)
         .transpose()?;
+    // Every projected value is a stored column, so the planner serves this from
+    // `sessions_sort_idx` without correlated subqueries or a sort pass.
     let mut sql = String::from(
         "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.status,s.title,s.model,s.provider,
-                s.parent_session_id,s.parent_relation,
-                (SELECT count(*) FROM sessions child WHERE child.parent_session_id=s.id),
-                (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,s.fingerprint,
-                coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms) AS sort_time
+                s.parent_session_id,s.parent_relation,s.child_count,s.event_count,
+                s.ingested_at_ms,s.fingerprint,s.turn_count,s.tool_call_count,s.error_count,
+                s.input_tokens,s.output_tokens,s.total_tokens,s.sort_time
          FROM sessions s WHERE 1=1",
     );
     let mut values = Vec::<rusqlite::types::Value>::new();
@@ -1625,10 +1819,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         }
     }
     if let Some(since_ms) = request.since_ms {
-        bind(
-            " AND coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)>=?",
-            since_ms.into(),
-        );
+        bind(" AND s.sort_time>=?", since_ms.into());
     }
     if let Some(model) = &request.model {
         bind(" AND s.model=?", model.clone().into());
@@ -1657,9 +1848,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
             }
         }
         if let Some(since_ms) = request.since_ms {
-            sql.push_str(
-                " AND coalesce(parent.ended_at_ms,parent.started_at_ms,parent.ingested_at_ms)>=?",
-            );
+            sql.push_str(" AND parent.sort_time>=?");
             values.push(since_ms.into());
         }
         if request.model.is_some() {
@@ -1671,15 +1860,12 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         sql.push(')');
     }
     if let Some((sort_time, id)) = cursor {
-        sql.push_str(
-            " AND (coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)<?
-                    OR (coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms)=? AND s.id>?))",
-        );
+        sql.push_str(" AND (s.sort_time<? OR (s.sort_time=? AND s.id>?))");
         values.push(sort_time.into());
         values.push(sort_time.into());
         values.push(id.into());
     }
-    sql.push_str(" ORDER BY sort_time DESC,s.id ASC LIMIT ?");
+    sql.push_str(" ORDER BY s.sort_time DESC,s.id ASC LIMIT ?");
     values.push(((limit + 1) as i64).into());
     let mut statement = conn.prepare(&sql)?;
     let rows = statement
@@ -1730,8 +1916,14 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                     events: row.get(12)?,
                     ingested_at_ms: row.get(13)?,
                     fingerprint: row.get(14)?,
+                    turns: row.get(15)?,
+                    tool_calls: row.get(16)?,
+                    errors: row.get(17)?,
+                    input_tokens: row.get(18)?,
+                    output_tokens: row.get(19)?,
+                    total_tokens: row.get(20)?,
                 },
-                row.get::<_, i64>(15)?,
+                row.get::<_, i64>(21)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1750,11 +1942,11 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
 }
 
 pub fn coverage(conn: &Connection, session_id: &str) -> Result<Option<SessionCoverage>> {
+    // A single indexed row read: the counts and the newest source mtime are
+    // materialized at ingest, so coverage never touches events or raw_sources.
     conn.query_row(
-        "SELECT s.id,s.fingerprint,s.ingested_at_ms,
-                (SELECT count(*) FROM events e WHERE e.session_id=s.id),
-                (SELECT count(*) FROM raw_sources r WHERE r.session_id=s.id),
-                (SELECT max(r.mtime_ns) FROM raw_sources r WHERE r.session_id=s.id)
+        "SELECT s.id,s.fingerprint,s.ingested_at_ms,s.event_count,s.source_count,
+                s.latest_source_mtime_ns,s.source_bytes
          FROM sessions s WHERE s.id=?1",
         [session_id],
         |row| {
@@ -1765,6 +1957,7 @@ pub fn coverage(conn: &Connection, session_id: &str) -> Result<Option<SessionCov
                 events: row.get(3)?,
                 sources: row.get(4)?,
                 latest_source_mtime_ns: row.get(5)?,
+                source_bytes: row.get(6)?,
             })
         },
     )
@@ -2106,6 +2299,119 @@ mod tests {
         parsed.session.sources.clear();
         parsed.events = vec![Event::new(EventKind::User, text)];
         parsed
+    }
+
+    /// `child_count` is the one aggregate the child's own event stream cannot
+    /// answer, so it must converge regardless of arrival order and must not
+    /// drift when the same child is ingested again.
+    #[test]
+    fn child_count_converges_under_out_of_order_and_repeat_ingest() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+
+        let child_count = |conn: &Connection, id: &str| -> i64 {
+            conn.query_row(
+                "SELECT child_count FROM sessions WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        // Child first: the parent does not exist yet, so nothing can be
+        // incremented. The count must still be right once the parent lands.
+        let mut child = named_session("codex:child", "delegated work");
+        child.session.parent_session_id = Some("codex:parent".into());
+        child.session.parent_relation = Some(crate::SessionRelation::Subagent);
+        upsert(&mut conn, child.clone()).unwrap();
+        upsert(&mut conn, named_session("codex:parent", "host work")).unwrap();
+        assert_eq!(child_count(&conn, "codex:parent"), 1);
+
+        // Re-ingesting the same child must not double-count it.
+        upsert(&mut conn, child.clone()).unwrap();
+        assert_eq!(child_count(&conn, "codex:parent"), 1);
+
+        // A second distinct child is counted.
+        let mut sibling = named_session("codex:sibling", "more delegated work");
+        sibling.session.parent_session_id = Some("codex:parent".into());
+        sibling.session.parent_relation = Some(crate::SessionRelation::Subagent);
+        upsert(&mut conn, sibling).unwrap();
+        assert_eq!(child_count(&conn, "codex:parent"), 2);
+
+        // Re-parenting repairs both the old and the new parent.
+        upsert(&mut conn, named_session("codex:other", "another host")).unwrap();
+        let mut moved = child;
+        moved.session.parent_session_id = Some("codex:other".into());
+        upsert(&mut conn, moved).unwrap();
+        assert_eq!(child_count(&conn, "codex:parent"), 1);
+        assert_eq!(child_count(&conn, "codex:other"), 1);
+
+        // The materialized state agrees with the underlying rows.
+        assert!(aggregate_drift(&conn).unwrap().is_empty());
+    }
+
+    /// Reindex is the repair path for derived state, and verify is the detector.
+    #[test]
+    fn reindex_repairs_aggregate_drift_that_verify_reports() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("trace.db");
+        let mut conn = open(&db_path).unwrap();
+        upsert(&mut conn, named_session("codex:drift", "hello")).unwrap();
+        assert!(aggregate_drift(&conn).unwrap().is_empty());
+
+        // Corrupt the materialized projection behind the store's back.
+        conn.execute(
+            "UPDATE sessions SET event_count=99,turn_count=99 WHERE id='codex:drift'",
+            [],
+        )
+        .unwrap();
+        let drift = aggregate_drift(&conn).unwrap();
+        assert_eq!(drift.len(), 1);
+        assert_eq!(drift[0].locator, "codex:drift");
+        let report = verify(&conn, &db_path).unwrap();
+        assert!(!report.passed);
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.name == "session_aggregates" && !check.failures.is_empty()));
+
+        rebuild_aggregates(&conn).unwrap();
+        assert!(aggregate_drift(&conn).unwrap().is_empty());
+        assert!(verify(&conn, &db_path).unwrap().passed);
+    }
+
+    /// The stored previews must reproduce what retrieval used to compute, and
+    /// repair must apply the same budget as ingest.
+    #[test]
+    fn stored_previews_are_truncated_to_the_shared_budget() {
+        let dir = tempdir().unwrap();
+        let mut conn = open(dir.path().join("trace.db")).unwrap();
+        let long = "x".repeat(crate::model::PREVIEW_LIMIT + 200);
+        let mut parsed = named_session("codex:long", &long);
+        parsed.events.push(Event::new(EventKind::Assistant, &long));
+        upsert(&mut conn, parsed).unwrap();
+
+        let stored = |conn: &Connection, column: &str| -> String {
+            conn.query_row(
+                &format!("SELECT {column} FROM sessions WHERE id='codex:long'"),
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        for column in ["first_user_text", "last_assistant_text"] {
+            let value = stored(&conn, column);
+            assert_eq!(value.chars().count(), crate::model::PREVIEW_LIMIT + 1);
+            assert!(value.ends_with('\u{2026}'));
+        }
+
+        // Repair reproduces the ingest-time value rather than the raw text.
+        rebuild_aggregates(&conn).unwrap();
+        for column in ["first_user_text", "last_assistant_text"] {
+            let value = stored(&conn, column);
+            assert_eq!(value.chars().count(), crate::model::PREVIEW_LIMIT + 1);
+            assert!(value.ends_with('\u{2026}'));
+        }
     }
 
     #[test]

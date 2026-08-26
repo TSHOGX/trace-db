@@ -627,6 +627,113 @@ pub fn turn_count(events: &[Event]) -> i64 {
         .count() as i64
 }
 
+/// The character budget for the stored conversational previews. Retrieval
+/// returns these verbatim, so the truncation happens once at ingest.
+pub const PREVIEW_LIMIT: usize = 500;
+
+/// Truncate on a character boundary, marking that content was elided.
+///
+/// Previews are stored and returned as-is, including any credential-shaped or
+/// whitespace content: TraceDB applies no implicit redaction.
+pub fn preview(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        text.to_owned()
+    } else {
+        text.chars().take(limit).collect::<String>() + "\u{2026}"
+    }
+}
+
+/// Session-level facts that are a deterministic function of the event stream.
+///
+/// These are materialized at ingest so retrieval never recomputes them. The
+/// single definition here is shared by the ingest path, `reindex` repair, and
+/// the `verify` drift check, so the three can never disagree about what an
+/// aggregate means.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionAggregates {
+    pub event_count: i64,
+    pub turn_count: i64,
+    pub tool_call_count: i64,
+    pub error_count: i64,
+    /// `None` when no event carried usage evidence. A real zero stays distinct.
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub first_user_text: Option<String>,
+    pub last_assistant_text: Option<String>,
+    /// The materialized `list` ordering key.
+    pub sort_time: i64,
+}
+
+impl SessionAggregates {
+    /// Derive every aggregate from one pass over the normalized projection.
+    ///
+    /// Two aggregates are deliberately absent because the event stream cannot
+    /// answer them: `child_count` is a property of the parent that only the set
+    /// of *other* sessions knows, and the source totals must describe the rows
+    /// the archive actually retained (which include snapshots preserved from
+    /// earlier ingests). The store derives both in SQL.
+    pub fn derive(events: &[Event]) -> Self {
+        // `sort_time` falls back to the ingest timestamp, which only the store
+        // knows, so [`Self::with_sort_time`] finalizes it at write time.
+        let mut aggregates = Self {
+            event_count: events.len() as i64,
+            turn_count: turn_count(events),
+            ..Self::default()
+        };
+        let mut input = None;
+        let mut output = None;
+        let mut total = None;
+        for event in events {
+            if matches!(event.kind, EventKind::ToolCall) {
+                aggregates.tool_call_count += 1;
+            }
+            if event.is_error == Some(true) {
+                aggregates.error_count += 1;
+            }
+            if let Some(usage) = event.usage.as_ref() {
+                accumulate(&mut input, usage.input);
+                accumulate(&mut output, usage.output);
+                accumulate(&mut total, usage.total_or_sum());
+            }
+            match event.kind {
+                EventKind::User if aggregates.first_user_text.is_none() => {
+                    aggregates.first_user_text = Some(preview(&event.text, PREVIEW_LIMIT));
+                }
+                EventKind::Assistant => {
+                    aggregates.last_assistant_text = Some(preview(&event.text, PREVIEW_LIMIT));
+                }
+                _ => {}
+            }
+        }
+        aggregates.input_tokens = input;
+        aggregates.output_tokens = output;
+        aggregates.total_tokens = total;
+
+        aggregates
+    }
+
+    /// Finalize the ordering key once the ingest timestamp is known.
+    ///
+    /// `list` pages on this single stored column, so the three-way fallback is
+    /// resolved exactly once here rather than in every query.
+    pub fn with_sort_time(mut self, session: &Session, ingested_at_ms: i64) -> Self {
+        self.sort_time = session
+            .ended_at_ms
+            .or(session.started_at_ms)
+            .unwrap_or(ingested_at_ms);
+        self
+    }
+}
+
+/// Sum only over events that actually reported a value, so a session with no
+/// usage evidence stays `None` rather than collapsing to a misleading zero.
+fn accumulate(slot: &mut Option<i64>, value: Option<i64>) {
+    if let Some(value) = value {
+        *slot = Some(slot.unwrap_or(0) + value);
+    }
+}
+
 pub fn compact(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
@@ -665,6 +772,64 @@ pub fn flatten(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn previews_preserve_credentials_and_whitespace() {
+        // TraceDB applies no implicit redaction, and truncation must not alter
+        // content that already fits.
+        assert_eq!(
+            preview("Authorization:\nBearer sk-example token=abc", PREVIEW_LIMIT),
+            "Authorization:\nBearer sk-example token=abc"
+        );
+        assert_eq!(preview("abcdef", 3), "abc\u{2026}");
+        // Character-boundary truncation, not byte truncation.
+        assert_eq!(preview("中文内容测试", 3), "中文内\u{2026}");
+    }
+
+    #[test]
+    fn aggregates_distinguish_absent_usage_from_zero() {
+        let mut events = vec![
+            Event::new(EventKind::User, "first ask"),
+            Event::new(EventKind::Assistant, "early answer"),
+            Event::new(EventKind::User, "second ask"),
+            Event::new(EventKind::Assistant, "final answer"),
+        ];
+        assign_indexes(&mut events);
+        let aggregates = SessionAggregates::derive(&events);
+        assert_eq!(aggregates.event_count, 4);
+        assert_eq!(aggregates.turn_count, 4);
+        // No event reported usage, so the totals stay absent rather than zero.
+        assert_eq!(aggregates.total_tokens, None);
+        assert_eq!(aggregates.first_user_text.as_deref(), Some("first ask"));
+        assert_eq!(
+            aggregates.last_assistant_text.as_deref(),
+            Some("final answer")
+        );
+
+        let mut with_zero = events.clone();
+        with_zero[1].usage = Some(TokenUsage {
+            total: Some(0),
+            ..TokenUsage::default()
+        });
+        let zeroed = SessionAggregates::derive(&with_zero);
+        assert_eq!(zeroed.total_tokens, Some(0));
+    }
+
+    #[test]
+    fn aggregates_count_tool_calls_and_producer_errors() {
+        let mut call = Event::new(EventKind::ToolCall, "run");
+        call.call_id = Some("c1".into());
+        let mut failure = Event::new(EventKind::ToolResult, "boom");
+        failure.call_id = Some("c1".into());
+        failure.is_error = Some(true);
+        let mut events = vec![call, failure];
+        assign_indexes(&mut events);
+        let aggregates = SessionAggregates::derive(&events);
+        assert_eq!(aggregates.tool_call_count, 1);
+        assert_eq!(aggregates.error_count, 1);
+        // A session with no user or assistant event has no turns.
+        assert_eq!(aggregates.turn_count, 0);
+    }
 
     #[test]
     fn spans_express_multiplexed_delegation_without_sessions() {

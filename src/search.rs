@@ -465,10 +465,10 @@ fn attach_context(
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()
         .join(",");
+    // Both previews are materialized at ingest, already truncated to the shared
+    // budget, so context assembly is one indexed row read per session.
     let sql = format!(
-        "SELECT s.id,
-          (SELECT text FROM events WHERE session_id=s.id AND kind='user' ORDER BY idx LIMIT 1),
-          (SELECT text FROM events WHERE session_id=s.id AND kind='assistant' ORDER BY idx DESC LIMIT 1)
+        "SELECT s.id,s.first_user_text,s.last_assistant_text
          FROM sessions s WHERE s.id IN ({placeholders})"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -482,13 +482,7 @@ fn attach_context(
     let mut context = HashMap::new();
     for row in rows {
         let (id, ask, outcome) = row?;
-        context.insert(
-            id,
-            (
-                ask.map(|text| preview(&text, 500)),
-                outcome.map(|text| preview(&text, 500)),
-            ),
-        );
+        context.insert(id, (ask, outcome));
     }
     for result in results {
         let own = context.get(&result.id);
@@ -592,14 +586,6 @@ fn kind_bonus(kind: EventKind) -> f64 {
     }
 }
 
-fn preview(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        text.to_owned()
-    } else {
-        text.chars().take(limit).collect::<String>() + "…"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,14 +600,6 @@ mod tests {
             "\"deploy netlify\" OR \"deploy\" OR \"netlify\""
         );
         assert_eq!(plan_fts_query("deploy OR release"), "deploy OR release");
-    }
-
-    #[test]
-    fn previews_preserve_credentials_and_whitespace() {
-        assert_eq!(
-            preview("Authorization:\nBearer sk-example token=abc", 500),
-            "Authorization:\nBearer sk-example token=abc"
-        );
     }
 
     #[test]

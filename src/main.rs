@@ -760,6 +760,10 @@ fn main() -> anyhow::Result<()> {
                     if let Some(title) = &session.title {
                         println!("  title: {title}");
                     }
+                    // Surfaced only when present so the default listing stays scannable.
+                    if session.errors > 0 {
+                        println!("  errors: {}", session.errors);
+                    }
                 }
                 if let Some(cursor) = page.next_cursor {
                     println!("next cursor: {cursor}");

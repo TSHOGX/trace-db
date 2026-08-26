@@ -280,9 +280,18 @@ for row in rows {
 specialized SQL access.
 
 `coverage(sessionId)` is the cheap per-session ingestion watermark: it returns
-the stored fingerprint, `ingestedAtMs`, normalized event/source
-counts, and latest source mtime without loading the event stream or consulting
-native agent stores. List rows include the same fingerprint for bulk scans.
+the stored fingerprint, `ingestedAtMs`, normalized event/source counts,
+`sourceBytes`, and latest source mtime. It is a single indexed row read: every
+value is materialized at ingest, so coverage never loads the event stream,
+scans `raw_sources`, or consults native agent stores. List rows include the
+same fingerprint for bulk scans.
+
+List rows also carry materialized triage counters that previously required a
+full `show`: `turns`, `toolCalls`, `errors`, and the `inputTokens`,
+`outputTokens`, and `totalTokens` totals. The token fields are null when the
+producer reported no usage, which stays distinct from a measured zero. Because
+these are stored columns rather than per-row subqueries, `list` cost is
+proportional to the page size rather than to archive size.
 
 List inventory remains expanded by default. `--collapse-lineage` (or API v2
 `collapseLineage`) applies scope-preserving collapse: a child is hidden only
@@ -294,6 +303,11 @@ Every mutating `ingest` response includes a durable monotonic `ack` containing
 `sequence` and `committedAtMs`. Persist this acknowledgement as the ingestion
 watermark; source `endedAtMs` values describe session activity and are not a
 commit boundary.
+
+`trace-db reindex` recomputes all derived state: it rebuilds the FTS index and
+repairs every materialized session aggregate from the normalized rows. `verify`
+reports aggregate drift as a `session_aggregates` check, so a mismatch is
+detected rather than silently served.
 
 `trace-db backup PATH` publishes a consistent SQLite snapshot through a staging
 directory and verifies the snapshot before returning. The destination must not

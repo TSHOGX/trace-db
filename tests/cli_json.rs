@@ -346,6 +346,19 @@ fn json_lines_show_uses_the_same_nullable_session_trace() {
     assert_eq!(rows[2]["result"]["events"].as_array().unwrap().len(), 2);
     assert!(rows[3]["result"].is_null());
     assert_eq!(rows[4]["result"]["fingerprint"], "json-v1");
+    // Coverage counts come from materialized columns. This fixture registers no
+    // native sources, so the source totals are a real zero.
+    assert_eq!(rows[4]["result"]["events"], 2);
+    assert_eq!(rows[4]["result"]["sources"], 0);
+    assert_eq!(rows[4]["result"]["sourceBytes"], 0);
+    // List rows carry the materialized triage counters.
+    let summary = &rows[0]["result"]["sessions"][0];
+    assert_eq!(summary["turns"], 1);
+    assert_eq!(summary["toolCalls"], 1);
+    assert_eq!(summary["errors"], 0);
+    // No usage evidence in the fixture, so token totals stay absent rather
+    // than reporting a misleading zero.
+    assert!(summary["totalTokens"].is_null());
 }
 
 #[test]
