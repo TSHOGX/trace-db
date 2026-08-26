@@ -37,7 +37,20 @@ fn verify_accepts_a_healthy_full_archive() {
 
     assert!(report.passed);
     assert_eq!(report.failure_count(), 0);
-    assert_eq!(report.checks.len(), 7);
+    // Assert on named checks rather than a count, so adding a verification does
+    // not require editing an unrelated magic number.
+    for name in [
+        "schema_contract",
+        "fts_consistency",
+        "object_references",
+        "session_lineage",
+        "objects",
+    ] {
+        assert!(
+            report.checks.iter().any(|check| check.name == name),
+            "missing verification check {name}"
+        );
+    }
     assert!(report.checks.iter().all(|check| check.passed));
     assert!(report
         .checks

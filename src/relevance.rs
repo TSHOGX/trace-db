@@ -5,7 +5,8 @@
 //! context assembly without depending on host-native agent stores.
 
 use crate::{
-    Agent, Event, EventKind, ParsedSession, SearchRequest, SearchResult, Session, TraceDb,
+    Agent, Event, EventKind, ParsedSession, SearchRequest, SearchResult, Session, SessionRelation,
+    TraceDb,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -477,7 +478,7 @@ fn session(
     model: &str,
     provider: &str,
     parent_session_id: Option<&str>,
-    forked_from: Option<&str>,
+    parent_relation: Option<SessionRelation>,
     events: Vec<Event>,
 ) -> ParsedSession {
     ParsedSession {
@@ -493,7 +494,8 @@ fn session(
             provider: Some(provider.into()),
             git_branch: Some("relevance".into()),
             parent_session_id: parent_session_id.map(str::to_owned),
-            forked_from: forked_from.map(str::to_owned),
+            parent_relation,
+            fork_point_native_id: None,
             meta: json!({"suite":"relevance","signals":["title","cwd","tool","error","model","provider"]}),
             fingerprint: id.into(),
             sources: Vec::new(),
@@ -661,7 +663,7 @@ fn build_corpus(database: &mut TraceDb) -> Result<usize> {
             "gpt-5",
             "openai",
             Some("codex:lineage-parent"),
-            None,
+            Some(SessionRelation::Subagent),
             vec![
                 event(
                     EventKind::User,
@@ -691,8 +693,8 @@ fn build_corpus(database: &mut TraceDb) -> Result<usize> {
             now - 8 * day,
             "gpt-5",
             "openai",
-            None,
-            Some("codex:fork-root#experiment"),
+            Some("codex:fork-root"),
+            Some(SessionRelation::Fork),
             vec![
                 event(EventKind::User, "config fork experiment"),
                 event(EventKind::Assistant, "Configuration fork validated"),

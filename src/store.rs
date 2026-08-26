@@ -19,7 +19,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 pub const PORTABLE_TOKENIZER: &str = "unicode61 remove_diacritics 2";
 pub const JIEBA_TOKENIZER: &str = "jieba";
 
@@ -238,8 +238,8 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         connection.execute_batch("BEGIN IMMEDIATE")?;
         validate_import_compatibility(connection)?;
         let imported_sessions = connection.execute(
-            "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms)
-             SELECT id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms
+            "INSERT OR IGNORE INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json,ingested_at_ms)
+             SELECT id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json,ingested_at_ms
              FROM import_source.sessions",
             [],
         )? as u64;
@@ -314,7 +314,7 @@ fn validate_import_compatibility(connection: &Connection) -> Result<()> {
                destination.status IS source.status AND
                destination.title IS source.title AND destination.model IS source.model AND
                destination.provider IS source.provider AND destination.git_branch IS source.git_branch AND
-               destination.parent_session_id IS source.parent_session_id AND destination.forked_from IS source.forked_from AND
+               destination.parent_session_id IS source.parent_session_id AND destination.parent_relation IS source.parent_relation AND destination.fork_point_native_id IS source.fork_point_native_id AND
                destination.fingerprint IS source.fingerprint AND destination.meta_json IS source.meta_json
              )
              LIMIT 1",
@@ -674,8 +674,9 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, started_at_ms INTEGER,
         ended_at_ms INTEGER, status TEXT, title TEXT, model TEXT, provider TEXT, git_branch TEXT,
-        parent_session_id TEXT, forked_from TEXT,
-        fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL
+        parent_session_id TEXT, parent_relation TEXT, fork_point_native_id TEXT,
+        fingerprint TEXT NOT NULL, meta_json TEXT NOT NULL, ingested_at_ms INTEGER NOT NULL,
+        CHECK ((parent_session_id IS NULL) = (parent_relation IS NULL))
       );
       CREATE INDEX IF NOT EXISTS sessions_agent_idx ON sessions(agent);
       CREATE INDEX IF NOT EXISTS sessions_ended_idx ON sessions(ended_at_ms);
@@ -699,6 +700,7 @@ fn migrate_with_tokenizer(conn: &Connection, jieba: bool) -> Result<()> {
       );
       CREATE INDEX IF NOT EXISTS events_session_idx ON events(session_id,idx);
       CREATE INDEX IF NOT EXISTS events_kind_idx ON events(kind);
+      CREATE INDEX IF NOT EXISTS events_span_idx ON events(session_id,span_id);
       CREATE INDEX IF NOT EXISTS events_call_idx ON events(session_id,call_id);
       CREATE TABLE IF NOT EXISTS spans (
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -948,6 +950,42 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
         reference_failures,
     ));
 
+    let lineage_failures = connection
+        .prepare(
+            "SELECT id,parent_session_id,parent_relation FROM sessions
+             WHERE (parent_session_id IS NULL) <> (parent_relation IS NULL)
+                OR (parent_relation IS NOT NULL
+                    AND parent_relation NOT IN ('subagent','fork'))
+             ORDER BY id",
+        )?
+        .query_map([], |row| {
+            let id = row.get::<_, String>(0)?;
+            let parent = row.get::<_, Option<String>>(1)?;
+            let relation = row.get::<_, Option<String>>(2)?;
+            Ok(VerificationFailure {
+                locator: id,
+                message: match (parent, relation) {
+                    (Some(_), None) => "parent edge has no typed relation".into(),
+                    (None, Some(relation)) => {
+                        format!("relation {relation} has no parent session")
+                    }
+                    (_, Some(relation)) => format!("unknown parent relation {relation}"),
+                    (None, None) => "inconsistent lineage".into(),
+                },
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let lineage_edges = connection.query_row(
+        "SELECT count(*) FROM sessions WHERE parent_session_id IS NOT NULL",
+        [],
+        |row| row.get::<_, usize>(0),
+    )?;
+    checks.push(VerifyCheck::new(
+        "session_lineage",
+        lineage_edges,
+        lineage_failures,
+    ));
+
     let mut object_statement =
         connection.prepare("SELECT hash,compression,bytes,payload FROM objects ORDER BY hash")?;
     let objects = object_statement
@@ -1123,10 +1161,10 @@ fn write_session(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
-    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json,ingested_at_ms)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
-                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,forked_from=excluded.forked_from,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
-        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.forked_from, session.fingerprint, session.meta.to_string(), now_ms()])?;
+    tx.execute("INSERT INTO sessions(id,agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json,ingested_at_ms)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,cwd=excluded.cwd,started_at_ms=excluded.started_at_ms,ended_at_ms=excluded.ended_at_ms,status=excluded.status,title=excluded.title,model=excluded.model,provider=excluded.provider,git_branch=excluded.git_branch,parent_session_id=excluded.parent_session_id,parent_relation=excluded.parent_relation,fork_point_native_id=excluded.fork_point_native_id,fingerprint=excluded.fingerprint,meta_json=excluded.meta_json,ingested_at_ms=excluded.ingested_at_ms",
+        params![session.id, session.agent.as_str(), session.cwd, session.started_at_ms, session.ended_at_ms, session.status.map(|status| status.to_string()), session.title, session.model, session.provider, session.git_branch, session.parent_session_id, session.parent_relation.map(|relation| relation.to_string()), session.fork_point_native_id, session.fingerprint, session.meta.to_string(), now_ms()])?;
     tx.execute("DELETE FROM raw_sources WHERE session_id=?1", [&session.id])?;
     let mut current_locators = Vec::with_capacity(session.sources.len());
     for src in &session.sources {
@@ -1561,17 +1599,8 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         .transpose()?;
     let mut sql = String::from(
         "SELECT s.id,s.agent,s.cwd,s.started_at_ms,s.ended_at_ms,s.status,s.title,s.model,s.provider,
-                coalesce(s.parent_session_id,
-                         CASE WHEN instr(s.forked_from, '#') > 0
-                              THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
-                              ELSE s.forked_from END),
-                CASE WHEN s.parent_session_id IS NOT NULL THEN 'parent'
-                     WHEN s.forked_from IS NOT NULL THEN 'fork' END,
-                (SELECT count(*) FROM sessions child
-                 WHERE coalesce(child.parent_session_id,
-                                CASE WHEN instr(child.forked_from, '#') > 0
-                                     THEN substr(child.forked_from, 1, instr(child.forked_from, '#') - 1)
-                                     ELSE child.forked_from END)=s.id),
+                s.parent_session_id,s.parent_relation,
+                (SELECT count(*) FROM sessions child WHERE child.parent_session_id=s.id),
                 (SELECT count(*) FROM events e WHERE e.session_id=s.id),s.ingested_at_ms,s.fingerprint,
                 coalesce(s.ended_at_ms,s.started_at_ms,s.ingested_at_ms) AS sort_time
          FROM sessions s WHERE 1=1",
@@ -1611,11 +1640,7 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
         sql.push_str(
             " AND NOT EXISTS (
                 SELECT 1 FROM sessions parent
-                WHERE parent.id=coalesce(
-                    s.parent_session_id,
-                    CASE WHEN instr(s.forked_from, '#') > 0
-                         THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
-                         ELSE s.forked_from END)",
+                WHERE parent.id=s.parent_session_id",
         );
         if request.agent.is_some() {
             sql.push_str(" AND parent.agent=s.agent");
@@ -1690,7 +1715,17 @@ pub fn list(conn: &Connection, request: &ListRequest) -> Result<ListPage> {
                     model: row.get(7)?,
                     provider: row.get(8)?,
                     parent_session_id: row.get(9)?,
-                    parent_relation: row.get(10)?,
+                    parent_relation: row
+                        .get::<_, Option<String>>(10)?
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|error: String| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                10,
+                                rusqlite::types::Type::Text,
+                                error.into(),
+                            )
+                        })?,
                     subagent_count: row.get(11)?,
                     events: row.get(12)?,
                     ingested_at_ms: row.get(13)?,
@@ -1763,7 +1798,7 @@ fn decode_list_cursor(cursor: &str) -> Result<(i64, String)> {
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>> {
     let row = conn
         .query_row(
-            "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,forked_from,fingerprint,meta_json FROM sessions WHERE id=?1",
+            "SELECT agent,cwd,started_at_ms,ended_at_ms,status,title,model,provider,git_branch,parent_session_id,parent_relation,fork_point_native_id,fingerprint,meta_json FROM sessions WHERE id=?1",
             [session_id],
             |row| {
                 Ok((
@@ -1778,8 +1813,9 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
-                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(11)?,
                     row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
                 ))
             },
         )
@@ -1795,7 +1831,8 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
         provider,
         git_branch,
         parent_session_id,
-        forked_from,
+        parent_relation,
+        fork_point_native_id,
         fingerprint,
         meta_json,
     )) = row
@@ -1979,7 +2016,11 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<SessionTrace>>
             provider,
             git_branch,
             parent_session_id,
-            forked_from,
+            parent_relation: parent_relation
+                .map(|value| value.parse::<crate::SessionRelation>())
+                .transpose()
+                .map_err(anyhow::Error::msg)?,
+            fork_point_native_id,
             meta: serde_json::from_str(&meta_json)?,
             fingerprint,
             sources,
@@ -2034,7 +2075,8 @@ mod tests {
                 provider: None,
                 git_branch: None,
                 parent_session_id: None,
-                forked_from: None,
+                parent_relation: None,
+                fork_point_native_id: None,
                 meta: serde_json::json!({}),
                 fingerprint: "v1".into(),
                 sources: vec![NativeSource {
@@ -2253,6 +2295,7 @@ mod tests {
         upsert(&mut conn, named_session("codex:parent", "deploy netlify")).unwrap();
         let mut child = named_session("codex:child", "deploy netlify deploy");
         child.session.parent_session_id = Some("codex:parent".into());
+        child.session.parent_relation = Some(crate::SessionRelation::Subagent);
         upsert(&mut conn, child).unwrap();
         let rows = search::search(&conn, &SearchRequest::new("deploy netlify")).unwrap();
         assert_eq!(rows.len(), 1);

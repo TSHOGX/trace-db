@@ -4,7 +4,7 @@ use super::{
 };
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, EventParentKind, NativeSource,
-    ParsedSession, Session,
+    ParsedSession, Session, SessionRelation,
 };
 use anyhow::{Context, Result};
 use chrono::DateTime;
@@ -73,11 +73,7 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
         if forked.is_none() {
             forked = r.get("forkedFrom").and_then(|value| {
                 let session_id = s(value.get("sessionId"))?;
-                let message_uuid = s(value.get("messageUuid"));
-                Some(match message_uuid {
-                    Some(message_uuid) => format!("claude:{session_id}#{message_uuid}"),
-                    None => format!("claude:{session_id}"),
-                })
+                Some((format!("claude:{session_id}"), s(value.get("messageUuid"))))
             });
         }
         set_if_none(&mut cwd, s(r.get("cwd")));
@@ -223,8 +219,9 @@ fn parse(path: &Path, root: &Path, candidate: &SessionCandidate) -> Result<Parse
             model,
             provider: None,
             git_branch: branch,
-            parent_session_id: None,
-            forked_from: forked,
+            parent_session_id: forked.as_ref().map(|(parent, _)| parent.clone()),
+            parent_relation: forked.as_ref().map(|_| SessionRelation::Fork),
+            fork_point_native_id: forked.and_then(|(_, message_uuid)| message_uuid),
             meta: json!({"recordCount":record_count}),
             fingerprint: format!("{}:{}", record_count, ended.unwrap_or_default()),
             sources,
@@ -297,6 +294,8 @@ impl Parser for ClaudeParser {
                     .unwrap_or("agent");
                 parsed.session.id = format!("claude:{parent}/{child}");
                 parsed.session.parent_session_id = Some(format!("claude:{parent}"));
+                parsed.session.parent_relation = Some(SessionRelation::Subagent);
+                parsed.session.fork_point_native_id = None;
                 let meta_path = candidate.path.with_extension("meta.json");
                 if meta_path.exists() {
                     let meta_text = fs::read_to_string(&meta_path).with_context(|| {
@@ -327,7 +326,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn captures_forked_from_session_and_message() {
+    fn captures_fork_parent_and_native_branch_point() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("fork.jsonl");
         fs::write(
@@ -347,8 +346,16 @@ mod tests {
         .unwrap();
         let parsed = ClaudeParser.parse_all(dir.path()).unwrap();
         assert_eq!(
-            parsed[0].session.forked_from.as_deref(),
-            Some("claude:parent#m-1")
+            parsed[0].session.parent_session_id.as_deref(),
+            Some("claude:parent")
+        );
+        assert_eq!(
+            parsed[0].session.parent_relation,
+            Some(SessionRelation::Fork)
+        );
+        assert_eq!(
+            parsed[0].session.fork_point_native_id.as_deref(),
+            Some("m-1")
         );
         assert_eq!(
             parsed[0].events[0].parent_kind,

@@ -114,6 +114,44 @@ pub enum EventKind {
     Usage,
 }
 
+/// How a session relates to its parent. Both variants are proven by native
+/// evidence: `Subagent` by a nesting path, a spawn call, or a native parent
+/// column; `Fork` by an explicit producer fork record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRelation {
+    /// A delegated child agent run.
+    Subagent,
+    /// A resumed or branched continuation of another session.
+    Fork,
+}
+
+impl SessionRelation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Subagent => "subagent",
+            Self::Fork => "fork",
+        }
+    }
+}
+
+impl fmt::Display for SessionRelation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SessionRelation {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "subagent" => Ok(Self::Subagent),
+            "fork" => Ok(Self::Fork),
+            _ => Err(format!("unknown session relation: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventParentKind {
@@ -412,8 +450,15 @@ pub struct Session {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub git_branch: Option<String>,
+    /// The single session lineage edge. `parent_relation` is `Some` exactly
+    /// when this is `Some`.
     pub parent_session_id: Option<String>,
-    pub forked_from: Option<String>,
+    pub parent_relation: Option<SessionRelation>,
+    /// For `Fork` edges, the parent's native record id the branch started from.
+    /// Producers expose a native id, not a normalized index, and the parent may
+    /// not be ingested yet, so resolution to an event index is a query-time
+    /// concern rather than a parse-time one.
+    pub fork_point_native_id: Option<String>,
     pub meta: Value,
     pub fingerprint: String,
     pub sources: Vec<NativeSource>,

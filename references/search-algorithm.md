@@ -47,9 +47,8 @@ Regression tests protect this invariant.
 ## Lineage collapse
 
 Search issues one recursive SQL query rooted at matched session IDs to load the
-reachable session-edge closure. For each candidate, Rust follows
-`parent_session_id`, then the session portion of `forked_from`, until it reaches
-a known root. Cycles terminate the walk safely. The strongest member remains
+reachable session-edge closure. For each candidate, Rust follows the single
+`parent_session_id` edge until it reaches a known root. Cycles terminate the walk safely. The strongest member remains
 the representative and hit counts from related members are added.
 
 This prevents a parent task and its subagents from occupying multiple result

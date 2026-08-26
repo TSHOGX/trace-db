@@ -476,7 +476,9 @@ once after collapse.
 The normalized event kinds are `user`, `assistant`, `thinking`, `tool_call`,
 `tool_result`, `system`, and `usage`. Tool results and usage are stored but are
 excluded from the default FTS index. Event lineage (`parent_id`) and
-cross-session lineage (`parent_session_id`, `forked_from`) are separate trees.
+cross-session lineage (`parent_session_id`) are separate trees. A session has at
+most one parent edge, typed by `parent_relation` as `subagent` or `fork`; a fork
+also records the parent's native branch point as `fork_point_native_id`.
 
 Turn-internal structure is represented by first-class `spans`, not synthetic
 sessions. Tool calls/results sharing a `callId` form a span; delegation tools

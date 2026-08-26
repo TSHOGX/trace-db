@@ -1,7 +1,8 @@
 use serde_json::json;
 use tempfile::tempdir;
 use tracedb::{
-    Agent, Event, EventKind, ListRequest, ParsedSession, Session, SessionStatus, TraceDb,
+    Agent, Event, EventKind, ListRequest, ParsedSession, Session, SessionRelation, SessionStatus,
+    TraceDb,
 };
 
 struct Fixture<'a> {
@@ -36,7 +37,8 @@ fn insert(database: &mut TraceDb, fixture: Fixture<'_>) {
                 provider: Some(provider.into()),
                 git_branch: None,
                 parent_session_id: None,
-                forked_from: None,
+                parent_relation: None,
+                fork_point_native_id: None,
                 meta: json!({}),
                 fingerprint: id.into(),
                 sources: Vec::new(),
@@ -249,7 +251,8 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
                 provider: None,
                 git_branch: None,
                 parent_session_id: Some("codex:parent".into()),
-                forked_from: None,
+                parent_relation: Some(SessionRelation::Subagent),
+                fork_point_native_id: None,
                 meta: json!({}),
                 fingerprint: "child".into(),
                 sources: Vec::new(),
@@ -285,7 +288,7 @@ fn list_exact_cwd_and_lineage_metadata_are_sql_projected() {
         .find(|session| session.id == "codex:child")
         .unwrap();
     assert_eq!(child.parent_session_id.as_deref(), Some("codex:parent"));
-    assert_eq!(child.parent_relation.as_deref(), Some("parent"));
+    assert_eq!(child.parent_relation, Some(SessionRelation::Subagent));
     assert_eq!(child.status, Some(SessionStatus::Completed));
 
     let collapsed_all = database

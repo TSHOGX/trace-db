@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 const PER_SESSION_HIT_CAP: usize = 50;
 const MAX_CANDIDATE_HITS: usize = 5_000;
 const MAX_CONTEXT_SESSIONS: usize = 2_000;
-type LineageEdges = HashMap<String, (Option<String>, Option<String>)>;
+type LineageEdges = HashMap<String, Option<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -381,34 +381,21 @@ fn load_lineage_edges(connection: &Connection, roots: &[String]) -> Result<Linea
         "WITH RECURSIVE lineage(id) AS (
            SELECT id FROM sessions WHERE id IN ({placeholders})
            UNION
-           SELECT COALESCE(s.parent_session_id,
-                           CASE WHEN instr(s.forked_from, '#') > 0
-                                THEN substr(s.forked_from, 1, instr(s.forked_from, '#') - 1)
-                                ELSE s.forked_from END)
+           SELECT s.parent_session_id
            FROM sessions s JOIN lineage l ON s.id=l.id
-           WHERE s.parent_session_id IS NOT NULL OR s.forked_from IS NOT NULL
+           WHERE s.parent_session_id IS NOT NULL
          )
-         SELECT s.id,s.parent_session_id,s.forked_from
+         SELECT s.id,s.parent_session_id
          FROM sessions s JOIN lineage l ON l.id=s.id"
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(roots.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
     })?;
     let mut edges = HashMap::new();
     for row in rows {
-        let (id, parent, forked) = row?;
-        edges.insert(
-            id,
-            (
-                parent,
-                forked.map(|value| value.split('#').next().unwrap_or(&value).to_owned()),
-            ),
-        );
+        let (id, parent) = row?;
+        edges.insert(id, parent);
     }
     Ok(edges)
 }
@@ -425,10 +412,7 @@ fn lineage_path(id: &str, edges: &LineageEdges) -> Vec<String> {
     let mut path = Vec::new();
     let mut seen = HashSet::new();
     while seen.insert(current.clone()) {
-        let Some((parent, forked)) = edges.get(&current) else {
-            break;
-        };
-        let Some(next) = parent.as_ref().or(forked.as_ref()) else {
+        let Some(Some(next)) = edges.get(&current) else {
             break;
         };
         if !edges.contains_key(next) {
@@ -764,7 +748,8 @@ mod tests {
                     provider: None,
                     git_branch: None,
                     parent_session_id: parent.map(str::to_owned),
-                    forked_from: None,
+                    parent_relation: parent.map(|_| crate::SessionRelation::Subagent),
+                    fork_point_native_id: None,
                     meta: json!({}),
                     fingerprint: id.to_owned(),
                     sources: Vec::new(),

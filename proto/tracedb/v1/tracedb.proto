@@ -134,6 +134,8 @@ message ShowResponse {
 }
 
 message Session {
+  reserved 11;
+  reserved "forked_from";
   string id = 1;
   string agent = 2;
   optional string cwd = 3;
@@ -144,11 +146,12 @@ message Session {
   optional string provider = 8;
   optional string git_branch = 9;
   optional string parent_session_id = 10;
-  optional string forked_from = 11;
   string meta_json = 12;
   string fingerprint = 13;
   repeated NativeSource sources = 14;
   optional string status = 15;
+  optional string parent_relation = 16;
+  optional string fork_point_native_id = 17;
 }
 
 message NativeSource {

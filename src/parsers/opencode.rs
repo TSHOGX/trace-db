@@ -1,7 +1,7 @@
 use super::{Discovery, DiscoveryHints, Parser, SessionCandidate};
 use crate::model::{
     compact, Agent, Capture, Event, EventKind, EventParentKind, NativeSource, ParsedSession,
-    Session,
+    Session, SessionRelation,
 };
 use anyhow::{Context, Result};
 use rusqlite::{backup::Backup, types::Value as SqlValue, Connection, OptionalExtension};
@@ -186,8 +186,9 @@ fn parse_session(
             model,
             provider: None,
             git_branch: None,
+            parent_relation: parent.as_ref().map(|_| SessionRelation::Subagent),
             parent_session_id: parent.map(|p| format!("opencode:{p}")),
-            forked_from: None,
+            fork_point_native_id: None,
             meta: json!({"agent":agent}),
             fingerprint: format!(
                 "{}:{}:{}",

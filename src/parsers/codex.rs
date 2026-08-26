@@ -9,7 +9,7 @@ use super::{
 };
 use crate::model::{
     compact, flatten, Agent, Capture, Event, EventKind, NativeSource, ParsedSession, Session,
-    TokenUsage,
+    SessionRelation, TokenUsage,
 };
 use anyhow::Result;
 use chrono::DateTime;
@@ -245,7 +245,8 @@ fn parse_file(path: &Path, candidate: &SessionCandidate) -> Result<ParsedSession
             provider,
             git_branch: branch,
             parent_session_id: None,
-            forked_from: None,
+            parent_relation: None,
+            fork_point_native_id: None,
             meta,
             fingerprint,
             sources: vec![source],
@@ -455,6 +456,10 @@ impl Parser for CodexParser {
     fn parse(&self, candidate: &SessionCandidate, _root: &Path) -> Result<Option<ParsedSession>> {
         let mut parsed = parse_file(&candidate.path, candidate)?;
         parsed.session.parent_session_id = candidate.parent_session_id.clone();
+        parsed.session.parent_relation = candidate
+            .parent_session_id
+            .as_ref()
+            .map(|_| SessionRelation::Subagent);
         if candidate.parent_session_id.is_some() {
             parsed.session.meta["agentType"] = candidate
                 .agent_type

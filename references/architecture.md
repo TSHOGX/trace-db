@@ -133,7 +133,10 @@ There are three independent relationship layers:
 
 - Typed event lineage preserves producer-native predecessor/message links
   without treating them as structural spans.
-- Session lineage links forks and subagents across sessions.
+- Session lineage is one typed edge: `parent_session_id` plus a
+  `parent_relation` of `subagent` or `fork`. Forks additionally record the
+  parent's native branch point, so no field packs a tuple into a string and no
+  query predicate parses one.
 - First-class spans represent turn-internal tools and delegations. Spans can
   exist without a child session or a dedicated event, so one Workflow call can
   parent multiple `task_id` delegates and promoted tool calls remain native to

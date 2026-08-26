@@ -1587,7 +1587,7 @@ pub struct SessionSummary {
     /// Direct session lineage parent, if present.
     pub parent_session_id: Option<String>,
     /// Relationship to `parent_session_id` (`parent` or `fork`), when known.
-    pub parent_relation: Option<String>,
+    pub parent_relation: Option<crate::SessionRelation>,
     /// Number of sessions that directly reference this session as a parent.
     pub subagent_count: i64,
 }
