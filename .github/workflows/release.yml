@@ -38,7 +38,7 @@ jobs:
       - name: Verify release package versions
         run: python scripts/verify-release-version.py "${{ github.ref_name }}"
       - run: cargo test --locked --target ${{ matrix.target }}
-      - run: cargo build --locked --release --target ${{ matrix.target }} -p trace-db -p fts5-jieba
+      - run: cargo build --locked --release --target ${{ matrix.target }} -p trace-db -p trace-db-tokenizer
       - name: Package Unix archive
         if: runner.os != 'Windows'
         run: scripts/package-release.sh "${{ matrix.target }}" "${GITHUB_REF_NAME#v}" dist

@@ -641,10 +641,10 @@ dependencies = [
 [[package]]
 name = "fts5-jieba"
 version = "0.1.0"
+source = "git+https://github.com/TSHOGX/fts5-jieba?rev=c5ff1e2b007a261712aa259f14a1d5a1c931eba9#c5ff1e2b007a261712aa259f14a1d5a1c931eba9"
 dependencies = [
  "jieba-rs",
  "libc",
- "rusqlite",
  "rust-stemmers",
  "unicode-normalization",
 ]
@@ -2224,6 +2224,14 @@ dependencies = [
  "walkdir",
  "windows-sys 0.61.2",
  "zstd",
+]
+
+[[package]]
+name = "trace-db-tokenizer"
+version = "0.1.0"
+dependencies = [
+ "fts5-jieba",
+ "rusqlite",
 ]
 
 [[package]]

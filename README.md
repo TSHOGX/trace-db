@@ -597,7 +597,7 @@ documented in
 For Chinese segmentation and English stemming, build the optional tokenizer:
 
 ```bash
-cargo build --release -p fts5-jieba
+cargo build --release -p trace-db-tokenizer
 TRACEDB_JIEBA_EXT=target/release/libfts5jieba.dylib trace-db ingest
 ```
 
@@ -615,7 +615,7 @@ cargo fmt --all -- --check
 cargo test
 cargo build --release
 cargo package --allow-dirty
-cargo test -p fts5-jieba
+cargo test -p trace-db-tokenizer
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 python3 scripts/verify-release-package.py ARTIFACT --version 0.1.0
@@ -637,8 +637,9 @@ CI passes the narrowly scoped `RUSTSEC-2025-0057` unmaintained `fxhash`
 exception because it is currently required transitively by the Rust 1.83-
 compatible `jieba-rs` tokenizer; see [`docs/security.md`](docs/security.md).
 
-The `native/fts5-jieba` crate is an optional loadable SQLite extension and is
-licensed under MIT OR Apache-2.0. The TraceDB core is MIT licensed.
+The tokenizer is developed in [TSHOGX/fts5-jieba](https://github.com/TSHOGX/fts5-jieba)
+(MIT). `native/fts5-jieba` is a thin wrapper that pins one commit of it and builds the
+`libfts5jieba` extension that the release archives ship. The TraceDB core is MIT licensed.
 
 CI enforces Rust 1.83 compatibility and runs the core and tokenizer tests on
 Linux, macOS, and Windows. A semantic version tag such as `v0.1.0` must match
