@@ -43,7 +43,8 @@ fn both_entry_points_load_and_register_the_tokenizer() {
         )
         .unwrap();
         let n = |q: &str| -> i64 {
-            conn.query_row("SELECT count(*) FROM d WHERE d MATCH ?1", [q], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT count(*) FROM d WHERE d MATCH ?1", [q], |r| r.get(0))
+                .unwrap()
         };
         assert_eq!(n("run"), 1, "{entry}: English stem");
         assert_eq!(n("中华"), 1, "{entry}: Chinese segmentation");
