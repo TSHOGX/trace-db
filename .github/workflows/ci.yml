@@ -37,7 +37,7 @@ jobs:
       - run: cargo test --locked -p trace-db-tokenizer
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - run: find . -type d -name __pycache__ -prune -exec rm -rf {} +
-      - run: cargo package --locked
+      - run: cargo package --locked -p trace-db
 
   msrv:
     runs-on: ubuntu-latest
