@@ -36,7 +36,7 @@ src/
     opencode.rs
     gemini.rs
     pi.rs
-native/fts5-jieba/  optional Rust FTS5 tokenizer extension
+native/fts5-jieba/  wrapper that builds the optional FTS5 tokenizer extension from the pinned fts5-jieba repository
 proto/tracedb/v1/   stable cross-language Protobuf contract
 ```
 
