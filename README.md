@@ -614,7 +614,7 @@ reported instead of silently falling back. A higher-precedence explicit
 cargo fmt --all -- --check
 cargo test
 cargo build --release
-cargo package --allow-dirty
+cargo package --allow-dirty -p trace-db
 cargo test -p trace-db-tokenizer
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
