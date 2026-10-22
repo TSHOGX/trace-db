@@ -28,12 +28,12 @@ trap cleanup EXIT
 "$trace_db_bin" --db "$database" daemon install \
   --interval 60 --agent codex --root "$native_root"
 for _ in $(seq 1 30); do
-  if "$trace_db_bin" --db "$database" stats --json | grep -q '"totalSessions": 1'; then
+  if grep -q '"totalSessions": 1' <<<"$("$trace_db_bin" --db "$database" stats --json)"; then
     break
   fi
   sleep 1
 done
-"$trace_db_bin" --db "$database" stats --json | grep -q '"totalSessions": 1'
+grep -q '"totalSessions": 1' <<<"$("$trace_db_bin" --db "$database" stats --json)"
 
 first_pid="$(launchctl list com.tracedb.watch-daemon | awk '/"PID"/ {gsub(/[^0-9]/,"",$3); print $3}')"
 [[ "$first_pid" =~ ^[1-9][0-9]*$ ]]
@@ -49,9 +49,13 @@ done
 [[ "$second_pid" =~ ^[1-9][0-9]*$ && "$second_pid" != "$first_pid" ]]
 
 "$trace_db_bin" --db "$database" daemon stop
-"$trace_db_bin" --db "$database" daemon status | grep -q 'Installed but not running'
+# Read the whole output before grepping: `grep -q` exits at the first match, the CLI then
+# panics on the closed pipe, and pipefail turns that into a failure that depends on timing.
+status_output="$("$trace_db_bin" --db "$database" daemon status)"
+grep -q 'Installed but not running' <<<"$status_output"
 "$trace_db_bin" --db "$database" daemon start
-"$trace_db_bin" --db "$database" daemon status | grep -q 'Running'
+status_output="$("$trace_db_bin" --db "$database" daemon status)"
+grep -q 'Running' <<<"$status_output"
 "$trace_db_bin" --db "$database" daemon uninstall
 test ! -e "$HOME/Library/LaunchAgents/com.tracedb.watch-daemon.plist"
 echo "launchd daemon smoke: ok"
