@@ -14,12 +14,15 @@ fn extension_path() -> std::path::PathBuf {
     } else {
         ("lib", "so")
     };
+    let artifact = format!("{prefix}fts5jieba.{ext}");
     let exe = std::env::current_exe().unwrap();
-    let profile = exe.parent().and_then(std::path::Path::parent).unwrap();
-    [profile.to_path_buf(), profile.join("deps")]
-        .iter()
-        .map(|d| d.join(format!("{prefix}fts5jieba.{ext}")))
-        .find(|p| p.exists())
+    exe.ancestors()
+        .find_map(|dir| {
+            [dir.to_path_buf(), dir.join("deps")]
+                .into_iter()
+                .map(|dir| dir.join(&artifact))
+                .find(|path| path.exists())
+        })
         .expect("built extension not found; run `cargo build -p trace-db-tokenizer` first")
 }
 
