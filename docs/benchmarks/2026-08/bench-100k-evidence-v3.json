@@ -1,0 +1,232 @@
+{
+  "schemaVersion": "tracedb-benchmark-v3",
+  "traceDbVersion": "0.1.0",
+  "generatorVersion": 1,
+  "eventsPerSession": 6,
+  "searchRepetitionsPerQuery": 20,
+  "changedFraction": "1/100",
+  "host": {
+    "os": "macos",
+    "architecture": "aarch64"
+  },
+  "runs": [
+    {
+      "sessions": 100000,
+      "changedSessions": 1000,
+      "nativeBytes": 141010000,
+      "operations": [
+        {
+          "name": "generate",
+          "metrics": {
+            "wallTimeNs": 13537652542,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 225297961,
+            "processPeakRssBytes": 2474816,
+            "databaseBytes": 0,
+            "physicalWriteBytes": 409600000,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "generated",
+            "files": 100000,
+            "bytes": 141010000
+          }
+        },
+        {
+          "name": "first_ingest",
+          "metrics": {
+            "wallTimeNs": 188546135917,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 1678437978,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 303651408,
+            "physicalWriteBytes": 31347130368,
+            "logicalSourceBytes": 141010000,
+            "writeAmplification": 222.30430726898803
+          },
+          "result": {
+            "type": "ingested",
+            "mode": "full",
+            "discovered": 100000,
+            "parsed": 100000,
+            "ingested": 100000,
+            "unchanged": 0,
+            "failed": 0
+          }
+        },
+        {
+          "name": "unchanged_ingest",
+          "metrics": {
+            "wallTimeNs": 31930175959,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 214402374,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 303651408,
+            "physicalWriteBytes": 16384,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "ingested",
+            "mode": "full",
+            "discovered": 100000,
+            "parsed": 0,
+            "ingested": 0,
+            "unchanged": 100000,
+            "failed": 0
+          }
+        },
+        {
+          "name": "changed_ingest",
+          "metrics": {
+            "wallTimeNs": 30341456625,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 212953005,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 306109008,
+            "physicalWriteBytes": 368857088,
+            "logicalSourceBytes": 1595000,
+            "writeAmplification": 231.25836238244514
+          },
+          "result": {
+            "type": "ingested",
+            "mode": "full",
+            "discovered": 100000,
+            "parsed": 1000,
+            "ingested": 1000,
+            "unchanged": 99000,
+            "failed": 0
+          }
+        },
+        {
+          "name": "search",
+          "metrics": {
+            "wallTimeNs": 58373436542,
+            "p95WallTimeNs": 1673871584,
+            "cpuTimeNs": 1141189684,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 306109008,
+            "physicalWriteBytes": 1929019392,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "searched",
+            "queries": 60,
+            "results": 1200
+          }
+        },
+        {
+          "name": "list",
+          "metrics": {
+            "wallTimeNs": 21428375,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 345751,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 306109008,
+            "physicalWriteBytes": 0,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "listed",
+            "sessions": 100,
+            "hasMore": true
+          }
+        },
+        {
+          "name": "show",
+          "metrics": {
+            "wallTimeNs": 434792,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 4524,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 306109008,
+            "physicalWriteBytes": 0,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "shown",
+            "events": 6
+          }
+        },
+        {
+          "name": "stats",
+          "metrics": {
+            "wallTimeNs": 459371417,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 5083963,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 306109008,
+            "physicalWriteBytes": 0,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "stats",
+            "sessions": 100000,
+            "events": 601000,
+            "fullSessions": 100000
+          }
+        },
+        {
+          "name": "reindex",
+          "metrics": {
+            "wallTimeNs": 1230047459,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 13523888,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 315174632,
+            "physicalWriteBytes": 55476224,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "reindexed",
+            "events": 601000
+          }
+        },
+        {
+          "name": "verify",
+          "metrics": {
+            "wallTimeNs": 5124887625,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 90399400,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 315174632,
+            "physicalWriteBytes": 0,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "verified",
+            "checks": 6,
+            "checked": 602004,
+            "passed": true,
+            "failures": 0
+          }
+        },
+        {
+          "name": "reconstruct",
+          "metrics": {
+            "wallTimeNs": 10155375,
+            "p95WallTimeNs": null,
+            "cpuTimeNs": 26497,
+            "processPeakRssBytes": 689801600,
+            "databaseBytes": 315174632,
+            "physicalWriteBytes": 4096,
+            "logicalSourceBytes": 0,
+            "writeAmplification": null
+          },
+          "result": {
+            "type": "reconstructed",
+            "files": 1,
+            "bytes": 1414
+          }
+        }
+      ]
+    }
+  ]
+}
