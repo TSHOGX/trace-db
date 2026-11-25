@@ -370,7 +370,8 @@ fn gc_dry_run_reports_orphan_objects_without_mutation() {
     assert_eq!(
         connection
             .query_row("SELECT count(*) FROM objects", [], |row| row
-                .get::<_, u64>(0))
+                .get::<_, i64>(0)
+                .map(|count| count as u64))
             .unwrap(),
         1
     );

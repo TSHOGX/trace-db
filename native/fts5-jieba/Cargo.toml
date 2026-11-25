@@ -2,7 +2,7 @@
 name = "trace-db-tokenizer"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.89"
 description = "Release wrapper that builds the fts5-jieba SQLite extension shipped with TraceDB"
 license = "MIT"
 repository = "https://github.com/TSHOGX/trace-db"
@@ -22,4 +22,4 @@ crate-type = ["cdylib", "rlib"]
 tokenizer = { package = "fts5-jieba", git = "https://github.com/TSHOGX/fts5-jieba", rev = "c5ff1e2b007a261712aa259f14a1d5a1c931eba9" }
 
 [dev-dependencies]
-rusqlite = { version = "0.32", features = ["bundled", "load_extension"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "load_extension"] }

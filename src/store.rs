@@ -216,8 +216,12 @@ pub fn backup(connection: &Connection, destination: &Path) -> Result<crate::Back
     fs::rename(&staged_path, destination)
         .with_context(|| format!("publish verified archive backup {}", destination.display()))?;
     let snapshot = open_read_only(destination)?;
-    let sessions = snapshot.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?;
-    let events = snapshot.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
+    let sessions = snapshot.query_row("SELECT count(*) FROM sessions", [], |row| {
+        row.get::<_, i64>(0).map(|count| count as u64)
+    })?;
+    let events = snapshot.query_row("SELECT count(*) FROM events", [], |row| {
+        row.get::<_, i64>(0).map(|count| count as u64)
+    })?;
     verify(&snapshot, destination)?;
     let bytes = fs::metadata(destination)?.len();
     Ok(crate::BackupReport {
@@ -234,12 +238,12 @@ pub fn gc_report(connection: &Connection, dry_run: bool) -> Result<crate::GcRepo
         anyhow::bail!("gc is non-destructive by default; pass --dry-run");
     }
     let total_objects = connection.query_row("SELECT count(*) FROM objects", [], |row| {
-        row.get::<_, u64>(0)
+        row.get::<_, i64>(0).map(|count| count as u64)
     })?;
     let referenced_objects = connection.query_row(
         "SELECT count(DISTINCT object_hash) FROM raw_sources WHERE object_hash IS NOT NULL",
         [],
-        |row| row.get::<_, u64>(0),
+        |row| row.get::<_, i64>(0).map(|count| count as u64),
     )?;
     let (orphan_objects, orphan_bytes) = connection.query_row(
         "SELECT count(*), COALESCE(sum(length(o.payload)), 0)
@@ -248,7 +252,7 @@ pub fn gc_report(connection: &Connection, dry_run: bool) -> Result<crate::GcRepo
            ON r.object_hash=o.hash
          WHERE r.object_hash IS NULL",
         [],
-        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+        |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
     )?;
     Ok(crate::GcReport {
         dry_run: true,
@@ -306,7 +310,7 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         )? as u64;
         let source_sessions =
             connection.query_row("SELECT count(*) FROM import_source.sessions", [], |row| {
-                row.get::<_, u64>(0)
+                row.get::<_, i64>(0).map(|count| count as u64)
             })?;
         let imported_objects = connection.execute(
             "INSERT OR IGNORE INTO objects(hash,compression,bytes,payload,created_at_ms)
@@ -332,7 +336,7 @@ pub fn import_archive(connection: &mut Connection, source: &Path) -> Result<crat
         )?;
         let source_events =
             connection.query_row("SELECT count(*) FROM import_source.events", [], |row| {
-                row.get::<_, u64>(0)
+                row.get::<_, i64>(0).map(|count| count as u64)
             })?;
         connection.execute(
             "INSERT INTO raw_sources(session_id,locator,kind,restore_path,role,bytes,mtime_ns,mode,object_hash)
@@ -949,7 +953,9 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     span_reference_failures.append(&mut missing_parents);
     checks.push(VerifyCheck::new(
         "span_references",
-        connection.query_row("SELECT count(*) FROM spans", [], |row| row.get(0))?,
+        connection.query_row("SELECT count(*) FROM spans", [], |row| {
+            row.get::<_, i64>(0).map(|count| count as usize)
+        })?,
         span_reference_failures,
     ));
 
@@ -961,7 +967,9 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     let aggregate_failures = aggregate_drift(connection)?;
     checks.push(VerifyCheck::new(
         "session_aggregates",
-        connection.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?,
+        connection.query_row("SELECT count(*) FROM sessions", [], |row| {
+            row.get::<_, i64>(0).map(|count| count as usize)
+        })?,
         aggregate_failures,
     ));
 
@@ -985,11 +993,11 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     let searchable_events = connection.query_row(
         "SELECT count(*) FROM events WHERE kind NOT IN ('tool_result','usage')",
         [],
-        |row| row.get::<_, usize>(0),
+        |row| row.get::<_, i64>(0).map(|count| count as usize),
     )?;
     let indexed_events =
         connection.query_row("SELECT count(*) FROM events_fts_docsize", [], |row| {
-            row.get::<_, usize>(0)
+            row.get::<_, i64>(0).map(|count| count as usize)
         })?;
     if indexed_events != searchable_events {
         fts_failures.push(VerificationFailure {
@@ -1004,7 +1012,7 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
          JOIN events e ON e.id=f.id
          WHERE e.kind IN ('tool_result','usage')",
         [],
-        |row| row.get::<_, usize>(0),
+        |row| row.get::<_, i64>(0).map(|count| count as usize),
     )?;
     if excluded_events != 0 {
         fts_failures.push(VerificationFailure {
@@ -1036,7 +1044,7 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     let referenced_objects = connection.query_row(
         "SELECT count(*) FROM raw_sources WHERE object_hash IS NOT NULL",
         [],
-        |row| row.get::<_, usize>(0),
+        |row| row.get::<_, i64>(0).map(|count| count as usize),
     )?;
     checks.push(VerifyCheck::new(
         "object_references",
@@ -1072,7 +1080,7 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
     let lineage_edges = connection.query_row(
         "SELECT count(*) FROM sessions WHERE parent_session_id IS NOT NULL",
         [],
-        |row| row.get::<_, usize>(0),
+        |row| row.get::<_, i64>(0).map(|count| count as usize),
     )?;
     checks.push(VerifyCheck::new(
         "session_lineage",
@@ -1125,7 +1133,7 @@ pub fn verify(connection: &Connection, path: &Path) -> Result<crate::VerifyRepor
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
     let total_spans = connection.query_row("SELECT count(*) FROM spans", [], |row| {
-        row.get::<_, usize>(0)
+        row.get::<_, i64>(0).map(|count| count as usize)
     })?;
     checks.push(VerifyCheck::new("spans", total_spans, span_failures));
 

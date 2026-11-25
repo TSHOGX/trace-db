@@ -72,7 +72,7 @@ export TRACEDB_JIEBA_EXT="$(brew --prefix trace-db)/lib/libfts5jieba.dylib" # ma
 
 ### Build from source
 
-Requirements: Rust 1.83+ and Cargo.
+Requirements: Rust 1.89+ and Cargo.
 
 ```bash
 cargo install --path .
@@ -621,7 +621,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 python3 scripts/verify-release-package.py ARTIFACT --version 0.1.0
 python3 scripts/verify-sha256sums.py RELEASE_DIRECTORY
 python3 scripts/generate-sbom.py --output target/tracedb-sbom.json
-cargo audit --deny warnings --ignore RUSTSEC-2025-0057
+cargo audit --deny warnings --ignore RUSTSEC-2025-0057 --ignore RUSTSEC-2026-0543
 python3 scripts/verify-opencode-compat.py ~/.local/share/opencode/opencode.db
 python3 scripts/smoke-python-wheel.py WHEEL
 node scripts/smoke-node-package.js PACKAGE_TGZ
@@ -633,14 +633,13 @@ cargo test -p trace-db --test sqlite_lifecycle
 cargo test -p trace-db --test platform_paths
 ```
 
-CI passes the narrowly scoped `RUSTSEC-2025-0057` unmaintained `fxhash`
-exception because it is currently required transitively by the Rust 1.83-
-compatible `jieba-rs` tokenizer; see [`docs/security.md`](docs/security.md).
+CI passes narrowly scoped exceptions for the unmaintained `fxhash` and `chrono`
+transitive dependencies; see [`docs/security.md`](docs/security.md).
 
 The tokenizer is developed in [TSHOGX/fts5-jieba](https://github.com/TSHOGX/fts5-jieba)
 (MIT). `native/fts5-jieba` is a thin wrapper that pins one commit of it and builds the
 `libfts5jieba` extension that the release archives ship. The TraceDB core is MIT licensed.
 
-CI enforces Rust 1.83 compatibility and runs the core and tokenizer tests on
+CI enforces Rust 1.89 compatibility and runs the core and tokenizer tests on
 Linux, macOS, and Windows. A semantic version tag such as `v0.1.0` must match
 `Cargo.toml`; matching tags build and publish the platform archives.
